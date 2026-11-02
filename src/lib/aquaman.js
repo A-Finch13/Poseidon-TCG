@@ -12,7 +12,8 @@ export const RANK = { N: 1, R: 2, SR: 3, SSR: 4, UR: 5, SEC: 6 };
 export const DEFAULTS = {
   notifyBoosters: true,
   notifyUpdated: true,
-  syncPity: true
+  syncPity: true,
+  syncFavorites: true
 };
 
 // Settings with their default values.
@@ -46,6 +47,13 @@ async function getJson(url) {
   } catch {
     throw new ApiError(0, 'network', 'Connexion impossible. Vérifie ta connexion internet.');
   }
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
+  return body;
+}
+// Same as getJson for a change (PUT, DELETE…) without a body.
+async function getJsonWith(url, method) {
+  const res = await fetch(url, { method, credentials: 'include', headers: { accept: 'application/json' } });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
   return body;
@@ -528,6 +536,158 @@ export async function setPityRules(rules) {
   return { ok: true };
 }
 
+// ---------- favourite series and the game's searched cards ----------
+
+// Series of the game with the player's progress: [{ id, slug, title, owned, total }].
+export function seriesList() {
+  return cached('series', 2 * 60e3, async () => (await game('/series')).series ?? []);
+}
+
+// Ids of the cards in the player's search list ("Je la cherche").
+async function wantedIds() {
+  const { wants } = await cached('wants', 30e3, () => game('/wants'));
+  return new Set((wants ?? []).map((w) => w?.card?.id ?? w?.cardId).filter(Boolean));
+}
+
+// Cards of one series, with the number of copies the player owns.
+function seriesCards(id) {
+  return cached(`series-cards:${id}`, 60e3, async () => (await game(`/cards?manga=${encodeURIComponent(id)}`)).cards ?? []);
+}
+
+const FAV_PULL = 60e3; // the other devices' favourites are read once a minute at most
+let favSyncedAt = 0;
+
+// The favourite series kept on this device: { list, at } (at: time of the last change, 0 if never changed here).
+async function localFavorites() {
+  const { favSeries, favAt } = await chrome.storage.local.get(['favSeries', 'favAt']);
+  return { list: Array.isArray(favSeries) ? favSeries : [], at: Number(favAt) || 0 };
+}
+
+// Sends the list to the relay, which keeps the most recent one of all the player's devices, and takes it back.
+async function exchangeFavorites(local) {
+  try {
+    const res = await fetch(`${RELAY}/favorites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ player: await myId(), list: local.list, at: local.at })
+    });
+    if (!res.ok) throw new Error(`relay_${res.status}`);
+    const remote = await res.json();
+    favSyncedAt = Date.now();
+    if (Array.isArray(remote?.list) && Number(remote.at) > local.at) {
+      await chrome.storage.local.set({ favSeries: remote.list, favAt: Number(remote.at) });
+      return remote.list;
+    }
+  } catch {}
+  return local.list;
+}
+
+// The favourite series, the same on every device when syncing is on.
+export async function favoriteIds(fresh = false) {
+  const local = await localFavorites();
+  if (!(await getSettings()).syncFavorites || (!fresh && Date.now() - favSyncedAt < FAV_PULL)) return local.list;
+  return exchangeFavorites(local);
+}
+
+// Adds (on) or removes a series from the favourites; returns the new list.
+export async function setFavorite(id, on) {
+  const list = (await favoriteIds()).filter((x) => x !== id);
+  if (on) list.push(id);
+  const local = { list, at: Date.now() };
+  await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
+  if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
+  return list;
+}
+
+// The favourite series and their cards: owned copies and whether the player searches them.
+export async function favoritesReport(fresh = false) {
+  const [ids, all, wanted] = await Promise.all([favoriteIds(fresh), seriesList(), wantedIds().catch(() => new Set())]);
+  const series = ids.map((id) => all.find((s) => s.id === id)).filter(Boolean);
+  const cards = await Promise.all(series.map((s) => seriesCards(s.id).catch(() => [])));
+  return {
+    all: all.map((s) => ({ id: s.id, slug: s.slug, title: s.title, owned: s.owned ?? 0, total: s.total ?? 0 })),
+    favorites: series.map((s, i) => ({
+      id: s.id,
+      slug: s.slug,
+      title: s.title,
+      owned: s.owned ?? 0,
+      total: s.total ?? 0,
+      cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id) }))
+    }))
+  };
+}
+
+// Puts one card in the player's search list (on) or takes it out.
+export async function wantCard(id, on) {
+  const res = await getJsonWith(`${GAME}/cards/${encodeURIComponent(id)}/want`, on ? 'PUT' : 'DELETE');
+  forget('wants');
+  return { wanted: !!res?.wanted };
+}
+
+// Searches every card of a series the player doesn't have yet; stops at the first refusal of the game (a limit, for instance).
+export async function wantMissing(seriesId) {
+  const [cards, wanted] = await Promise.all([seriesCards(seriesId), wantedIds()]);
+  const todo = cards.filter((c) => !(c.owned > 0) && !wanted.has(c.id));
+  let added = 0;
+  let refused = null; // the game's message when it stops accepting
+  for (const c of todo) {
+    try {
+      await getJsonWith(`${GAME}/cards/${encodeURIComponent(c.id)}/want`, 'PUT');
+      added++;
+    } catch (e) {
+      refused = e.message;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  forget('wants');
+  return { added, already: cards.filter((c) => !(c.owned > 0)).length - todo.length, left: todo.length - added, refused };
+}
+
+// ---------- who pulled a card: the game's "beaux tirages", kept a while ----------
+
+const FEED_KEEP = 30 * 86400e3;
+const FEED_MAX = 4000;
+
+// Adds pulls of the game's feed to the history kept on this device.
+export async function recordFeed(pulls) {
+  const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+  const byKey = new Map(feedLog.map((p) => [p.key, p]));
+  for (const p of pulls ?? []) {
+    const card = p?.card;
+    if (!card?.id || !p.pulledAt) continue;
+    const key = `${card.id}#${p.serial ?? ''}#${p.player?.id ?? ''}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, {
+      key,
+      at: Date.parse(p.pulledAt) || Date.now(),
+      serial: p.serial ?? null,
+      player: p.player ? { id: p.player.id ?? null, name: p.player.name ?? null } : null,
+      card: { id: card.id, name: card.name, image: card.image, rarity: card.rarity, maxCopies: card.maxCopies ?? null, series: card.series?.title ?? null }
+    });
+  }
+  const since = Date.now() - FEED_KEEP;
+  const kept = [...byKey.values()].filter((p) => p.at >= since).sort((a, b) => b.at - a.at).slice(0, FEED_MAX);
+  await chrome.storage.local.set({ feedLog: kept, feedSince: (await chrome.storage.local.get('feedSince')).feedSince ?? Date.now() });
+  return kept.length;
+}
+
+// Reads the game's feed (every 2 minutes at most) and keeps its pulls.
+export async function pollFeed() {
+  const { pulls } = await cached('feed', 2 * 60e3, () => game('/feed'));
+  return recordFeed(pulls);
+}
+
+// Recent pulls whose character or series matches the query (the latest ones without a query).
+export async function whoPulled(query = '', rarity = '') {
+  await pollFeed().catch(() => {});
+  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
+  const q = fold(query);
+  const hits = feedLog.filter((p) => (!rarity || p.card.rarity === rarity) && (!q || fold(p.card.name).includes(q) || fold(p.card.series).includes(q)));
+  const names = q ? [...new Set(feedLog.filter((p) => fold(p.card.name).includes(q)).map((p) => p.card.name))].slice(0, 8) : [];
+  return { pulls: hits.slice(0, 200), total: hits.length, kept: feedLog.length, since: feedSince, suggestions: names };
+}
+
 // ---------- messages from content.js ----------
 
 // Answers the data messages of the page code (background.js in the extension, bridge.js in the userscript).
@@ -550,8 +710,22 @@ export async function answer(msg) {
         return await recordOpening(msg.boosters ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
+      case 'favorites':
+        return await favoritesReport(!!msg.fresh);
+      case 'favorite':
+        return { favorites: await setFavorite(msg.id, !!msg.on) };
+      case 'want':
+        return await wantCard(msg.id, !!msg.on);
+      case 'want-missing':
+        return await wantMissing(msg.id);
+      case 'who-pulled':
+        return await whoPulled(msg.query, msg.rarity);
+      case 'feed-poll':
+        return { kept: await pollFeed() };
+      case 'feed-seen':
+        return { kept: await recordFeed(msg.pulls) };
       case 'collection-stale':
-        forget('showcase:', 'shop');
+        forget('showcase:', 'shop', 'series', 'wants');
         return { ok: true };
       default:
         return { error: 'unknown_message' };

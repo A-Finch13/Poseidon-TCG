@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.0.0
+// @version      1.1.0
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -162,7 +162,8 @@ const RANK = { N: 1, R: 2, SR: 3, SSR: 4, UR: 5, SEC: 6 };
 const DEFAULTS = {
   notifyBoosters: true,
   notifyUpdated: true,
-  syncPity: true
+  syncPity: true,
+  syncFavorites: true
 };
 
 // Settings with their default values.
@@ -196,6 +197,13 @@ async function getJson(url) {
   } catch {
     throw new ApiError(0, 'network', 'Connexion impossible. Vérifie ta connexion internet.');
   }
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
+  return body;
+}
+// Same as getJson for a change (PUT, DELETE…) without a body.
+async function getJsonWith(url, method) {
+  const res = await fetch(url, { method, credentials: 'include', headers: { accept: 'application/json' } });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
   return body;
@@ -678,6 +686,158 @@ async function setPityRules(rules) {
   return { ok: true };
 }
 
+// ---------- favourite series and the game's searched cards ----------
+
+// Series of the game with the player's progress: [{ id, slug, title, owned, total }].
+function seriesList() {
+  return cached('series', 2 * 60e3, async () => (await game('/series')).series ?? []);
+}
+
+// Ids of the cards in the player's search list ("Je la cherche").
+async function wantedIds() {
+  const { wants } = await cached('wants', 30e3, () => game('/wants'));
+  return new Set((wants ?? []).map((w) => w?.card?.id ?? w?.cardId).filter(Boolean));
+}
+
+// Cards of one series, with the number of copies the player owns.
+function seriesCards(id) {
+  return cached(`series-cards:${id}`, 60e3, async () => (await game(`/cards?manga=${encodeURIComponent(id)}`)).cards ?? []);
+}
+
+const FAV_PULL = 60e3; // the other devices' favourites are read once a minute at most
+let favSyncedAt = 0;
+
+// The favourite series kept on this device: { list, at } (at: time of the last change, 0 if never changed here).
+async function localFavorites() {
+  const { favSeries, favAt } = await chrome.storage.local.get(['favSeries', 'favAt']);
+  return { list: Array.isArray(favSeries) ? favSeries : [], at: Number(favAt) || 0 };
+}
+
+// Sends the list to the relay, which keeps the most recent one of all the player's devices, and takes it back.
+async function exchangeFavorites(local) {
+  try {
+    const res = await fetch(`${RELAY}/favorites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ player: await myId(), list: local.list, at: local.at })
+    });
+    if (!res.ok) throw new Error(`relay_${res.status}`);
+    const remote = await res.json();
+    favSyncedAt = Date.now();
+    if (Array.isArray(remote?.list) && Number(remote.at) > local.at) {
+      await chrome.storage.local.set({ favSeries: remote.list, favAt: Number(remote.at) });
+      return remote.list;
+    }
+  } catch {}
+  return local.list;
+}
+
+// The favourite series, the same on every device when syncing is on.
+async function favoriteIds(fresh = false) {
+  const local = await localFavorites();
+  if (!(await getSettings()).syncFavorites || (!fresh && Date.now() - favSyncedAt < FAV_PULL)) return local.list;
+  return exchangeFavorites(local);
+}
+
+// Adds (on) or removes a series from the favourites; returns the new list.
+async function setFavorite(id, on) {
+  const list = (await favoriteIds()).filter((x) => x !== id);
+  if (on) list.push(id);
+  const local = { list, at: Date.now() };
+  await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
+  if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
+  return list;
+}
+
+// The favourite series and their cards: owned copies and whether the player searches them.
+async function favoritesReport(fresh = false) {
+  const [ids, all, wanted] = await Promise.all([favoriteIds(fresh), seriesList(), wantedIds().catch(() => new Set())]);
+  const series = ids.map((id) => all.find((s) => s.id === id)).filter(Boolean);
+  const cards = await Promise.all(series.map((s) => seriesCards(s.id).catch(() => [])));
+  return {
+    all: all.map((s) => ({ id: s.id, slug: s.slug, title: s.title, owned: s.owned ?? 0, total: s.total ?? 0 })),
+    favorites: series.map((s, i) => ({
+      id: s.id,
+      slug: s.slug,
+      title: s.title,
+      owned: s.owned ?? 0,
+      total: s.total ?? 0,
+      cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id) }))
+    }))
+  };
+}
+
+// Puts one card in the player's search list (on) or takes it out.
+async function wantCard(id, on) {
+  const res = await getJsonWith(`${GAME}/cards/${encodeURIComponent(id)}/want`, on ? 'PUT' : 'DELETE');
+  forget('wants');
+  return { wanted: !!res?.wanted };
+}
+
+// Searches every card of a series the player doesn't have yet; stops at the first refusal of the game (a limit, for instance).
+async function wantMissing(seriesId) {
+  const [cards, wanted] = await Promise.all([seriesCards(seriesId), wantedIds()]);
+  const todo = cards.filter((c) => !(c.owned > 0) && !wanted.has(c.id));
+  let added = 0;
+  let refused = null; // the game's message when it stops accepting
+  for (const c of todo) {
+    try {
+      await getJsonWith(`${GAME}/cards/${encodeURIComponent(c.id)}/want`, 'PUT');
+      added++;
+    } catch (e) {
+      refused = e.message;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  forget('wants');
+  return { added, already: cards.filter((c) => !(c.owned > 0)).length - todo.length, left: todo.length - added, refused };
+}
+
+// ---------- who pulled a card: the game's "beaux tirages", kept a while ----------
+
+const FEED_KEEP = 30 * 86400e3;
+const FEED_MAX = 4000;
+
+// Adds pulls of the game's feed to the history kept on this device.
+async function recordFeed(pulls) {
+  const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+  const byKey = new Map(feedLog.map((p) => [p.key, p]));
+  for (const p of pulls ?? []) {
+    const card = p?.card;
+    if (!card?.id || !p.pulledAt) continue;
+    const key = `${card.id}#${p.serial ?? ''}#${p.player?.id ?? ''}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, {
+      key,
+      at: Date.parse(p.pulledAt) || Date.now(),
+      serial: p.serial ?? null,
+      player: p.player ? { id: p.player.id ?? null, name: p.player.name ?? null } : null,
+      card: { id: card.id, name: card.name, image: card.image, rarity: card.rarity, maxCopies: card.maxCopies ?? null, series: card.series?.title ?? null }
+    });
+  }
+  const since = Date.now() - FEED_KEEP;
+  const kept = [...byKey.values()].filter((p) => p.at >= since).sort((a, b) => b.at - a.at).slice(0, FEED_MAX);
+  await chrome.storage.local.set({ feedLog: kept, feedSince: (await chrome.storage.local.get('feedSince')).feedSince ?? Date.now() });
+  return kept.length;
+}
+
+// Reads the game's feed (every 2 minutes at most) and keeps its pulls.
+async function pollFeed() {
+  const { pulls } = await cached('feed', 2 * 60e3, () => game('/feed'));
+  return recordFeed(pulls);
+}
+
+// Recent pulls whose character or series matches the query (the latest ones without a query).
+async function whoPulled(query = '', rarity = '') {
+  await pollFeed().catch(() => {});
+  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
+  const q = fold(query);
+  const hits = feedLog.filter((p) => (!rarity || p.card.rarity === rarity) && (!q || fold(p.card.name).includes(q) || fold(p.card.series).includes(q)));
+  const names = q ? [...new Set(feedLog.filter((p) => fold(p.card.name).includes(q)).map((p) => p.card.name))].slice(0, 8) : [];
+  return { pulls: hits.slice(0, 200), total: hits.length, kept: feedLog.length, since: feedSince, suggestions: names };
+}
+
 // ---------- messages from content.js ----------
 
 // Answers the data messages of the page code (background.js in the extension, bridge.js in the userscript).
@@ -700,8 +860,22 @@ async function answer(msg) {
         return await recordOpening(msg.boosters ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
+      case 'favorites':
+        return await favoritesReport(!!msg.fresh);
+      case 'favorite':
+        return { favorites: await setFavorite(msg.id, !!msg.on) };
+      case 'want':
+        return await wantCard(msg.id, !!msg.on);
+      case 'want-missing':
+        return await wantMissing(msg.id);
+      case 'who-pulled':
+        return await whoPulled(msg.query, msg.rarity);
+      case 'feed-poll':
+        return { kept: await pollFeed() };
+      case 'feed-seen':
+        return { kept: await recordFeed(msg.pulls) };
       case 'collection-stale':
-        forget('showcase:', 'shop');
+        forget('showcase:', 'shop', 'series', 'wants');
         return { ok: true };
       default:
         return { error: 'unknown_message' };
@@ -768,12 +942,14 @@ async function handle(msg) {
 // Runs in the page before it loads: tells content.js what the site's own requests change, without changing them.
 //   { aquaman: 'status', pending }   boosters waiting, read from the site's /api-game/v1/me answers
 //   { aquaman: 'opened', boosters }  boosters just opened, each as the rarities of its cards (for the pity counters)
+//   { aquaman: 'feed', pulls }       the game's "beaux tirages", read from its /api-game/v1/feed answers
 //   { aquaman: 'collection-stale' }  a booster was opened, or a trade, sale or purchase went through
 (() => {
   if (window.__aquamanHook) return;
   window.__aquamanHook = true;
 
   const ME = /^\/api-game\/v1\/me$/;
+  const FEED = /^\/api-game\/v1\/feed$/;
   const OPEN = /^\/api-game\/v1\/boosters\/([^/]+\/open|open-many|open)$/;
   const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
   const RARITIES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
@@ -813,6 +989,12 @@ async function handle(msg) {
             .clone()
             .json()
             .then((me) => Array.isArray(me?.pending) && post({ type: 'status', pending: me.pending.length }))
+            .catch(() => {});
+        } else if (method === 'GET' && FEED.test(path)) {
+          res
+            .clone()
+            .json()
+            .then((body) => Array.isArray(body?.pulls) && post({ type: 'feed', pulls: body.pulls }))
             .catch(() => {});
         } else if (method !== 'GET' && WRITE.test(path)) {
           if (OPEN.test(path))
@@ -2079,6 +2261,263 @@ html.aqm-grabbing * {
   margin-top: 3px;
   accent-color: #2563eb;
 }
+
+/* ---------- Qui a tiré… ? ---------- */
+
+.aqm-pulled {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-pull {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 14px;
+  background: var(--aqm-card);
+}
+.aqm-pull-card img {
+  display: block;
+  width: 40px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+.aqm-pull-main {
+  min-width: 0;
+}
+.aqm-pull-main > p {
+  margin: 0;
+}
+.aqm-pull-series {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.aqm-pull-who {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+}
+.aqm-pull-who a {
+  color: #fff;
+  text-decoration: none;
+}
+.aqm-pull-who a:hover {
+  text-decoration: underline;
+}
+.aqm-pull-who small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--aqm-muted);
+}
+
+/* ---------- Séries favorites ---------- */
+
+.aqm-star {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #a1a1aa;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.aqm-star:hover {
+  color: #fde047;
+}
+.aqm-star.is-on {
+  color: #facc15;
+}
+.aqm-fav-bar {
+  display: flex;
+  margin-bottom: 8px;
+}
+.aqm-fav-bar .aqm-chip {
+  height: 32px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  color: #fde047;
+}
+.aqm-fav-bar .aqm-chip b {
+  margin-left: 4px;
+  color: #fff;
+}
+.aqm-fav-found {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-fav-found:empty {
+  display: none;
+}
+.aqm-fav-found li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px 6px 6px;
+  border-radius: 12px;
+  background: var(--aqm-card);
+}
+.aqm-fav-found img {
+  width: 32px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+.aqm-fav-found li > span {
+  flex: 1;
+  min-width: 0;
+}
+.aqm-fav-found strong,
+.aqm-fav-found small {
+  display: block;
+}
+.aqm-fav-found small {
+  font-size: 12px;
+  color: var(--aqm-muted);
+}
+.aqm-filter-name.aqm-gap {
+  margin-left: 10px;
+}
+.aqm-fav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+}
+.aqm-fav-series {
+  padding: 14px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 18px;
+  background: var(--aqm-card);
+}
+.aqm-fav-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.aqm-fav-head > img {
+  width: 40px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+.aqm-fav-title {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.aqm-fav-title strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 900;
+  color: #fff;
+}
+.aqm-fav-title small {
+  font-size: 12px;
+  color: var(--aqm-muted);
+}
+.aqm-fav-head .aqm-chip.is-on {
+  color: #facc15;
+  font-size: 16px;
+}
+.aqm-fav-series > .aqm-muted {
+  margin-top: 8px;
+}
+.aqm-fav-series > .aqm-muted:empty {
+  display: none;
+}
+.aqm-fav-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-fav-card {
+  position: relative;
+  min-width: 0;
+}
+.aqm-fav-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 63 / 88;
+  border-radius: 10px;
+  object-fit: cover;
+  filter: grayscale(0.85) brightness(0.6);
+}
+.aqm-fav-card.is-owned img {
+  filter: none;
+}
+.aqm-fav-card > p {
+  margin: 4px 0 0;
+}
+.aqm-fav-card .aqm-mini-name {
+  font-size: 12px;
+}
+.aqm-want {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  font-size: 15px;
+  filter: grayscale(1);
+  opacity: 0.75;
+  cursor: pointer;
+}
+.aqm-want.is-on {
+  background: rgba(37, 99, 235, 0.85);
+  filter: none;
+  opacity: 1;
+}
+.aqm-sort:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (max-width: 640px) {
+  .aqm-pull {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+  .aqm-pull-who {
+    grid-column: 2;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .aqm-fav-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
 `;
   document.head.appendChild(style);
   // ---------- 5. src/content/tutorial.js et content.js : visite, nouveautés, puis tout ce qui s'affiche sur le site ----------
@@ -2113,6 +2552,25 @@ const TOUR = [
     title: 'Quel booster ouvrir ?',
     text: 'Choisis ce que tu cherches (des cartes nouvelles, une rareté, un personnage, une série ou la valeur) : les boosters sont classés par taux de drop ou par prix, avec « ≈ 11 boosters à ouvrir en moyenne », le prix moyen en Perles et le meilleur et le pire taux en haut.',
     find: 'menu-1'
+  },
+  {
+    id: 'qui',
+    title: 'Qui a tiré… ?',
+    text: 'Cherche un personnage ou une série : Aquaman te montre les joueurs qui l’ont tiré récemment, avec le numéro de la carte et quand. Il garde les beaux tirages du jeu (SSR, UR, SEC) pendant 30 jours.',
+    find: 'menu-2'
+  },
+  {
+    id: 'favoris',
+    title: 'Séries favorites',
+    text: 'Ajoute des séries à tes favoris (ici, ou avec l’étoile ☆ sur les séries de la page Collection) : elles sont les mêmes sur tous tes appareils. Tu vois leurs personnages, ceux qui te manquent, et un bouton met d’un coup toutes les cartes manquantes dans ta liste de recherches du jeu.',
+    find: 'menu-3'
+  },
+  {
+    id: 'etoiles',
+    title: 'L’étoile des séries',
+    text: 'Sur la page Collection, l’étoile ☆ ajoute une série à tes favoris ; le bouton « ★ Favoris » au-dessus ouvre la liste de leurs personnages.',
+    page: '/jeu/collection',
+    target: '.aqm-fav-bar, .aqm-star'
   },
   {
     id: 'tirages',
@@ -2165,6 +2623,15 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.1.0',
+    items: [
+      ['Qui a tiré… ? (menu Plus) : les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu gardés 30 jours.', 'qui'],
+      ['Séries favorites : une étoile ☆ sur chaque série de la page Collection, et une page avec leurs personnages (toutes, manquantes, possédées, recherchées, par rareté), les mêmes sur tous tes appareils.', 'favoris'],
+      ['Séries favorites : « Rechercher les manquantes » met d’un coup toutes les cartes qui te manquent dans ta liste de recherches du jeu ; 🔭 pour une seule carte.', 'favoris'],
+      ['Sur téléphone : la garantie anti-malchance s’affiche aussi quand la réserve de boosters est pleine.', 'pity']
+    ]
+  },
+  {
     version: '1.0.0',
     items: [
       ['Onglet Plus à droite de Marché, avec le classement des amis (cartes uniques et séries complètes).', 'classement'],
@@ -2208,6 +2675,10 @@ const CHANGES = [
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216ZM172.42,72.84l-64,32a8.05,8.05,0,0,0-3.58,3.58l-32,64A8,8,0,0,0,80,184a8.1,8.1,0,0,0,3.58-.84l64-32a8.05,8.05,0,0,0,3.58-3.58l32-64a8,8,0,0,0-10.74-10.74ZM138,138,97.89,158.11,118,118l40.15-20.07Z"/></svg>';
   const ICON_SPARK =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M197.58,129.06,146,110l-19-51.62a15.92,15.92,0,0,0-29.88,0L78,110l-51.62,19a15.92,15.92,0,0,0,0,29.88L78,178l19,51.62a15.92,15.92,0,0,0,29.88,0L146,178l51.62-19a15.92,15.92,0,0,0,0-29.88ZM137,164.22a8,8,0,0,0-4.74,4.74L112,223.85,91.78,169A8,8,0,0,0,87,164.22L32.15,144,87,123.78A8,8,0,0,0,91.78,119L112,64.15,132.22,119a8,8,0,0,0,4.74,4.74L191.85,144ZM144,40a8,8,0,0,1,8-8h16V16a8,8,0,0,1,16,0V32h16a8,8,0,0,1,0,16H184V64a8,8,0,0,1-16,0V48H152A8,8,0,0,1,144,40ZM248,88a8,8,0,0,1-8,8h-8v8a8,8,0,0,1-16,0V96h-8a8,8,0,0,1,0-16h8V72a8,8,0,0,1,16,0v8h8A8,8,0,0,1,248,88Z"/></svg>';
+  const ICON_SEARCH =
+    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/></svg>';
+  const ICON_STAR =
+    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M239.18,97.26A16.38,16.38,0,0,0,224.92,86l-59-4.76L143.14,26.15a16.36,16.36,0,0,0-30.27,0L90.11,81.23,31.08,86a16.46,16.46,0,0,0-9.37,28.86l45,38.83L53,211.75a16.38,16.38,0,0,0,24.5,17.82L128,198.49l50.53,31.08A16.4,16.4,0,0,0,203,211.75l-13.76-58.07,45-38.83A16.43,16.43,0,0,0,239.18,97.26Zm-15.34,5.47-48.7,42a8,8,0,0,0-2.56,7.91l14.88,62.8a.37.37,0,0,1-.17.48c-.18.14-.23.11-.38,0l-54.72-33.65a8,8,0,0,0-8.38,0L69.09,215.94c-.15.09-.19.12-.38,0a.37.37,0,0,1-.17-.48l14.88-62.8a8,8,0,0,0-2.56-7.91l-48.7-42c-.12-.1-.23-.19-.13-.5s.18-.27.33-.29l63.92-5.16A8,8,0,0,0,103,91.86l24.62-59.61c.08-.17.11-.25.35-.25s.27.08.35.25L153,91.86a8,8,0,0,0,6.75,4.92l63.92,5.16c.15,0,.24,0,.33.29S224,102.63,223.84,102.73Z"/></svg>';
   const ICON_PEARL = '<span class="aqm-pearl" aria-hidden="true"></span>';
 
   const nf = new Intl.NumberFormat('fr-FR');
@@ -2255,6 +2726,7 @@ const CHANGES = [
       send({ type: 'collection-stale' });
       setTimeout(schedule, 1500);
     } else if (e.data.aquaman === 'status') send({ type: 'status', pending: e.data.pending });
+    else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
       send({ type: 'opened', boosters: e.data.boosters }).then((report) => {
         if (report && !report.error) {
@@ -2399,6 +2871,8 @@ const CHANGES = [
       { class: 'aqm-root aqm-menu', role: 'menu' },
       item('Classement des amis', 'Cartes uniques et séries complètes', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
+      item('Qui a tiré… ?', 'Les joueurs qui ont tiré un perso', ICON_SEARCH, openWhoPulled),
+      item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
       item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
       item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews())
     );
@@ -2948,6 +3422,393 @@ const CHANGES = [
     render();
   }
 
+  // ---------- who pulled a character ----------
+
+  // "il y a 5 min", "il y a 3 h", "il y a 2 j".
+  function timeAgo(at) {
+    const s = Math.max(0, (Date.now() - at) / 1000);
+    if (s < 60) return 'à l’instant';
+    if (s < 3600) return `il y a ${Math.floor(s / 60)} min`;
+    if (s < 86400) return `il y a ${Math.floor(s / 3600)} h`;
+    return `il y a ${Math.floor(s / 86400)} j`;
+  }
+
+  async function openWhoPulled() {
+    const body = openOverlay('Qui a tiré… ?', 'Les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu.');
+    const suggestions = h('datalist', { id: 'aqm-pulled-suggest' });
+    const search = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Nom d’un personnage ou d’une série…', 'aria-label': 'Personnage ou série', list: 'aqm-pulled-suggest', autocomplete: 'off' });
+    const rarityRow = h('div', { class: 'aqm-chips' });
+    const status = h('p', { class: 'aqm-note' }, 'Chargement des tirages…');
+    const list = h('ol', { class: 'aqm-pulled' });
+    body.append(h('div', { class: 'aqm-pick' }, search), h('div', { class: 'aqm-pick' }, rarityRow), status, list, suggestions);
+    let rarity = '';
+    let asked = 0;
+    let timer = 0;
+
+    const renderRarities = () =>
+      rarityRow.replaceChildren(
+        ...[['', 'Toutes'], ...['SSR', 'UR', 'SEC'].map((c) => [c, c])].map(([code, label]) =>
+          h(
+            'button',
+            {
+              type: 'button',
+              class: `aqm-chip${code ? ` aqm-chip-r aqm-r-${code}` : ''}${code === rarity ? ' is-on' : ''}`,
+              'aria-pressed': String(code === rarity),
+              onclick: () => {
+                rarity = code;
+                load();
+              }
+            },
+            label
+          )
+        )
+      );
+
+    async function load() {
+      renderRarities();
+      const n = ++asked;
+      const query = search.value.trim();
+      let res;
+      try {
+        res = await ask({ type: 'who-pulled', query, rarity });
+      } catch (e) {
+        status.textContent = e.message;
+        return;
+      }
+      if (n !== asked) return;
+      suggestions.replaceChildren(...res.suggestions.map((s) => h('option', { value: s })));
+      const since = res.since ? new Date(res.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) : null;
+      status.textContent = query
+        ? res.total
+          ? `${fmt(res.total)} tirage${res.total > 1 ? 's' : ''} de « ${query} » parmi les ${fmt(res.kept)} beaux tirages gardés${since ? ` depuis le ${since}` : ''}.`
+          : `Personne n’a tiré « ${query} » parmi les ${fmt(res.kept)} beaux tirages gardés${since ? ` depuis le ${since}` : ''}.`
+        : `Les derniers beaux tirages (${fmt(res.kept)} gardés${since ? ` depuis le ${since}` : ''}). Tape un nom pour chercher.`;
+      list.replaceChildren(
+        ...res.pulls.map((p) =>
+          h(
+            'li',
+            { class: 'aqm-pull' },
+            h('a', { href: `/jeu/carte/${encodeURIComponent(p.card.id)}`, class: 'aqm-pull-card' }, h('img', { src: cardImageUrl(p.card.image), alt: '', loading: 'lazy' })),
+            h(
+              'div',
+              { class: 'aqm-pull-main' },
+              h('p', { class: 'aqm-mini-name' }, rarityCode(p.card.rarity), ' ', p.card.name, p.serial != null ? h('span', { class: 'aqm-muted' }, ` #${p.serial}${p.card.maxCopies ? `/${p.card.maxCopies}` : ''}`) : null),
+              p.card.series ? h('p', { class: 'aqm-muted aqm-pull-series' }, p.card.series) : null
+            ),
+            h(
+              'div',
+              { class: 'aqm-pull-who' },
+              p.player?.id ? h('a', { href: `/profile/${encodeURIComponent(p.player.id)}` }, p.player.name || 'Un joueur') : h('span', {}, p.player?.name || 'Un joueur'),
+              h('small', { title: new Date(p.at).toLocaleString('fr-FR') }, timeAgo(p.at))
+            )
+          )
+        )
+      );
+    }
+
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(load, 250);
+    });
+    load();
+  }
+
+  // ---------- favourite series ----------
+
+  let favIds = null; // ids of the favourite series, for the stars of the Collection page
+  let seriesBySlug = null; // slug -> id, from the game's series
+
+  // Reads the favourites (fresh: with the changes made on the other devices right now) and repaints the stars.
+  async function loadFavIds(fresh = false) {
+    const res = await send({ type: 'favorites', fresh });
+    if (!res || res.error) return;
+    favIds = new Set(res.favorites.map((s) => s.id));
+    seriesBySlug = new Map(res.all.map((s) => [s.slug, s.id]));
+    document.querySelectorAll('.aqm-star').forEach((star) => paintStar(star));
+    const count = document.querySelector('.aqm-fav-open b');
+    if (count) count.textContent = String(favIds.size);
+  }
+
+  async function toggleFavorite(id, on) {
+    const res = await send({ type: 'favorite', id, on });
+    if (res?.favorites) favIds = new Set(res.favorites);
+    document.querySelectorAll('.aqm-star').forEach((star) => paintStar(star));
+    const count = document.querySelector('.aqm-fav-open b');
+    if (count) count.textContent = String(favIds?.size ?? 0);
+  }
+
+  function paintStar(star) {
+    const on = !!favIds?.has(star.dataset.id);
+    setText(star, on ? '★' : '☆');
+    star.classList.toggle('is-on', on);
+    star.title = on ? 'Retirer des séries favorites' : 'Ajouter aux séries favorites';
+    star.setAttribute('aria-pressed', String(on));
+  }
+
+  let favLoading = false;
+
+  // Stars on the series of the Collection page, and a "★ Favoris" button above them.
+  function markFavoriteSeries() {
+    if (!location.pathname.startsWith('/jeu/collection')) return;
+    const strip = document.querySelector('[role="radiogroup"][aria-label="Série"], [role="radiogroup"][aria-label="Série"]') ?? seriesStrip();
+    if (!strip || strip.closest('.aqm-root')) return;
+    if (!seriesBySlug) {
+      if (!favLoading) {
+        favLoading = true;
+        loadFavIds().finally(() => {
+          favLoading = false;
+          schedule();
+        });
+      }
+      return;
+    }
+    if (!strip.previousElementSibling?.classList.contains('aqm-fav-bar'))
+      strip.before(
+        h(
+          'div',
+          { class: 'aqm-root aqm-fav-bar' },
+          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, String(favIds?.size ?? 0)))
+        )
+      );
+    for (const img of strip.querySelectorAll('img[src*="/api/covers/"]')) {
+      const tile = img.closest('button, a, [role="radio"]') ?? img.parentElement;
+      if (!tile || tile.querySelector(':scope > .aqm-star')) continue;
+      const slug = decodeURIComponent(img.getAttribute('src').match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? '');
+      const id = seriesBySlug.get(slug);
+      if (!id) continue;
+      const star = h('span', {
+        class: 'aqm-root aqm-star',
+        role: 'button',
+        tabindex: '0',
+        'data-id': id,
+        onclick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleFavorite(id, !favIds?.has(id));
+        },
+        onkeydown: (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleFavorite(id, !favIds?.has(id));
+        }
+      });
+      paintStar(star);
+      tile.classList.add('aqm-rel');
+      tile.append(star);
+    }
+  }
+
+  async function openFavorites() {
+    const body = openOverlay('Séries favorites', 'Les personnages de tes séries favorites : ceux que tu as, ceux qui te manquent, et ta liste de recherches du jeu.');
+    body.parentElement.classList.add('aqm-panel-wide');
+    const status = h('p', { class: 'aqm-note' }, 'Chargement de tes séries…');
+    body.append(status);
+    let report;
+    let show = 'missing';
+    let rarity = '';
+    let fresh = true;
+    const load = async () => {
+      report = await ask({ type: 'favorites', fresh });
+      fresh = false;
+      favIds = new Set(report.favorites.map((s) => s.id));
+      seriesBySlug = new Map(report.all.map((s) => [s.slug, s.id]));
+    };
+    try {
+      await load();
+    } catch (e) {
+      status.textContent = e.message;
+      return;
+    }
+    status.remove();
+
+    const suggestions = h('datalist', { id: 'aqm-series-suggest' });
+    const add = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Ajouter une série aux favoris…', 'aria-label': 'Ajouter une série', list: 'aqm-series-suggest', autocomplete: 'off' });
+    const found = h('ul', { class: 'aqm-fav-found' });
+    const filters = h('div', { class: 'aqm-sorts' });
+    const content = h('div', { class: 'aqm-fav-list' });
+    body.append(h('div', { class: 'aqm-pick' }, add), found, filters, content, suggestions);
+
+    // Series matching what is typed, each with a star.
+    const renderFound = () => {
+      const q = add.value
+        .trim()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .toLowerCase();
+      const fold = (s) =>
+        String(s ?? '')
+          .normalize('NFD')
+          .replace(/[̀-ͯ]/g, '')
+          .toLowerCase();
+      const hits = q ? report.all.filter((s) => fold(s.title).includes(q)).slice(0, 8) : [];
+      suggestions.replaceChildren(...hits.map((s) => h('option', { value: s.title })));
+      found.replaceChildren(
+        ...hits.map((s) =>
+          h(
+            'li',
+            {},
+            h('img', { src: `/api/covers/${s.slug}.webp`, alt: '', loading: 'lazy' }),
+            h('span', {}, h('strong', {}, s.title), h('small', {}, `${fmt(s.owned)}/${fmt(s.total)}`)),
+            h(
+              'button',
+              {
+                type: 'button',
+                class: `aqm-chip${favIds.has(s.id) ? ' is-on' : ''}`,
+                onclick: async () => {
+                  await toggleFavorite(s.id, !favIds.has(s.id));
+                  await load();
+                  renderFound();
+                  render();
+                }
+              },
+              favIds.has(s.id) ? '★ Favorite' : '☆ Ajouter'
+            )
+          )
+        )
+      );
+    };
+    add.addEventListener('input', renderFound);
+
+    const chip = (value, label, current, pick) =>
+      h('button', { type: 'button', class: `aqm-chip${value === current ? ' is-on' : ''}`, 'aria-pressed': String(value === current), onclick: () => pick(value) }, label);
+
+    function render() {
+      filters.replaceChildren(
+        h('span', { class: 'aqm-filter-name' }, 'Afficher'),
+        ...[
+          ['all', 'Toutes'],
+          ['missing', 'Manquantes'],
+          ['owned', 'Possédées'],
+          ['wanted', 'Recherchées']
+        ].map(([v, l]) =>
+          chip(v, l, show, (x) => {
+            show = x;
+            render();
+          })
+        ),
+        h('span', { class: 'aqm-filter-name aqm-gap' }, 'Rareté'),
+        ...[['', 'Toutes'], ...RANKED.map((c) => [c, c])].map(([v, l]) =>
+          chip(v, l, rarity, (x) => {
+            rarity = x;
+            render();
+          })
+        )
+      );
+      if (!report.favorites.length) {
+        content.replaceChildren(h('p', { class: 'aqm-empty' }, 'Aucune série favorite pour le moment : ajoute-en avec le champ ci-dessus, ou avec l’étoile ☆ sur les séries de la page Collection.'));
+        return;
+      }
+      content.replaceChildren(
+        ...report.favorites.map((s) => {
+          const keep = (c) => (!rarity || c.rarity === rarity) && (show === 'all' || (show === 'missing' && !c.owned) || (show === 'owned' && c.owned > 0) || (show === 'wanted' && c.wanted));
+          const cards = s.cards.filter(keep).sort((a, b) => RANKED.indexOf(b.rarity) - RANKED.indexOf(a.rarity) || a.name.localeCompare(b.name));
+          const missing = s.cards.filter((c) => !c.owned);
+          const toWant = missing.filter((c) => !c.wanted).length;
+          const note = h('p', { class: 'aqm-muted', role: 'status' });
+          const wantAll = h(
+            'button',
+            {
+              type: 'button',
+              class: 'aqm-sort is-on',
+              disabled: !toWant,
+              onclick: async () => {
+                wantAll.disabled = true;
+                note.textContent = `Ajout de ${toWant} carte${toWant > 1 ? 's' : ''} à ta liste de recherches…`;
+                try {
+                  const r = await ask({ type: 'want-missing', id: s.id });
+                  note.textContent =
+                    `${r.added} carte${r.added > 1 ? 's' : ''} ajoutée${r.added > 1 ? 's' : ''} à ta liste de recherches.` +
+                    (r.refused ? ` Le jeu a refusé la suite (« ${r.refused} ») : ${r.left} restante${r.left > 1 ? 's' : ''}.` : '');
+                  await load();
+                  setTimeout(render, 1500);
+                } catch (e) {
+                  note.textContent = e.message;
+                  wantAll.disabled = false;
+                }
+              }
+            },
+            h('strong', {}, toWant ? `Rechercher les ${toWant} manquante${toWant > 1 ? 's' : ''}` : 'Toutes les manquantes sont recherchées'),
+            h('small', {}, 'Le jeu te prévient quand elles sont mises en vente')
+          );
+          return h(
+            'section',
+            { class: 'aqm-fav-series' },
+            h(
+              'div',
+              { class: 'aqm-fav-head' },
+              h('img', { src: `/api/covers/${s.slug}.webp`, alt: '', loading: 'lazy' }),
+              h(
+                'div',
+                { class: 'aqm-fav-title' },
+                h('strong', {}, s.title),
+                h('small', {}, `${fmt(s.owned)}/${fmt(s.total)} cartes · ${fmt(missing.length)} manquante${missing.length > 1 ? 's' : ''}`),
+                h('span', { class: 'aqm-bar' }, h('span', { style: `width:${s.total ? ((100 * s.owned) / s.total).toFixed(1) : 0}%` }))
+              ),
+              wantAll,
+              h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'aqm-chip is-on',
+                  title: 'Retirer des séries favorites',
+                  onclick: async () => {
+                    await toggleFavorite(s.id, false);
+                    await load();
+                    render();
+                  }
+                },
+                '★'
+              )
+            ),
+            note,
+            cards.length
+              ? h(
+                  'ul',
+                  { class: 'aqm-fav-cards' },
+                  cards.map((c) => {
+                    const want = h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: `aqm-want${c.wanted ? ' is-on' : ''}`,
+                        title: c.wanted ? 'Ne plus la chercher' : 'Je la cherche : être prévenu quand elle est mise en vente',
+                        onclick: async (e) => {
+                          e.preventDefault();
+                          want.disabled = true;
+                          try {
+                            const r = await ask({ type: 'want', id: c.id, on: !c.wanted });
+                            c.wanted = r.wanted;
+                            want.classList.toggle('is-on', c.wanted);
+                            want.title = c.wanted ? 'Ne plus la chercher' : 'Je la cherche : être prévenu quand elle est mise en vente';
+                          } catch (err) {
+                            want.title = err.message;
+                          } finally {
+                            want.disabled = false;
+                          }
+                        }
+                      },
+                      '🔭'
+                    );
+                    return h(
+                      'li',
+                      { class: `aqm-fav-card${c.owned ? ' is-owned' : ''}` },
+                      h('a', { href: `/jeu/carte/${encodeURIComponent(c.id)}` }, h('img', { src: cardImageUrl(c.image), alt: '', loading: 'lazy' })),
+                      h('p', { class: 'aqm-mini-name' }, rarityCode(c.rarity), ' ', c.name),
+                      h('p', { class: 'aqm-muted' }, c.owned ? (c.owned > 1 ? `×${c.owned}` : 'Possédée') : 'Manquante'),
+                      c.owned ? null : want
+                    );
+                  })
+                )
+              : h('p', { class: 'aqm-muted' }, 'Aucune carte pour ce filtre.')
+          );
+        })
+      );
+    }
+
+    render();
+  }
+
   // ---------- trades: bigger cards and an owned / missing dot ----------
 
   let owned = null; // { at, byImage }
@@ -3332,12 +4193,12 @@ const CHANGES = [
 
   // Where the counters go: after the "+1 booster dans …" timer, else after the "Acheter un booster" buttons.
   function pityPlace() {
-    for (const label of elementsWithText(document.body, /booster dans/i)) {
+    for (const label of elementsWithText(document.body, /booster dans|r[ée]serve pleine/i)) {
       let pill = label;
       while (pill.parentElement && pill.parentElement !== document.body && !pill.querySelector('svg, [role="progressbar"]') && pill.textContent.length < 120) pill = pill.parentElement;
       if (pill.querySelector('svg, [role="progressbar"]')) return pill;
     }
-    const buy = [...document.querySelectorAll('button, a')].find((b) => !b.closest('.aqm-root') && /acheter un booster/i.test(b.textContent));
+    const buy = [...document.querySelectorAll('button, a')].find((b) => !b.closest('.aqm-root') && /acheter un booster|tout ouvrir/i.test(b.textContent));
     return buy?.parentElement ?? null;
   }
 
@@ -3425,6 +4286,8 @@ const CHANGES = [
     plus: () => firstVisible('.aqm-plus'),
     'menu-0': () => menuItem(0),
     'menu-1': () => menuItem(1),
+    'menu-2': () => menuItem(2),
+    'menu-3': () => menuItem(3),
     series: () => seriesStrip() ?? navLink('/jeu/collection'),
     vitrine: () => [...document.querySelectorAll('button, a')].find((b) => isVisible(b) && !b.closest('.aqm-root') && /ma vitrine/i.test(b.textContent))
   };
@@ -3616,7 +4479,9 @@ const CHANGES = [
 
   // Back on the page (another device may have opened boosters meanwhile): the counters are read again.
   function onBack() {
-    if (document.visibilityState === 'visible' && document.querySelector('.aqm-pity')) loadPity(true);
+    if (document.visibilityState !== 'visible') return;
+    if (document.querySelector('.aqm-pity')) loadPity(true);
+    if (document.querySelector('.aqm-star')) loadFavIds(true);
   }
 
   function onOutside(e) {
@@ -3629,13 +4494,21 @@ const CHANGES = [
     if (stopped) return;
     if (!alive()) return shutdown();
     if (!location.pathname.startsWith('/jeu')) return;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, enhanceShowcaseEditor, markTrades, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, enhanceShowcaseEditor, markTrades, pollFeedNow, startOnce]) {
       try {
         step();
       } catch (e) {
         console.warn('[Aquaman]', e);
       }
     }
+  }
+
+  // The script has no background worker: while a page of the game is open, the "beaux tirages" are read every 5 minutes.
+  let feedAt = 0;
+  function pollFeedNow() {
+    if (Date.now() - feedAt < 5 * 60e3) return;
+    feedAt = Date.now();
+    send({ type: 'feed-poll' });
   }
 
   let queued = false;
@@ -3704,7 +4577,8 @@ const CHANGES = [
 (() => {
   const OPTIONS = [
     ['notifyUpdated', 'Afficher les nouveautés après une mise à jour du script'],
-    ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)']
+    ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
+    ['syncFavorites', 'Partager mes séries favorites entre mes appareils']
   ];
   const ICON_GEAR =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm88-29.84q.06-2.16,0-4.32l14.92-18.64a8,8,0,0,0,1.48-7.06,107.21,107.21,0,0,0-10.88-26.25,8,8,0,0,0-6-3.93l-23.72-2.64q-1.48-1.56-3-3L186,40.54a8,8,0,0,0-3.94-6,107.71,107.71,0,0,0-26.25-10.87,8,8,0,0,0-7.06,1.49L130.16,40Q128,40,125.84,40L107.2,25.11a8,8,0,0,0-7.06-1.48A107.6,107.6,0,0,0,73.89,34.51a8,8,0,0,0-3.93,6L67.32,64.27q-1.56,1.49-3,3L40.54,70a8,8,0,0,0-6,3.94,107.71,107.71,0,0,0-10.87,26.25,8,8,0,0,0,1.49,7.06L40,125.84Q40,128,40,130.16L25.11,148.8a8,8,0,0,0-1.48,7.06,107.21,107.21,0,0,0,10.88,26.25,8,8,0,0,0,6,3.93l23.72,2.64q1.49,1.56,3,3L70,215.46a8,8,0,0,0,3.94,6,107.71,107.71,0,0,0,26.25,10.87,8,8,0,0,0,7.06-1.49L125.84,216q2.16.06,4.32,0l18.64,14.92a8,8,0,0,0,7.06,1.48,107.21,107.21,0,0,0,26.25-10.88,8,8,0,0,0,3.93-6l2.64-23.72q1.56-1.48,3-3L215.46,186a8,8,0,0,0,6-3.94,107.71,107.71,0,0,0,10.87-26.25,8,8,0,0,0-1.49-7.06Z"/></svg>';
@@ -3713,7 +4587,7 @@ const CHANGES = [
   async function openSettings() {
     document.querySelector('.aqm-settings')?.remove();
     const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, ...settings };
+    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, ...settings };
     const close = () => {
       back.remove();
       document.removeEventListener('keydown', onKey, true);

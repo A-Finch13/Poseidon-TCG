@@ -7,3 +7,10 @@ CREATE TABLE IF NOT EXISTS pity (
   PRIMARY KEY (player, id)
 );
 CREATE INDEX IF NOT EXISTS pity_player_at ON pity (player, at);
+
+-- Favourite series of each player, the most recent list (relay/worker.js).
+CREATE TABLE IF NOT EXISTS favorites (
+  player TEXT PRIMARY KEY,
+  list TEXT NOT NULL,
+  at INTEGER NOT NULL
+);

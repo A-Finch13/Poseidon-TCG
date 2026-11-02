@@ -1,4 +1,4 @@
-import { ORIGIN, REPO, answer, checkUpdate, newer, getSettings, gameStatus } from './lib/aquaman.js';
+import { ORIGIN, REPO, answer, checkUpdate, newer, getSettings, gameStatus, pollFeed } from './lib/aquaman.js';
 
 const POLL_ALARM = 'aquaman-poll';
 const UPDATE_ALARM = 'aquaman-update';
@@ -8,14 +8,17 @@ const UPDATER = 'com.aquaman.updater';
 
 // ---------- alarms ----------
 
-// Boosters waiting every 5 minutes, new versions every 15 minutes.
+// Boosters waiting and the game's "beaux tirages" every 5 minutes, new versions every 15 minutes.
 async function schedule() {
   if ((await chrome.alarms.get(POLL_ALARM))?.periodInMinutes !== 5) await chrome.alarms.create(POLL_ALARM, { delayInMinutes: 0.5, periodInMinutes: 5 });
   if ((await chrome.alarms.get(UPDATE_ALARM))?.periodInMinutes !== 15) await chrome.alarms.create(UPDATE_ALARM, { delayInMinutes: 1, periodInMinutes: 15 });
 }
 
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === POLL_ALARM) pollBoosters();
+  if (a.name === POLL_ALARM) {
+    pollBoosters();
+    pollFeed().catch(() => {});
+  }
   if (a.name === UPDATE_ALARM) lookForUpdate();
 });
 

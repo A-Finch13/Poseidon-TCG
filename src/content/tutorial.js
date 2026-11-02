@@ -31,6 +31,25 @@ const TOUR = [
     find: 'menu-1'
   },
   {
+    id: 'qui',
+    title: 'Qui a tiré… ?',
+    text: 'Cherche un personnage ou une série : Aquaman te montre les joueurs qui l’ont tiré récemment, avec le numéro de la carte et quand. Il garde les beaux tirages du jeu (SSR, UR, SEC) pendant 30 jours.',
+    find: 'menu-2'
+  },
+  {
+    id: 'favoris',
+    title: 'Séries favorites',
+    text: 'Ajoute des séries à tes favoris (ici, ou avec l’étoile ☆ sur les séries de la page Collection) : elles sont les mêmes sur tous tes appareils. Tu vois leurs personnages, ceux qui te manquent, et un bouton met d’un coup toutes les cartes manquantes dans ta liste de recherches du jeu.',
+    find: 'menu-3'
+  },
+  {
+    id: 'etoiles',
+    title: 'L’étoile des séries',
+    text: 'Sur la page Collection, l’étoile ☆ ajoute une série à tes favoris ; le bouton « ★ Favoris » au-dessus ouvre la liste de leurs personnages.',
+    page: '/jeu/collection',
+    target: '.aqm-fav-bar, .aqm-star'
+  },
+  {
     id: 'tirages',
     title: 'Les beaux tirages',
     text: 'Sur l’accueil, les cartes des beaux tirages des joueurs sont affichées en plus grand.',
@@ -80,6 +99,15 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.1.0',
+    items: [
+      ['Qui a tiré… ? (menu Plus) : les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu gardés 30 jours.', 'qui'],
+      ['Séries favorites : une étoile ☆ sur chaque série de la page Collection, et une page avec leurs personnages (toutes, manquantes, possédées, recherchées, par rareté), les mêmes sur tous tes appareils.', 'favoris'],
+      ['Séries favorites : « Rechercher les manquantes » met d’un coup toutes les cartes qui te manquent dans ta liste de recherches du jeu ; 🔭 pour une seule carte.', 'favoris'],
+      ['Sur téléphone : la garantie anti-malchance s’affiche aussi quand la réserve de boosters est pleine.', 'pity']
+    ]
+  },
   {
     version: '1.0.0',
     items: [

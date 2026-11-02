@@ -1,6 +1,7 @@
-// Aquaman relay (Cloudflare Worker): shares the boosters a player opens between their devices,
-// so that the pity counters are the same on the computer and the phone, extension or userscript.
-// It keeps, for each player id, the boosters opened: { id, at, top } (booster id, time, best rarity rank). Nothing else.
+// Aquaman relay (Cloudflare Worker): shares between the devices of a player (computer, phone, extension or userscript)
+// the boosters they open, so that the pity counters are the same everywhere, and their favourite series.
+// It keeps, for each player id, the boosters opened: { id, at, top } (random id, time, best rarity rank),
+// and the ids of the favourite series with the time of their last change. Nothing else.
 // Binding: DB (D1 database, schema.sql).
 
 const KEEP = 500; // openings sent back, the most recent: more than the longest pity
@@ -9,6 +10,8 @@ const MAX_BODY = 64 * 1024;
 const YEAR = 365 * 86400e3;
 const PLAYER = /^[A-Za-z0-9_-]{6,64}$/;
 const BOOSTER = /^[A-Za-z0-9_.:-]{1,64}$/;
+const SERIES = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_FAVORITES = 500;
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -25,6 +28,7 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     try {
       if (req.method === 'POST' && pathname === '/pity') return json(await pity(env, await readBody(req)));
+      if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
       return json({ error: 'not_found' }, 404);
     } catch (e) {
       return json({ error: e?.message || 'bad_request' }, 400);
@@ -59,4 +63,20 @@ async function pity(env, body) {
     await env.DB.batch(events.map((e) => env.DB.prepare('INSERT OR IGNORE INTO pity (player, id, at, top) VALUES (?1, ?2, ?3, ?4)').bind(player, e.id, Math.round(e.at), e.top)));
   const { results } = await env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at DESC LIMIT ?2').bind(player, KEEP).all();
   return { events: results.reverse() };
+}
+
+// Keeps the most recent list of favourite series of the player (by the time of its change), and sends it back.
+async function favorites(env, body) {
+  const player = String(body?.player ?? '');
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  const saved = await env.DB.prepare('SELECT list, at FROM favorites WHERE player = ?1').bind(player).first();
+  const list = Array.isArray(body.list) ? [...new Set(body.list.filter((id) => typeof id === 'string' && SERIES.test(id)))].slice(0, MAX_FAVORITES) : null;
+  const at = Number(body.at);
+  if (list && Number.isFinite(at) && at >= 0 && at < Date.now() + 86400e3 && (!saved || at > saved.at)) {
+    await env.DB.prepare('INSERT INTO favorites (player, list, at) VALUES (?1, ?2, ?3) ON CONFLICT (player) DO UPDATE SET list = ?2, at = ?3')
+      .bind(player, JSON.stringify(list), Math.round(at))
+      .run();
+    return { list, at: Math.round(at) };
+  }
+  return saved ? { list: JSON.parse(saved.list), at: saved.at } : { list: null, at: 0 };
 }

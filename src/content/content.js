@@ -27,6 +27,10 @@
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216ZM172.42,72.84l-64,32a8.05,8.05,0,0,0-3.58,3.58l-32,64A8,8,0,0,0,80,184a8.1,8.1,0,0,0,3.58-.84l64-32a8.05,8.05,0,0,0,3.58-3.58l32-64a8,8,0,0,0-10.74-10.74ZM138,138,97.89,158.11,118,118l40.15-20.07Z"/></svg>';
   const ICON_SPARK =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M197.58,129.06,146,110l-19-51.62a15.92,15.92,0,0,0-29.88,0L78,110l-51.62,19a15.92,15.92,0,0,0,0,29.88L78,178l19,51.62a15.92,15.92,0,0,0,29.88,0L146,178l51.62-19a15.92,15.92,0,0,0,0-29.88ZM137,164.22a8,8,0,0,0-4.74,4.74L112,223.85,91.78,169A8,8,0,0,0,87,164.22L32.15,144,87,123.78A8,8,0,0,0,91.78,119L112,64.15,132.22,119a8,8,0,0,0,4.74,4.74L191.85,144ZM144,40a8,8,0,0,1,8-8h16V16a8,8,0,0,1,16,0V32h16a8,8,0,0,1,0,16H184V64a8,8,0,0,1-16,0V48H152A8,8,0,0,1,144,40ZM248,88a8,8,0,0,1-8,8h-8v8a8,8,0,0,1-16,0V96h-8a8,8,0,0,1,0-16h8V72a8,8,0,0,1,16,0v8h8A8,8,0,0,1,248,88Z"/></svg>';
+  const ICON_SEARCH =
+    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/></svg>';
+  const ICON_STAR =
+    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M239.18,97.26A16.38,16.38,0,0,0,224.92,86l-59-4.76L143.14,26.15a16.36,16.36,0,0,0-30.27,0L90.11,81.23,31.08,86a16.46,16.46,0,0,0-9.37,28.86l45,38.83L53,211.75a16.38,16.38,0,0,0,24.5,17.82L128,198.49l50.53,31.08A16.4,16.4,0,0,0,203,211.75l-13.76-58.07,45-38.83A16.43,16.43,0,0,0,239.18,97.26Zm-15.34,5.47-48.7,42a8,8,0,0,0-2.56,7.91l14.88,62.8a.37.37,0,0,1-.17.48c-.18.14-.23.11-.38,0l-54.72-33.65a8,8,0,0,0-8.38,0L69.09,215.94c-.15.09-.19.12-.38,0a.37.37,0,0,1-.17-.48l14.88-62.8a8,8,0,0,0-2.56-7.91l-48.7-42c-.12-.1-.23-.19-.13-.5s.18-.27.33-.29l63.92-5.16A8,8,0,0,0,103,91.86l24.62-59.61c.08-.17.11-.25.35-.25s.27.08.35.25L153,91.86a8,8,0,0,0,6.75,4.92l63.92,5.16c.15,0,.24,0,.33.29S224,102.63,223.84,102.73Z"/></svg>';
   const ICON_PEARL = '<span class="aqm-pearl" aria-hidden="true"></span>';
 
   const nf = new Intl.NumberFormat('fr-FR');
@@ -74,6 +78,7 @@
       send({ type: 'collection-stale' });
       setTimeout(schedule, 1500);
     } else if (e.data.aquaman === 'status') send({ type: 'status', pending: e.data.pending });
+    else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
       send({ type: 'opened', boosters: e.data.boosters }).then((report) => {
         if (report && !report.error) {
@@ -218,6 +223,8 @@
       { class: 'aqm-root aqm-menu', role: 'menu' },
       item('Classement des amis', 'Cartes uniques et séries complètes', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
+      item('Qui a tiré… ?', 'Les joueurs qui ont tiré un perso', ICON_SEARCH, openWhoPulled),
+      item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
       item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
       item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews())
     );
@@ -767,6 +774,393 @@
     render();
   }
 
+  // ---------- who pulled a character ----------
+
+  // "il y a 5 min", "il y a 3 h", "il y a 2 j".
+  function timeAgo(at) {
+    const s = Math.max(0, (Date.now() - at) / 1000);
+    if (s < 60) return 'à l’instant';
+    if (s < 3600) return `il y a ${Math.floor(s / 60)} min`;
+    if (s < 86400) return `il y a ${Math.floor(s / 3600)} h`;
+    return `il y a ${Math.floor(s / 86400)} j`;
+  }
+
+  async function openWhoPulled() {
+    const body = openOverlay('Qui a tiré… ?', 'Les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu.');
+    const suggestions = h('datalist', { id: 'aqm-pulled-suggest' });
+    const search = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Nom d’un personnage ou d’une série…', 'aria-label': 'Personnage ou série', list: 'aqm-pulled-suggest', autocomplete: 'off' });
+    const rarityRow = h('div', { class: 'aqm-chips' });
+    const status = h('p', { class: 'aqm-note' }, 'Chargement des tirages…');
+    const list = h('ol', { class: 'aqm-pulled' });
+    body.append(h('div', { class: 'aqm-pick' }, search), h('div', { class: 'aqm-pick' }, rarityRow), status, list, suggestions);
+    let rarity = '';
+    let asked = 0;
+    let timer = 0;
+
+    const renderRarities = () =>
+      rarityRow.replaceChildren(
+        ...[['', 'Toutes'], ...['SSR', 'UR', 'SEC'].map((c) => [c, c])].map(([code, label]) =>
+          h(
+            'button',
+            {
+              type: 'button',
+              class: `aqm-chip${code ? ` aqm-chip-r aqm-r-${code}` : ''}${code === rarity ? ' is-on' : ''}`,
+              'aria-pressed': String(code === rarity),
+              onclick: () => {
+                rarity = code;
+                load();
+              }
+            },
+            label
+          )
+        )
+      );
+
+    async function load() {
+      renderRarities();
+      const n = ++asked;
+      const query = search.value.trim();
+      let res;
+      try {
+        res = await ask({ type: 'who-pulled', query, rarity });
+      } catch (e) {
+        status.textContent = e.message;
+        return;
+      }
+      if (n !== asked) return;
+      suggestions.replaceChildren(...res.suggestions.map((s) => h('option', { value: s })));
+      const since = res.since ? new Date(res.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) : null;
+      status.textContent = query
+        ? res.total
+          ? `${fmt(res.total)} tirage${res.total > 1 ? 's' : ''} de « ${query} » parmi les ${fmt(res.kept)} beaux tirages gardés${since ? ` depuis le ${since}` : ''}.`
+          : `Personne n’a tiré « ${query} » parmi les ${fmt(res.kept)} beaux tirages gardés${since ? ` depuis le ${since}` : ''}.`
+        : `Les derniers beaux tirages (${fmt(res.kept)} gardés${since ? ` depuis le ${since}` : ''}). Tape un nom pour chercher.`;
+      list.replaceChildren(
+        ...res.pulls.map((p) =>
+          h(
+            'li',
+            { class: 'aqm-pull' },
+            h('a', { href: `/jeu/carte/${encodeURIComponent(p.card.id)}`, class: 'aqm-pull-card' }, h('img', { src: cardImageUrl(p.card.image), alt: '', loading: 'lazy' })),
+            h(
+              'div',
+              { class: 'aqm-pull-main' },
+              h('p', { class: 'aqm-mini-name' }, rarityCode(p.card.rarity), ' ', p.card.name, p.serial != null ? h('span', { class: 'aqm-muted' }, ` #${p.serial}${p.card.maxCopies ? `/${p.card.maxCopies}` : ''}`) : null),
+              p.card.series ? h('p', { class: 'aqm-muted aqm-pull-series' }, p.card.series) : null
+            ),
+            h(
+              'div',
+              { class: 'aqm-pull-who' },
+              p.player?.id ? h('a', { href: `/profile/${encodeURIComponent(p.player.id)}` }, p.player.name || 'Un joueur') : h('span', {}, p.player?.name || 'Un joueur'),
+              h('small', { title: new Date(p.at).toLocaleString('fr-FR') }, timeAgo(p.at))
+            )
+          )
+        )
+      );
+    }
+
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(load, 250);
+    });
+    load();
+  }
+
+  // ---------- favourite series ----------
+
+  let favIds = null; // ids of the favourite series, for the stars of the Collection page
+  let seriesBySlug = null; // slug -> id, from the game's series
+
+  // Reads the favourites (fresh: with the changes made on the other devices right now) and repaints the stars.
+  async function loadFavIds(fresh = false) {
+    const res = await send({ type: 'favorites', fresh });
+    if (!res || res.error) return;
+    favIds = new Set(res.favorites.map((s) => s.id));
+    seriesBySlug = new Map(res.all.map((s) => [s.slug, s.id]));
+    document.querySelectorAll('.aqm-star').forEach((star) => paintStar(star));
+    const count = document.querySelector('.aqm-fav-open b');
+    if (count) count.textContent = String(favIds.size);
+  }
+
+  async function toggleFavorite(id, on) {
+    const res = await send({ type: 'favorite', id, on });
+    if (res?.favorites) favIds = new Set(res.favorites);
+    document.querySelectorAll('.aqm-star').forEach((star) => paintStar(star));
+    const count = document.querySelector('.aqm-fav-open b');
+    if (count) count.textContent = String(favIds?.size ?? 0);
+  }
+
+  function paintStar(star) {
+    const on = !!favIds?.has(star.dataset.id);
+    setText(star, on ? '★' : '☆');
+    star.classList.toggle('is-on', on);
+    star.title = on ? 'Retirer des séries favorites' : 'Ajouter aux séries favorites';
+    star.setAttribute('aria-pressed', String(on));
+  }
+
+  let favLoading = false;
+
+  // Stars on the series of the Collection page, and a "★ Favoris" button above them.
+  function markFavoriteSeries() {
+    if (!location.pathname.startsWith('/jeu/collection')) return;
+    const strip = document.querySelector('[role="radiogroup"][aria-label="Série"], [role="radiogroup"][aria-label="Série"]') ?? seriesStrip();
+    if (!strip || strip.closest('.aqm-root')) return;
+    if (!seriesBySlug) {
+      if (!favLoading) {
+        favLoading = true;
+        loadFavIds().finally(() => {
+          favLoading = false;
+          schedule();
+        });
+      }
+      return;
+    }
+    if (!strip.previousElementSibling?.classList.contains('aqm-fav-bar'))
+      strip.before(
+        h(
+          'div',
+          { class: 'aqm-root aqm-fav-bar' },
+          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, String(favIds?.size ?? 0)))
+        )
+      );
+    for (const img of strip.querySelectorAll('img[src*="/api/covers/"]')) {
+      const tile = img.closest('button, a, [role="radio"]') ?? img.parentElement;
+      if (!tile || tile.querySelector(':scope > .aqm-star')) continue;
+      const slug = decodeURIComponent(img.getAttribute('src').match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? '');
+      const id = seriesBySlug.get(slug);
+      if (!id) continue;
+      const star = h('span', {
+        class: 'aqm-root aqm-star',
+        role: 'button',
+        tabindex: '0',
+        'data-id': id,
+        onclick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleFavorite(id, !favIds?.has(id));
+        },
+        onkeydown: (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleFavorite(id, !favIds?.has(id));
+        }
+      });
+      paintStar(star);
+      tile.classList.add('aqm-rel');
+      tile.append(star);
+    }
+  }
+
+  async function openFavorites() {
+    const body = openOverlay('Séries favorites', 'Les personnages de tes séries favorites : ceux que tu as, ceux qui te manquent, et ta liste de recherches du jeu.');
+    body.parentElement.classList.add('aqm-panel-wide');
+    const status = h('p', { class: 'aqm-note' }, 'Chargement de tes séries…');
+    body.append(status);
+    let report;
+    let show = 'missing';
+    let rarity = '';
+    let fresh = true;
+    const load = async () => {
+      report = await ask({ type: 'favorites', fresh });
+      fresh = false;
+      favIds = new Set(report.favorites.map((s) => s.id));
+      seriesBySlug = new Map(report.all.map((s) => [s.slug, s.id]));
+    };
+    try {
+      await load();
+    } catch (e) {
+      status.textContent = e.message;
+      return;
+    }
+    status.remove();
+
+    const suggestions = h('datalist', { id: 'aqm-series-suggest' });
+    const add = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Ajouter une série aux favoris…', 'aria-label': 'Ajouter une série', list: 'aqm-series-suggest', autocomplete: 'off' });
+    const found = h('ul', { class: 'aqm-fav-found' });
+    const filters = h('div', { class: 'aqm-sorts' });
+    const content = h('div', { class: 'aqm-fav-list' });
+    body.append(h('div', { class: 'aqm-pick' }, add), found, filters, content, suggestions);
+
+    // Series matching what is typed, each with a star.
+    const renderFound = () => {
+      const q = add.value
+        .trim()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .toLowerCase();
+      const fold = (s) =>
+        String(s ?? '')
+          .normalize('NFD')
+          .replace(/[̀-ͯ]/g, '')
+          .toLowerCase();
+      const hits = q ? report.all.filter((s) => fold(s.title).includes(q)).slice(0, 8) : [];
+      suggestions.replaceChildren(...hits.map((s) => h('option', { value: s.title })));
+      found.replaceChildren(
+        ...hits.map((s) =>
+          h(
+            'li',
+            {},
+            h('img', { src: `/api/covers/${s.slug}.webp`, alt: '', loading: 'lazy' }),
+            h('span', {}, h('strong', {}, s.title), h('small', {}, `${fmt(s.owned)}/${fmt(s.total)}`)),
+            h(
+              'button',
+              {
+                type: 'button',
+                class: `aqm-chip${favIds.has(s.id) ? ' is-on' : ''}`,
+                onclick: async () => {
+                  await toggleFavorite(s.id, !favIds.has(s.id));
+                  await load();
+                  renderFound();
+                  render();
+                }
+              },
+              favIds.has(s.id) ? '★ Favorite' : '☆ Ajouter'
+            )
+          )
+        )
+      );
+    };
+    add.addEventListener('input', renderFound);
+
+    const chip = (value, label, current, pick) =>
+      h('button', { type: 'button', class: `aqm-chip${value === current ? ' is-on' : ''}`, 'aria-pressed': String(value === current), onclick: () => pick(value) }, label);
+
+    function render() {
+      filters.replaceChildren(
+        h('span', { class: 'aqm-filter-name' }, 'Afficher'),
+        ...[
+          ['all', 'Toutes'],
+          ['missing', 'Manquantes'],
+          ['owned', 'Possédées'],
+          ['wanted', 'Recherchées']
+        ].map(([v, l]) =>
+          chip(v, l, show, (x) => {
+            show = x;
+            render();
+          })
+        ),
+        h('span', { class: 'aqm-filter-name aqm-gap' }, 'Rareté'),
+        ...[['', 'Toutes'], ...RANKED.map((c) => [c, c])].map(([v, l]) =>
+          chip(v, l, rarity, (x) => {
+            rarity = x;
+            render();
+          })
+        )
+      );
+      if (!report.favorites.length) {
+        content.replaceChildren(h('p', { class: 'aqm-empty' }, 'Aucune série favorite pour le moment : ajoute-en avec le champ ci-dessus, ou avec l’étoile ☆ sur les séries de la page Collection.'));
+        return;
+      }
+      content.replaceChildren(
+        ...report.favorites.map((s) => {
+          const keep = (c) => (!rarity || c.rarity === rarity) && (show === 'all' || (show === 'missing' && !c.owned) || (show === 'owned' && c.owned > 0) || (show === 'wanted' && c.wanted));
+          const cards = s.cards.filter(keep).sort((a, b) => RANKED.indexOf(b.rarity) - RANKED.indexOf(a.rarity) || a.name.localeCompare(b.name));
+          const missing = s.cards.filter((c) => !c.owned);
+          const toWant = missing.filter((c) => !c.wanted).length;
+          const note = h('p', { class: 'aqm-muted', role: 'status' });
+          const wantAll = h(
+            'button',
+            {
+              type: 'button',
+              class: 'aqm-sort is-on',
+              disabled: !toWant,
+              onclick: async () => {
+                wantAll.disabled = true;
+                note.textContent = `Ajout de ${toWant} carte${toWant > 1 ? 's' : ''} à ta liste de recherches…`;
+                try {
+                  const r = await ask({ type: 'want-missing', id: s.id });
+                  note.textContent =
+                    `${r.added} carte${r.added > 1 ? 's' : ''} ajoutée${r.added > 1 ? 's' : ''} à ta liste de recherches.` +
+                    (r.refused ? ` Le jeu a refusé la suite (« ${r.refused} ») : ${r.left} restante${r.left > 1 ? 's' : ''}.` : '');
+                  await load();
+                  setTimeout(render, 1500);
+                } catch (e) {
+                  note.textContent = e.message;
+                  wantAll.disabled = false;
+                }
+              }
+            },
+            h('strong', {}, toWant ? `Rechercher les ${toWant} manquante${toWant > 1 ? 's' : ''}` : 'Toutes les manquantes sont recherchées'),
+            h('small', {}, 'Le jeu te prévient quand elles sont mises en vente')
+          );
+          return h(
+            'section',
+            { class: 'aqm-fav-series' },
+            h(
+              'div',
+              { class: 'aqm-fav-head' },
+              h('img', { src: `/api/covers/${s.slug}.webp`, alt: '', loading: 'lazy' }),
+              h(
+                'div',
+                { class: 'aqm-fav-title' },
+                h('strong', {}, s.title),
+                h('small', {}, `${fmt(s.owned)}/${fmt(s.total)} cartes · ${fmt(missing.length)} manquante${missing.length > 1 ? 's' : ''}`),
+                h('span', { class: 'aqm-bar' }, h('span', { style: `width:${s.total ? ((100 * s.owned) / s.total).toFixed(1) : 0}%` }))
+              ),
+              wantAll,
+              h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'aqm-chip is-on',
+                  title: 'Retirer des séries favorites',
+                  onclick: async () => {
+                    await toggleFavorite(s.id, false);
+                    await load();
+                    render();
+                  }
+                },
+                '★'
+              )
+            ),
+            note,
+            cards.length
+              ? h(
+                  'ul',
+                  { class: 'aqm-fav-cards' },
+                  cards.map((c) => {
+                    const want = h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: `aqm-want${c.wanted ? ' is-on' : ''}`,
+                        title: c.wanted ? 'Ne plus la chercher' : 'Je la cherche : être prévenu quand elle est mise en vente',
+                        onclick: async (e) => {
+                          e.preventDefault();
+                          want.disabled = true;
+                          try {
+                            const r = await ask({ type: 'want', id: c.id, on: !c.wanted });
+                            c.wanted = r.wanted;
+                            want.classList.toggle('is-on', c.wanted);
+                            want.title = c.wanted ? 'Ne plus la chercher' : 'Je la cherche : être prévenu quand elle est mise en vente';
+                          } catch (err) {
+                            want.title = err.message;
+                          } finally {
+                            want.disabled = false;
+                          }
+                        }
+                      },
+                      '🔭'
+                    );
+                    return h(
+                      'li',
+                      { class: `aqm-fav-card${c.owned ? ' is-owned' : ''}` },
+                      h('a', { href: `/jeu/carte/${encodeURIComponent(c.id)}` }, h('img', { src: cardImageUrl(c.image), alt: '', loading: 'lazy' })),
+                      h('p', { class: 'aqm-mini-name' }, rarityCode(c.rarity), ' ', c.name),
+                      h('p', { class: 'aqm-muted' }, c.owned ? (c.owned > 1 ? `×${c.owned}` : 'Possédée') : 'Manquante'),
+                      c.owned ? null : want
+                    );
+                  })
+                )
+              : h('p', { class: 'aqm-muted' }, 'Aucune carte pour ce filtre.')
+          );
+        })
+      );
+    }
+
+    render();
+  }
+
   // ---------- trades: bigger cards and an owned / missing dot ----------
 
   let owned = null; // { at, byImage }
@@ -1151,12 +1545,12 @@
 
   // Where the counters go: after the "+1 booster dans …" timer, else after the "Acheter un booster" buttons.
   function pityPlace() {
-    for (const label of elementsWithText(document.body, /booster dans/i)) {
+    for (const label of elementsWithText(document.body, /booster dans|r[ée]serve pleine/i)) {
       let pill = label;
       while (pill.parentElement && pill.parentElement !== document.body && !pill.querySelector('svg, [role="progressbar"]') && pill.textContent.length < 120) pill = pill.parentElement;
       if (pill.querySelector('svg, [role="progressbar"]')) return pill;
     }
-    const buy = [...document.querySelectorAll('button, a')].find((b) => !b.closest('.aqm-root') && /acheter un booster/i.test(b.textContent));
+    const buy = [...document.querySelectorAll('button, a')].find((b) => !b.closest('.aqm-root') && /acheter un booster|tout ouvrir/i.test(b.textContent));
     return buy?.parentElement ?? null;
   }
 
@@ -1244,6 +1638,8 @@
     plus: () => firstVisible('.aqm-plus'),
     'menu-0': () => menuItem(0),
     'menu-1': () => menuItem(1),
+    'menu-2': () => menuItem(2),
+    'menu-3': () => menuItem(3),
     series: () => seriesStrip() ?? navLink('/jeu/collection'),
     vitrine: () => [...document.querySelectorAll('button, a')].find((b) => isVisible(b) && !b.closest('.aqm-root') && /ma vitrine/i.test(b.textContent))
   };
@@ -1435,7 +1831,9 @@
 
   // Back on the page (another device may have opened boosters meanwhile): the counters are read again.
   function onBack() {
-    if (document.visibilityState === 'visible' && document.querySelector('.aqm-pity')) loadPity(true);
+    if (document.visibilityState !== 'visible') return;
+    if (document.querySelector('.aqm-pity')) loadPity(true);
+    if (document.querySelector('.aqm-star')) loadFavIds(true);
   }
 
   function onOutside(e) {
@@ -1448,13 +1846,21 @@
     if (stopped) return;
     if (!alive()) return shutdown();
     if (!location.pathname.startsWith('/jeu')) return;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, enhanceShowcaseEditor, markTrades, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, enhanceShowcaseEditor, markTrades, pollFeedNow, startOnce]) {
       try {
         step();
       } catch (e) {
         console.warn('[Aquaman]', e);
       }
     }
+  }
+
+  // The script has no background worker: while a page of the game is open, the "beaux tirages" are read every 5 minutes.
+  let feedAt = 0;
+  function pollFeedNow() {
+    if (Date.now() - feedAt < 5 * 60e3) return;
+    feedAt = Date.now();
+    send({ type: 'feed-poll' });
   }
 
   let queued = false;
