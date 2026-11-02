@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Aquaman</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img src="../../icons/icon48.png" alt="" width="36" height="36" />
+      <div>
+        <h1>Aquaman</h1>
+        <p class="muted">Version <span id="version"></span></p>
+      </div>
+    </header>
+
+    <section id="update" class="update" hidden>
+      <p><b>Aquaman <span id="update-version"></span> est disponible.</b></p>
+      <div class="row">
+        <button type="button" id="update-go" class="btn main">Mettre à jour</button>
+        <a href="#" id="update-notes" class="link">Voir les nouveautés</a>
+      </div>
+      <p id="update-help" class="help" hidden></p>
+    </section>
+
+    <section class="status">
+      <p id="status" class="muted">…</p>
+    </section>
+
+    <nav class="actions">
+      <button type="button" class="btn main" data-open="/jeu">Ouvrir le jeu</button>
+      <button type="button" class="btn" data-open="/jeu#aqm-visite">Visite guidée</button>
+      <button type="button" class="btn" data-open="/jeu#aqm-nouveautes">Nouveautés</button>
+    </nav>
+
+    <section class="settings">
+      <h2>Notifications</h2>
+      <label class="switch"><input type="checkbox" data-setting="notifyBoosters" /> <span>Nouveaux boosters à ouvrir</span></label>
+      <label class="switch"><input type="checkbox" data-setting="notifyUpdated" /> <span>Nouvelle version installée (notification et nouveautés sur le site)</span></label>
+      <h2 class="gap">Garantie anti-malchance</h2>
+      <label class="switch"><input type="checkbox" data-setting="syncPity" /> <span>Partager le compte des boosters ouverts entre mes appareils (PC, téléphone, extension et script)</span></label>
+    </section>
+
+    <footer class="foot">
+      <a href="#" data-open="https://github.com/A-Finch13/Poseidon-TCG">GitHub</a>
+      <span>·</span>
+      <a href="#" data-open="https://github.com/A-Finch13/Poseidon-TCG/issues">Signaler un problème</a>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

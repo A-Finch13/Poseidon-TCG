@@ -1,0 +1,13 @@
+name = "aquaman-relay"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Created by "npx wrangler d1 create aquaman".
+[[d1_databases]]
+binding = "DB"
+database_name = "aquaman"
+database_id = "d2015fb6-dc3b-4f72-99c2-2f5c4ac46b91"
+
+# Forgets the openings older than a year, every day at 4 h (UTC).
+[triggers]
+crons = ["0 4 * * *"]
