@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.1.1
+// @version      1.2.0
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -164,6 +164,7 @@ const DEFAULTS = {
   notifyUpdated: true,
   syncPity: true,
   syncFavorites: true,
+  syncWants: true,
   sharePulls: true
 };
 
@@ -258,15 +259,19 @@ async function gameStatus() {
 const showcases = new Map(); // player id -> last collection read
 
 // Collection of a player: { player, private, cards, copies, albums, owned, total }.
+async function readShowcase(id) {
+  const path = encodeURIComponent(id);
+  try {
+    return await game(`/players/${path}/showcase`);
+  } catch {
+    return game(`/public/players/${path}/showcase`);
+  }
+}
+
+// The same, kept a while; its copies give the values of the cards.
 function showcase(id, ttl = 5 * 60e3) {
   return cached(`showcase:${id}`, ttl, async () => {
-    const path = encodeURIComponent(id);
-    let sc;
-    try {
-      sc = await game(`/players/${path}/showcase`);
-    } catch {
-      sc = await game(`/public/players/${path}/showcase`);
-    }
+    const sc = await readShowcase(id);
     showcases.set(id, sc);
     return sc;
   });
@@ -802,6 +807,50 @@ async function seriesStatus(id) {
   return { missing: missing.length, toWant: toWant.length, toWantIds: toWant, favorite: favorites.includes(id) };
 }
 
+// ---------- the cards waiting in Aquaman, shared between the player's devices ----------
+
+const WANTS_PULL = 60e3; // the other devices' list is read once a minute at most
+let wantsSyncedAt = 0;
+
+// The relay keeps the most recent lists of all the player's devices: it takes these ones if they are more recent
+// (at: time of their last change), and sends back the ones it keeps.
+async function postWants(body) {
+  const res = await fetch(`${RELAY}/wants`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`relay_${res.status}`);
+  return res.json();
+}
+
+// The cards waiting for a place in the game's list, and those Aquaman put there, the same on every device: sent to the
+// relay, and taken back when another device changed them later. content.js stamps wantsAt at each change; wantsFor:
+// the account they belong to (a device that never synced adds its cards to those of the relay).
+async function syncWants(fresh = false) {
+  if (!(await getSettings()).syncWants) return { off: true };
+  if (!fresh && Date.now() - wantsSyncedAt < WANTS_PULL) return { skipped: true };
+  wantsSyncedAt = Date.now();
+  const player = await myId();
+  const { wantWaiting = [], wantSent = [], wantsAt = 0, wantsFor } = await chrome.storage.local.get(['wantWaiting', 'wantSent', 'wantsAt', 'wantsFor']);
+  const mine = wantsFor === player;
+  const at = mine ? Number(wantsAt) || 0 : 0;
+  try {
+    let remote = await postWants({ player, waiting: mine ? wantWaiting : [], sent: mine ? wantSent : [], at });
+    const theirs = Array.isArray(remote?.waiting) ? remote : { waiting: [], sent: [], at: 0 };
+    if (!mine && wantsFor === undefined && (wantWaiting.length || wantSent.length)) {
+      // First sync of this device: its cards join those of the other devices.
+      const join = (x, y) => [...new Set([...x, ...y])];
+      remote = await postWants({ player, waiting: join(theirs.waiting, wantWaiting).slice(0, 200), sent: join(theirs.sent ?? [], wantSent), at: Date.now() });
+    } else if (Number(theirs.at) <= at) {
+      if (!mine) await chrome.storage.local.set({ wantsFor: player });
+      return { changed: false };
+    } else remote = theirs;
+    // A change made here meanwhile wins: it goes to the relay at the next sync.
+    if (((await chrome.storage.local.get('wantsAt')).wantsAt ?? 0) !== wantsAt) return { changed: false };
+    await chrome.storage.local.set({ wantWaiting: remote.waiting ?? [], wantSent: remote.sent ?? [], wantsAt: Number(remote.at) || Date.now(), wantsFor: player });
+    return { changed: true };
+  } catch (e) {
+    wantsSyncedAt = 0;
+    return { error: e?.message || 'relay' };
+  }
+}
 
 // ---------- the game's "beaux tirages": kept here, and shared in a public history on the relay ----------
 
@@ -866,6 +915,7 @@ async function pollFeed() {
   const { pulls } = await cached('feed', 50e3, () => game('/feed'));
   const kept = await recordFeed(pulls);
   await sharePulls();
+  scanPullers(pulls);
   return kept;
 }
 
@@ -873,6 +923,67 @@ async function pollFeed() {
 async function relayPulls(params) {
   try {
     const res = await fetch(`${RELAY}/pulls?${new URLSearchParams(params)}`);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------- the rare cards of the players seen in the "beaux tirages" ----------
+
+const RARE = ['SSR', 'UR', 'SEC'];
+const SCAN_AGAIN = 12 * 3600e3; // a player's collection is read again after 12 hours (the relay says the same)
+const SCAN_MAX = 6; // collections read at each look at the feed
+let scanning = false;
+
+// The players who just pulled a SSR, UR or SEC: their collection is read (public ones only) and their SSR, UR and SEC
+// cards go to the relay, which keeps who has which card for "Qui a cette carte ?" ("sharePulls" setting).
+async function scanPullers(pulls) {
+  if (scanning) return;
+  const ids = [...new Set((pulls ?? []).filter((p) => RARE.includes(p?.card?.rarity) && p.player?.id).map((p) => p.player.id))];
+  if (!ids.length || !(await getSettings()).sharePulls) return;
+  scanning = true;
+  try {
+    const { scannedAt = {} } = await chrome.storage.local.get('scannedAt');
+    const now = Date.now();
+    for (const id in scannedAt) if (now - scannedAt[id] > SCAN_AGAIN) delete scannedAt[id];
+    const todo = ids.filter((id) => !scannedAt[id]).slice(0, 40);
+    if (!todo.length) return;
+    // The relay says which ones nobody read lately (another Aquaman may have just done it).
+    const res = await fetch(`${RELAY}/holdings/stale?players=${todo.map(encodeURIComponent).join(',')}`);
+    if (!res.ok) return;
+    const { stale = [] } = await res.json();
+    const read = stale.slice(0, SCAN_MAX);
+    for (const id of todo) if (!stale.includes(id) || read.includes(id)) scannedAt[id] = now;
+    await chrome.storage.local.set({ scannedAt });
+    for (const id of read) {
+      try {
+        const sc = await readShowcase(id);
+        const cards = new Map();
+        for (const copy of sc.private ? [] : sc?.copies ?? []) {
+          if (!RARE.includes(copy?.card?.rarity) || !copy.card.id) continue;
+          const c = cards.get(copy.card.id) ?? { id: copy.card.id, count: 0, serials: [] };
+          c.count++;
+          if (Number.isInteger(copy.serial)) c.serials.push(copy.serial);
+          cards.set(c.id, c);
+        }
+        await fetch(`${RELAY}/holdings`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ player: { id, name: sc.player?.name ?? null }, private: !!sc.private, cards: [...cards.values()] })
+        });
+      } catch {}
+    }
+  } catch {
+  } finally {
+    scanning = false;
+  }
+}
+
+// The players the relay knows to have a card ({ owners, scanned }), or null when it doesn't answer.
+async function relayHoldings(card) {
+  try {
+    const res = await fetch(`${RELAY}/holdings?card=${encodeURIComponent(card)}`);
     return res.ok ? await res.json() : null;
   } catch {
     return null;
@@ -942,6 +1053,11 @@ async function cardOwners(id) {
     mates.sort((a, b) => b.me - a.me || b.count - a.count);
   } catch {}
 
+  // The players whose collection was read after one of their beaux tirages, other than the player and their friends.
+  const known = await relayHoldings(id);
+  const mateIds = new Set(mates.map((m) => m.player.id));
+  const seen = (known?.owners ?? []).filter((o) => o.player?.id && !mateIds.has(o.player.id));
+
   const remote = await relayPulls({ card: id, limit: 200 });
   if (remote?.pulls) await recordFeed(remote.pulls, true);
   const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
@@ -966,6 +1082,8 @@ async function cardOwners(id) {
     holders,
     market,
     friends: mates,
+    seen,
+    scanned: known?.scanned ?? null,
     pulls,
     pullsSince: since === Infinity ? null : since,
     shared: !!remote
@@ -1009,9 +1127,9 @@ async function ownersAmong(cardId, players) {
 
 // ---------- who uses Aquaman (the author only) ----------
 
-const HELLO_EVERY = 6 * 3600e3;
+const HELLO_EVERY = 9.5 * 60e3; // content.js says hello every 10 minutes while a page of the game is open
 
-// Tells the relay, every 6 hours at most, that this player uses Aquaman (kind: "extension" or "userscript").
+// Tells the relay, every 10 minutes at most, that this player uses Aquaman (kind: "extension" or "userscript").
 async function sayHello(kind) {
   const id = await myId();
   const { helloAt = 0, helloKind, helloFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor']);
@@ -1165,6 +1283,8 @@ async function answer(msg) {
         return { ok: true };
       case 'want-room':
         return await wantRoom(msg.waiting ?? [], msg.sent ?? []);
+      case 'wants-sync':
+        return await syncWants(!!msg.fresh);
       case 'card-search':
         return { cards: await searchCards(msg.query) };
       case 'card-owners':
@@ -1192,6 +1312,7 @@ async function answer(msg) {
       case 'feed-poll':
         return { kept: await pollFeed() };
       case 'feed-seen':
+        scanPullers(msg.pulls);
         return { kept: await recordFeed(msg.pulls) };
       case 'collection-stale':
         forget('showcase:', 'shop', 'series', 'wants');
@@ -1216,7 +1337,7 @@ const newer = (a, b) => {
   return false;
 };
 
-// Stores { version, url, zip, xpi } when the latest GitHub release is newer than this version, else nothing.
+// Stores { version, url, zip, xpi, script } when the latest GitHub release is newer than this version, else nothing.
 async function checkUpdate() {
   const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { accept: 'application/vnd.github+json' } });
   if (!res.ok) throw new ApiError(res.status, `github_${res.status}`);
@@ -1228,7 +1349,8 @@ async function checkUpdate() {
       version,
       url: rel.html_url ?? `https://github.com/${REPO}/releases/latest`,
       zip: asset('aquaman-chromium.zip'),
-      xpi: asset('aquaman-firefox.xpi')
+      xpi: asset('aquaman-firefox.xpi'),
+      script: asset('aquaman.user.js')
     };
     await chrome.storage.local.set({ update });
     return update;
@@ -1239,14 +1361,29 @@ async function checkUpdate() {
 
 // ---------- 3. src/userscript/bridge.js : le travail du service de fond, dans la page ----------
 // Userscript: the background worker's answers to the page code, done in the page.
-// No badge, notifications or updater here: the script manager installs new versions by itself.
+// No badge, notifications or updater here: the script manager installs new versions; content.js offers them as soon as
+// they are out.
+
+const UPDATE_EVERY = 10 * 60e3;
+
+// The latest GitHub release when it is newer than this script (looked for every 10 minutes at most, by any tab).
+async function scriptUpdate() {
+  const { updateCheckedAt = 0 } = await chrome.storage.local.get('updateCheckedAt');
+  if (Date.now() - updateCheckedAt >= UPDATE_EVERY) {
+    await chrome.storage.local.set({ updateCheckedAt: Date.now() });
+    await checkUpdate().catch(() => null);
+  }
+  const { update } = await chrome.storage.local.get('update');
+  return { update: update && newer(update.version, VERSION) ? update : null };
+}
 
 // Answers the messages of the page code.
 async function handle(msg) {
   switch (msg?.type) {
     case 'status':
-    case 'check-update':
       return { ok: true };
+    case 'check-update':
+      return scriptUpdate();
     case 'install-update':
       return { error: 'userscript' };
     case 'open':
@@ -1957,6 +2094,33 @@ html.aqm-lock {
 }
 .aqm-ghost .aqm-slot-x {
   display: none;
+}
+
+/* The collection's cards of the window are drawn only near the screen. */
+[data-aqm-lite] > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--aqm-cell-w, 120px) auto var(--aqm-cell-h, 200px);
+}
+
+/* ---------- New version of the script ---------- */
+
+.aqm-update .aqm-queue-head strong {
+  color: #93c5fd;
+}
+.aqm-update-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.aqm-update-actions .aqm-queue-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.aqm-update-actions .is-main {
+  border-color: #2563eb;
+  background: #2563eb;
 }
 
 /* ---------- Visite guidée ---------- */
@@ -3008,7 +3172,8 @@ html.aqm-grabbing * {
 
 /* ---------- File de recherche ---------- */
 
-.aqm-queue {
+.aqm-queue,
+.aqm-update {
   position: fixed;
   right: 16px;
   bottom: 16px;
@@ -3121,14 +3286,16 @@ html.aqm-grabbing * {
 .aqm-want.is-wait {
   background: rgba(217, 119, 6, 0.85);
 }
-.aqm-queue p {
+.aqm-queue p,
+.aqm-update p {
   margin: 8px 0 0;
   font-size: 12px;
   line-height: 1.45;
   color: var(--aqm-muted);
 }
 @media (max-width: 640px) {
-  .aqm-queue {
+  .aqm-queue,
+  .aqm-update {
     right: 8px;
     left: 8px;
     bottom: 96px;
@@ -3186,6 +3353,16 @@ html.aqm-grabbing * {
   background: rgba(34, 197, 94, 0.16);
   color: #86efac;
 }
+.aqm-user-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.aqm-online {
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+}
 .aqm-user-seen {
   min-width: 90px;
   text-align: right;
@@ -3209,6 +3386,18 @@ html.aqm-grabbing * {
   font: 800 15px ui-monospace, 'Cascadia Mono', Consolas, monospace;
   letter-spacing: 0.08em;
   color: #fff;
+}
+
+/* The new version box goes at the top: the box of the search list stays at the bottom. */
+.aqm-update {
+  top: 16px;
+  bottom: auto;
+}
+@media (max-width: 640px) {
+  .aqm-update {
+    top: 8px;
+    bottom: auto;
+  }
 }
 `;
   document.head.appendChild(style);
@@ -3314,6 +3503,15 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.2.0',
+    items: [
+      ['Ma vitrine : la fenêtre reste fluide même avec des centaines de cartes (seules celles proches de l’écran sont dessinées, et Aquaman ne fouille plus toute la fenêtre à chaque changement).', 'vitrine'],
+      ['Qui a cette carte ? : quand quelqu’un fait un beau tirage (SSR, UR ou SEC), Aquaman lit sa collection publique et garde ses SSR, UR et SEC dans la base commune ; « Vus avec cette carte » liste ces joueurs.', 'qui'],
+      ['Les cartes en attente de recherche (au-delà des 100 du jeu) sont les mêmes sur tous tes appareils.', 'favoris'],
+      ['Script : une nouvelle version est cherchée toutes les 10 minutes et proposée en haut de l’écran (« Installer »). L’extension la cherche aussi toutes les 10 minutes.']
+    ]
+  },
   {
     version: '1.1.1',
     items: [
@@ -3481,13 +3679,22 @@ const CHANGES = [
 
   const readList = async (key) => (await chrome.storage.local.get(key))[key] ?? [];
 
+  // Saves a change of the waiting cards (or of those Aquaman put in the game's list), stamped with its time, and sends
+  // it to the player's other devices a moment later.
+  let wantsPush = 0;
+  async function saveWants(items) {
+    await chrome.storage.local.set({ ...items, wantsAt: Date.now() });
+    clearTimeout(wantsPush);
+    wantsPush = setTimeout(() => send({ type: 'wants-sync', fresh: true }), 1500);
+  }
+
   // Adds cards at the end of the waiting ones (each once, WAIT_MAX at most); returns how many were added, and how
   // many didn't fit.
   async function park(ids) {
     const waiting = await readList(WAITING);
     const fresh = ids.filter((id) => !waiting.includes(id));
     const fit = fresh.slice(0, Math.max(0, WAIT_MAX - waiting.length));
-    if (fit.length) await chrome.storage.local.set({ [WAITING]: [...waiting, ...fit], ...(waiting.length ? {} : { [ENTERED]: 0 }) });
+    if (fit.length) await saveWants({ [WAITING]: [...waiting, ...fit], ...(waiting.length ? {} : { [ENTERED]: 0 }) });
     return { parked: fit.length, over: fresh.length - fit.length };
   }
 
@@ -3495,7 +3702,7 @@ const CHANGES = [
   async function takeWaiting(ids) {
     const waiting = await readList(WAITING);
     const left = waiting.filter((id) => !ids.includes(id));
-    if (left.length !== waiting.length) await chrome.storage.local.set({ [WAITING]: left });
+    if (left.length !== waiting.length) await saveWants({ [WAITING]: left });
     return waiting.length - left.length;
   }
 
@@ -3566,7 +3773,7 @@ const CHANGES = [
     const places = Math.max(0, limit - room.count + freed);
     // Waiting cards already searched or obtained count as done.
     const entered = (await chrome.storage.local.get(ENTERED))[ENTERED] ?? 0;
-    await chrome.storage.local.set({ [SENT]: room.sent, [WAITING]: left.slice(places), [ENTERED]: entered + waiting.length - room.waiting.length });
+    await saveWants({ [SENT]: room.sent, [WAITING]: left.slice(places), [ENTERED]: entered + waiting.length - room.waiting.length });
     if (freed) send({ type: 'wants-changed' });
     if (places && left.length) await enqueueWants(left.slice(0, places), true);
   }
@@ -3596,7 +3803,7 @@ const CHANGES = [
           if (!q || q.finishedAt) break; // stopped meanwhile
           const ids = q.ids.filter((x) => x !== id);
           const { [SENT]: sent = [], [ENTERED]: entered = 0 } = await chrome.storage.local.get([SENT, ENTERED]);
-          await chrome.storage.local.set({ [SENT]: sent.includes(id) ? sent : [...sent, id], ...(q.refill ? { [ENTERED]: entered + 1 } : {}) });
+          await saveWants({ [SENT]: sent.includes(id) ? sent : [...sent, id], ...(q.refill ? { [ENTERED]: entered + 1 } : {}) });
           await writeQueue({ ...q, ids, done: q.done + 1, tries: 0, beat: Date.now(), finishedAt: ids.length ? 0 : Date.now() });
           if (ids.length) await pause(gap);
         } catch (e) {
@@ -3614,7 +3821,7 @@ const CHANGES = [
             const before = await readList(WAITING);
             const waiting = [...q.ids, ...before.filter((x) => !q.ids.includes(x))];
             const parked = Math.min(q.ids.length, WAIT_MAX);
-            await chrome.storage.local.set({ [WAITING]: waiting.slice(0, WAIT_MAX), [REFILL]: Date.now(), ...(before.length || q.refill ? {} : { [ENTERED]: 0 }) });
+            await saveWants({ [WAITING]: waiting.slice(0, WAIT_MAX), [REFILL]: Date.now(), ...(before.length || q.refill ? {} : { [ENTERED]: 0 }) });
             await writeQueue({ ...q, parked, over: q.ids.length - parked, ids: [], finishedAt: Date.now() });
           } else await writeQueue({ ...q, refused: e.message, left: q.ids.length, ids: [], finishedAt: Date.now() });
         }
@@ -3758,6 +3965,8 @@ const CHANGES = [
     runQueue();
   }
 
+  let wantsPulledAt = 0;
+
   // Every 5 seconds: the countdown of a wait, and a tab that went silent.
   setInterval(async () => {
     if (stopped || !settled) return;
@@ -3766,6 +3975,10 @@ const CHANGES = [
     if (q?.finishedAt && Date.now() - q.finishedAt > 60e3) chrome.storage.local.remove(QUEUE);
     else runQueue();
     checkRoom();
+    if (Date.now() - wantsPulledAt > 60e3) {
+      wantsPulledAt = Date.now();
+      send({ type: 'wants-sync' }); // the other devices' changes
+    }
   }, 5000);
 
   // Messages posted by inject.js about the site's own requests.
@@ -3805,14 +4018,30 @@ const CHANGES = [
     return el;
   }
 
+  // Text nodes of the site under from, without Aquaman's elements nor the "Ma vitrine" windows (hundreds of cards).
+  // The page's are gathered once per run() and shared by its steps.
+  let runText; // undefined: outside run(); null: in run(), not gathered yet
+  const SKIP_TEXT = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG']);
+  function textNodes(from) {
+    if (from === document.body && runText) return runText;
+    const nodes = [];
+    const walker = document.createTreeWalker(from, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) =>
+        n.nodeType === Node.TEXT_NODE
+          ? NodeFilter.FILTER_ACCEPT
+          : n !== from && (n.classList.contains('aqm-root') || vitrines.has(n) || SKIP_TEXT.has(n.tagName.toUpperCase()))
+            ? NodeFilter.FILTER_REJECT
+            : NodeFilter.FILTER_SKIP
+    });
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.nodeValue.trim()) nodes.push(n);
+    if (from === document.body && runText === null) runText = nodes;
+    return nodes;
+  }
+
   // Elements of the site with a text matching re.
   function elementsWithText(from, re) {
     const out = [];
-    const walker = document.createTreeWalker(from, NodeFilter.SHOW_TEXT);
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-      const el = n.parentElement;
-      if (el && re.test(n.nodeValue) && !el.closest('.aqm-root')) out.push(el);
-    }
+    for (const n of textNodes(from)) if (n.parentElement && re.test(n.nodeValue)) out.push(n.parentElement);
     return out;
   }
 
@@ -4630,6 +4859,15 @@ const CHANGES = [
           r.friends.map((x) => playerRow(x.serials[0] ?? null, { ...x.player, name: x.me ? `${x.player.name ?? 'Toi'} (toi)` : x.player.name }, x.count > 1 ? `×${x.count}` : null, c)),
           'Aucun de tes amis ne l’a (ou leur collection est privée).'
         ),
+        ...(r.holders
+          ? []
+          : section(
+              `Vus avec cette carte${r.seen?.length ? ` · ${fmt(r.seen.length)}` : ''}`,
+              (r.seen ?? []).map((x) => playerRow(x.serials[0] ?? null, x.player, h('small', { title: `Collection lue le ${new Date(x.seenAt).toLocaleString('fr-FR')}` }, `${x.count > 1 ? `×${x.count} · ` : ''}${timeAgo(x.seenAt)}`), c)),
+              r.scanned
+                ? `Aucun des ${fmt(r.scanned)} joueurs dont Aquaman a lu la collection ne l’a.`
+                : 'Aquaman lit la collection des joueurs qui font un beau tirage : ils apparaîtront ici au fil du temps.'
+            )),
         ...section(
           r.pulls.length
             ? `Tirée ${r.pulls.length} fois${r.pullsSince ? ` depuis le ${new Date(r.pullsSince).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}` : ''}`
@@ -4804,11 +5042,18 @@ const CHANGES = [
       devices(box);
     }
 
+    // Each kind of Aquaman of a player (both when they use the extension and the script).
+    const kindsOf = (u) => (u.installs?.length ? u.installs : [{ kind: u.kind, version: u.version, lastSeen: u.lastSeen }]);
+    const kindName = (kind) => (kind === 'userscript' ? 'Script' : kind === 'extension' ? 'Extension' : '?');
+    // Seen in the last 15 minutes: Aquaman says hello every 10 minutes while a page of the game is open.
+    const online = (u) => Date.now() - u.lastSeen < 15 * 60e3;
+
     function show(all) {
       const day = Date.now() - 86400e3;
       const week = Date.now() - 7 * 86400e3;
       const versions = {};
-      for (const u of all) versions[u.version ?? '?'] = (versions[u.version ?? '?'] ?? 0) + 1;
+      for (const u of all) for (const i of kindsOf(u)) versions[i.version ?? '?'] = (versions[i.version ?? '?'] ?? 0) + 1;
+      const using = (kind) => all.filter((u) => kindsOf(u).some((i) => i.kind === kind)).length;
       const stat = (label, value) => h('div', { class: 'aqm-metric' }, h('small', {}, label), h('strong', {}, value));
       const search = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Chercher un joueur…', 'aria-label': 'Chercher un joueur' });
       const list = h('ul', { class: 'aqm-users' });
@@ -4822,8 +5067,18 @@ const CHANGES = [
               { class: 'aqm-user' },
               h('img', { class: 'aqm-avatar', src: avatarUrl(u.id), alt: '', loading: 'lazy' }),
               h('a', { class: 'aqm-name', href: `/profile/${encodeURIComponent(u.id)}` }, u.name || u.id),
-              h('span', { class: `aqm-tag aqm-kind-${u.kind ?? 'x'}` }, u.kind === 'userscript' ? 'Script' : u.kind === 'extension' ? 'Extension' : '?'),
-              h('span', { class: 'aqm-muted' }, u.version ? `v${u.version}` : ''),
+              h(
+                'span',
+                { class: 'aqm-user-kinds' },
+                kindsOf(u).map((i) =>
+                  h(
+                    'span',
+                    { class: `aqm-tag aqm-kind-${i.kind ?? 'x'}`, title: `${kindName(i.kind)} vu${i.lastSeen ? ` ${timeAgo(i.lastSeen)}` : ''}` },
+                    `${kindName(i.kind)}${i.version ? ` v${i.version}` : ''}`
+                  )
+                )
+              ),
+              online(u) ? h('span', { class: 'aqm-tag aqm-online' }, 'En ligne') : h('span'),
               h('span', { class: 'aqm-user-seen', title: `Vu la première fois le ${new Date(u.firstSeen).toLocaleDateString('fr-FR')}` }, timeAgo(u.lastSeen))
             )
           )
@@ -4835,9 +5090,10 @@ const CHANGES = [
           'div',
           { class: 'aqm-who-stats aqm-users-stats' },
           stat('Joueurs', fmt(all.length)),
+          stat('En ligne', fmt(all.filter(online).length)),
           stat('Vus ces 24 h', fmt(all.filter((u) => u.lastSeen >= day).length)),
           stat('Vus ces 7 jours', fmt(all.filter((u) => u.lastSeen >= week).length)),
-          stat('Extension / script', `${fmt(all.filter((u) => u.kind === 'extension').length)} / ${fmt(all.filter((u) => u.kind === 'userscript').length)}`)
+          stat('Extension / script', `${fmt(using('extension'))} / ${fmt(using('userscript'))}`)
         ),
         h(
           'p',
@@ -5436,12 +5692,21 @@ const CHANGES = [
   let press = null; // card pressed or dragged: { dlg, slot, key, x, y, id, touch, active, ghost }
   let moving = false;
 
-  // Slots of the showcase editor in order: the card and its row of 3 buttons (‹ › ✕).
+  const vitrines = new Set(); // "Ma vitrine" windows found: the page's text searches and changes skip them
+
+  // Slots of the showcase editor in order: the card and its row of 3 buttons (‹ › ✕). Found from the buttons: the
+  // window also lists every card of the collection, going through all of its elements would be slow.
   function showcaseSlots(dlg) {
     const slots = [];
-    for (const el of dlg.querySelectorAll('div, li, span')) {
-      if (el.closest('.aqm-root') || el.querySelector('img') || el.querySelectorAll('button').length !== 3) continue;
-      if ([...el.children].some((c) => c.querySelectorAll('button').length === 3)) continue;
+    const seen = new Set();
+    for (const btn of dlg.querySelectorAll('button')) {
+      if (btn.querySelector('img') || btn.closest('.aqm-root')) continue;
+      // The row: the closest parent with 3 buttons (more: it holds several rows, or other buttons).
+      let el = btn.parentElement;
+      for (let depth = 0; el && el !== dlg && depth < 4 && el.querySelectorAll('button').length < 3; depth++) el = el.parentElement;
+      if (!el || el === dlg || seen.has(el)) continue;
+      seen.add(el);
+      if (!/^(DIV|LI|SPAN)$/.test(el.tagName) || el.querySelectorAll('button').length !== 3 || el.querySelector('img')) continue;
       let slot = el.parentElement;
       while (slot && slot !== dlg && !slot.querySelector('img')) slot = slot.parentElement;
       if (!slot || slot === dlg || slot.querySelectorAll('img').length !== 1) continue;
@@ -5450,9 +5715,35 @@ const CHANGES = [
     return slots;
   }
 
+  // The list of the collection's cards in the window (the element with the most cards as children), drawn only
+  // near the screen: hundreds of animated cards made the window slow.
+  const vitrineGrids = new WeakMap(); // window -> list
+  function lightenGrid(dlg) {
+    const known = vitrineGrids.get(dlg);
+    if (known?.isConnected && dlg.contains(known)) return;
+    let grid = null;
+    for (const el of dlg.querySelectorAll('div, ul, ol')) {
+      if (el.children.length >= 12 && el.children.length > (grid?.children.length ?? 0) && el.firstElementChild?.querySelector('img') && !el.closest('.aqm-root')) grid = el;
+    }
+    if (!grid) return;
+    vitrineGrids.set(dlg, grid);
+    const cell = grid.firstElementChild.getBoundingClientRect();
+    if (cell.height) grid.style.setProperty('--aqm-cell-h', `${Math.round(cell.height)}px`);
+    if (cell.width) grid.style.setProperty('--aqm-cell-w', `${Math.round(cell.width)}px`);
+    grid.dataset.aqmLite = '';
+  }
+
+  // True when a change of the page only concerns Aquaman or the card list of a "Ma vitrine" window: no need to run.
+  function quietChange(r) {
+    const target = r.target instanceof Element ? r.target : r.target.parentElement;
+    if (!target || target.closest('.aqm-root, [data-aqm-lite]')) return true;
+    const nodes = [...r.addedNodes, ...r.removedNodes];
+    return nodes.length > 0 && nodes.every((n) => n instanceof Element && n.classList.contains('aqm-root'));
+  }
+
   // Windows titled "Ma vitrine".
   function showcaseDialogs() {
-    const found = new Set();
+    const found = new Set([...vitrines].filter((dlg) => dlg.isConnected));
     for (const dlg of document.querySelectorAll('[role="dialog"], [aria-modal="true"]')) {
       if (dlg.closest('.aqm-root')) continue;
       if (/ma vitrine/i.test(dlg.querySelector('h1, h2, h3')?.textContent ?? '')) found.add(dlg);
@@ -5467,9 +5758,13 @@ const CHANGES = [
   }
 
   function enhanceShowcaseEditor() {
-    for (const dlg of showcaseDialogs()) {
+    const dialogs = showcaseDialogs();
+    vitrines.clear();
+    for (const dlg of dialogs) {
       const slots = showcaseSlots(dlg);
       if (!slots.length) continue;
+      vitrines.add(dlg);
+      lightenGrid(dlg);
       dlg.classList.add('aqm-vitrine');
       for (const s of slots) wireSlot(dlg, s);
     }
@@ -5915,6 +6210,7 @@ const CHANGES = [
     if (document.visibilityState !== 'visible') return;
     if (document.querySelector('.aqm-pity')) loadPity(true);
     if (document.querySelector('.aqm-star')) loadFavIds(true);
+    send({ type: 'wants-sync', fresh: true });
   }
 
   function onOutside(e) {
@@ -5927,13 +6223,15 @@ const CHANGES = [
     if (stopped) return;
     if (!alive()) return shutdown();
     if (!location.pathname.startsWith('/jeu')) return;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, enhanceShowcaseEditor, markTrades, pollFeedNow, startOnce]) {
+    runText = null;
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, lookForUpdate, startOnce]) {
       try {
         step();
       } catch (e) {
         console.warn('[Aquaman]', e);
       }
     }
+    runText = undefined;
   }
 
   // The script has no background worker: while a page of the game is open, the "beaux tirages" are read every minute.
@@ -5942,6 +6240,47 @@ const CHANGES = [
     if (Date.now() - feedAt < 60e3) return;
     feedAt = Date.now();
     send({ type: 'feed-poll' });
+  }
+
+  // While a page of the game is open, Aquaman tells the relay every 10 minutes that it is used (the author's list of
+  // the players with Aquaman); the run of a page that changes nothing waits for the timer below.
+  const HELLO_EVERY = 10 * 60e3;
+  let helloAt = 0;
+  function sayHello() {
+    if (Date.now() - helloAt < HELLO_EVERY) return;
+    helloAt = Date.now();
+    send({ type: 'hello', kind: owner });
+  }
+  const helloTimer = setInterval(() => !stopped && settled && document.visibilityState === 'visible' && sayHello(), 60e3);
+
+  // The script also looks for a new version every 10 minutes (the script managers only look once a day), and offers
+  // it in a box at the bottom of the screen; the extension tells it with its notification and its window.
+  const UPDATE_EVERY = 10 * 60e3;
+  const SCRIPT_URL = 'https://github.com/A-Finch13/Poseidon-TCG/releases/latest/download/aquaman.user.js';
+  let updateAt = 0;
+  function lookForUpdate() {
+    if (owner !== 'userscript' || Date.now() - updateAt < UPDATE_EVERY) return;
+    updateAt = Date.now();
+    send({ type: 'check-update' }).then((res) => !stopped && showUpdate(res?.update));
+  }
+
+  function showUpdate(update) {
+    const version = chrome.runtime.getManifest().version;
+    if (!update?.version || !versionNewer(update.version, version) || session('aqm-update-later') === update.version) return;
+    if (document.querySelector('.aqm-update')) return;
+    const box = h(
+      'div',
+      { class: 'aqm-root aqm-update', role: 'status' },
+      h('div', { class: 'aqm-queue-head' }, h('strong', {}, `🔱 Aquaman ${update.version} est disponible`)),
+      h('p', {}, `Tu as la version ${version}. Clique sur « Installer » : ton gestionnaire de scripts propose la mise à jour, puis recharge la page.`),
+      h(
+        'div',
+        { class: 'aqm-update-actions' },
+        h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => (session('aqm-update-later', update.version), box.remove()) }, 'Plus tard'),
+        h('a', { class: 'aqm-queue-btn is-main', href: update.script || SCRIPT_URL, target: '_blank', rel: 'noopener', onclick: () => box.remove() }, 'Installer')
+      )
+    );
+    document.body.append(box);
   }
 
   let queued = false;
@@ -5954,7 +6293,7 @@ const CHANGES = [
     }, 150);
   }
 
-  const observer = new MutationObserver(schedule);
+  const observer = new MutationObserver((records) => records.some((r) => !quietChange(r)) && schedule());
   const listeners = [
     [document, 'wheel', onWheel, { passive: false, capture: true }],
     [document, 'pointerdown', onGrabDown, true],
@@ -5985,6 +6324,7 @@ const CHANGES = [
     stopped = true;
     restoreSnap();
     observer.disconnect();
+    clearInterval(helloTimer);
     for (const [target, type, fn, opts] of listeners) target.removeEventListener(type, fn, opts);
     if (tour) cancelAnimationFrame(tour.raf);
     tour = null;
@@ -5995,6 +6335,7 @@ const CHANGES = [
       for (const cls of [...el.classList]) if (cls.startsWith('aqm-')) el.classList.remove(cls);
     });
     document.querySelectorAll('[data-aqm-slot]').forEach((el) => delete el.dataset.aqmSlot);
+    document.querySelectorAll('[data-aqm-lite]').forEach((el) => delete el.dataset.aqmLite);
     document.querySelectorAll('[data-aqm-anchor]').forEach((el) => {
       el.style.position = '';
       delete el.dataset.aqmAnchor;
@@ -6015,7 +6356,6 @@ const CHANGES = [
     if (stopped) return;
     settled = true;
     accountId().then((id) => (meId = id));
-    send({ type: 'hello', kind: owner });
     for (const [target, type, fn, opts] of listeners) target.addEventListener(type, fn, opts);
     chrome.storage.onChanged.addListener(onStorage);
     renderBox();
@@ -6033,6 +6373,7 @@ const CHANGES = [
     ['notifyUpdated', 'Afficher les nouveautés après une mise à jour du script'],
     ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
     ['syncFavorites', 'Partager mes séries favorites entre mes appareils'],
+    ['syncWants', 'Partager les cartes en attente de recherche entre mes appareils'],
     ['sharePulls', 'Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)']
   ];
   const ICON_GEAR =
@@ -6042,7 +6383,7 @@ const CHANGES = [
   async function openSettings() {
     document.querySelector('.aqm-settings')?.remove();
     const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, sharePulls: true, ...settings };
+    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, syncWants: true, sharePulls: true, ...settings };
     const close = () => {
       back.remove();
       document.removeEventListener('keydown', onKey, true);
@@ -6066,7 +6407,7 @@ const CHANGES = [
             <button type="button" class="aqm-tour-btn" data-go="#aqm-nouveautes">Nouveautés</button>
             <button type="button" class="aqm-tour-btn is-main" data-go="#aqm-visite">Visite guidée</button>
           </div>
-          <p class="aqm-note">Les mises à jour du script s’installent toutes seules par ton gestionnaire de scripts (Tampermonkey, Violentmonkey, Userscripts).</p>
+          <p class="aqm-note">Aquaman cherche une nouvelle version toutes les 10 minutes et te la propose en haut de l’écran ; ton gestionnaire de scripts (Tampermonkey, Violentmonkey, Userscripts) l’installe.</p>
         </div>
       </div>`;
     const list = back.querySelector('.aqm-settings-list');

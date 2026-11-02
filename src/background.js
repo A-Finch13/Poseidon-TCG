@@ -9,10 +9,10 @@ const UPDATER = 'com.aquaman.updater';
 
 // ---------- alarms ----------
 
-// Boosters waiting every 5 minutes, the game's "beaux tirages" every minute, new versions every 15 minutes.
+// Boosters waiting every 5 minutes, the game's "beaux tirages" every minute, new versions every 10 minutes.
 async function schedule() {
   if ((await chrome.alarms.get(POLL_ALARM))?.periodInMinutes !== 5) await chrome.alarms.create(POLL_ALARM, { delayInMinutes: 0.5, periodInMinutes: 5 });
-  if ((await chrome.alarms.get(UPDATE_ALARM))?.periodInMinutes !== 15) await chrome.alarms.create(UPDATE_ALARM, { delayInMinutes: 1, periodInMinutes: 15 });
+  if ((await chrome.alarms.get(UPDATE_ALARM))?.periodInMinutes !== 10) await chrome.alarms.create(UPDATE_ALARM, { delayInMinutes: 1, periodInMinutes: 10 });
   if ((await chrome.alarms.get(FEED_ALARM))?.periodInMinutes !== 1) await chrome.alarms.create(FEED_ALARM, { delayInMinutes: 0.5, periodInMinutes: 1 });
 }
 
@@ -78,7 +78,7 @@ async function pollBoosters() {
 // ---------- new versions ----------
 
 // Looks for a newer release on GitHub (always the latest one) and notifies it once per version.
-async function lookForUpdate(maxAge = 10 * 60e3) {
+async function lookForUpdate(maxAge = 9 * 60e3) {
   if (FIREFOX) return; // Firefox users run the userscript
   const { updateCheckedAt } = await chrome.storage.local.get('updateCheckedAt');
   if (Date.now() - (updateCheckedAt ?? 0) < maxAge) return;

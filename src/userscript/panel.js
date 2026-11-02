@@ -4,6 +4,7 @@
     ['notifyUpdated', 'Afficher les nouveautés après une mise à jour du script'],
     ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
     ['syncFavorites', 'Partager mes séries favorites entre mes appareils'],
+    ['syncWants', 'Partager les cartes en attente de recherche entre mes appareils'],
     ['sharePulls', 'Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)']
   ];
   const ICON_GEAR =
@@ -13,7 +14,7 @@
   async function openSettings() {
     document.querySelector('.aqm-settings')?.remove();
     const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, sharePulls: true, ...settings };
+    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, syncWants: true, sharePulls: true, ...settings };
     const close = () => {
       back.remove();
       document.removeEventListener('keydown', onKey, true);
@@ -37,7 +38,7 @@
             <button type="button" class="aqm-tour-btn" data-go="#aqm-nouveautes">Nouveautés</button>
             <button type="button" class="aqm-tour-btn is-main" data-go="#aqm-visite">Visite guidée</button>
           </div>
-          <p class="aqm-note">Les mises à jour du script s’installent toutes seules par ton gestionnaire de scripts (Tampermonkey, Violentmonkey, Userscripts).</p>
+          <p class="aqm-note">Aquaman cherche une nouvelle version toutes les 10 minutes et te la propose en haut de l’écran ; ton gestionnaire de scripts (Tampermonkey, Violentmonkey, Userscripts) l’installe.</p>
         </div>
       </div>`;
     const list = back.querySelector('.aqm-settings-list');

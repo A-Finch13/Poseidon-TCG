@@ -58,3 +58,43 @@ CREATE TABLE IF NOT EXISTS devices (
   created INTEGER NOT NULL,
   last_used INTEGER
 );
+
+-- Each Aquaman of a player (relay/worker.js): one line per kind (extension, userscript), so that a player with both
+-- shows both; the author's list is built from it.
+CREATE TABLE IF NOT EXISTS installs (
+  player TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  version TEXT,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  PRIMARY KEY (player, kind)
+);
+
+-- Cards waiting in Aquaman for a place in the game's search list, and those Aquaman put there, the most recent lists
+-- of each player (relay/worker.js).
+CREATE TABLE IF NOT EXISTS wants (
+  player TEXT PRIMARY KEY,
+  waiting TEXT NOT NULL,
+  sent TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+
+-- The SSR, UR and SEC cards of the players seen in the "beaux tirages", read in their public collections
+-- (relay/worker.js): who has which card, for "Qui a cette carte ?".
+CREATE TABLE IF NOT EXISTS holdings (
+  player_id TEXT NOT NULL,
+  card_id TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  serials TEXT,
+  PRIMARY KEY (player_id, card_id)
+);
+CREATE INDEX IF NOT EXISTS holdings_card ON holdings (card_id);
+
+-- When each player's collection was last read, and whether it was private.
+CREATE TABLE IF NOT EXISTS scans (
+  player_id TEXT PRIMARY KEY,
+  player_name TEXT,
+  at INTEGER NOT NULL,
+  private INTEGER NOT NULL DEFAULT 0,
+  cards INTEGER NOT NULL DEFAULT 0
+);

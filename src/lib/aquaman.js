@@ -14,6 +14,7 @@ export const DEFAULTS = {
   notifyUpdated: true,
   syncPity: true,
   syncFavorites: true,
+  syncWants: true,
   sharePulls: true
 };
 
@@ -108,15 +109,19 @@ export async function gameStatus() {
 const showcases = new Map(); // player id -> last collection read
 
 // Collection of a player: { player, private, cards, copies, albums, owned, total }.
+async function readShowcase(id) {
+  const path = encodeURIComponent(id);
+  try {
+    return await game(`/players/${path}/showcase`);
+  } catch {
+    return game(`/public/players/${path}/showcase`);
+  }
+}
+
+// The same, kept a while; its copies give the values of the cards.
 function showcase(id, ttl = 5 * 60e3) {
   return cached(`showcase:${id}`, ttl, async () => {
-    const path = encodeURIComponent(id);
-    let sc;
-    try {
-      sc = await game(`/players/${path}/showcase`);
-    } catch {
-      sc = await game(`/public/players/${path}/showcase`);
-    }
+    const sc = await readShowcase(id);
     showcases.set(id, sc);
     return sc;
   });
@@ -652,6 +657,50 @@ export async function seriesStatus(id) {
   return { missing: missing.length, toWant: toWant.length, toWantIds: toWant, favorite: favorites.includes(id) };
 }
 
+// ---------- the cards waiting in Aquaman, shared between the player's devices ----------
+
+const WANTS_PULL = 60e3; // the other devices' list is read once a minute at most
+let wantsSyncedAt = 0;
+
+// The relay keeps the most recent lists of all the player's devices: it takes these ones if they are more recent
+// (at: time of their last change), and sends back the ones it keeps.
+async function postWants(body) {
+  const res = await fetch(`${RELAY}/wants`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`relay_${res.status}`);
+  return res.json();
+}
+
+// The cards waiting for a place in the game's list, and those Aquaman put there, the same on every device: sent to the
+// relay, and taken back when another device changed them later. content.js stamps wantsAt at each change; wantsFor:
+// the account they belong to (a device that never synced adds its cards to those of the relay).
+export async function syncWants(fresh = false) {
+  if (!(await getSettings()).syncWants) return { off: true };
+  if (!fresh && Date.now() - wantsSyncedAt < WANTS_PULL) return { skipped: true };
+  wantsSyncedAt = Date.now();
+  const player = await myId();
+  const { wantWaiting = [], wantSent = [], wantsAt = 0, wantsFor } = await chrome.storage.local.get(['wantWaiting', 'wantSent', 'wantsAt', 'wantsFor']);
+  const mine = wantsFor === player;
+  const at = mine ? Number(wantsAt) || 0 : 0;
+  try {
+    let remote = await postWants({ player, waiting: mine ? wantWaiting : [], sent: mine ? wantSent : [], at });
+    const theirs = Array.isArray(remote?.waiting) ? remote : { waiting: [], sent: [], at: 0 };
+    if (!mine && wantsFor === undefined && (wantWaiting.length || wantSent.length)) {
+      // First sync of this device: its cards join those of the other devices.
+      const join = (x, y) => [...new Set([...x, ...y])];
+      remote = await postWants({ player, waiting: join(theirs.waiting, wantWaiting).slice(0, 200), sent: join(theirs.sent ?? [], wantSent), at: Date.now() });
+    } else if (Number(theirs.at) <= at) {
+      if (!mine) await chrome.storage.local.set({ wantsFor: player });
+      return { changed: false };
+    } else remote = theirs;
+    // A change made here meanwhile wins: it goes to the relay at the next sync.
+    if (((await chrome.storage.local.get('wantsAt')).wantsAt ?? 0) !== wantsAt) return { changed: false };
+    await chrome.storage.local.set({ wantWaiting: remote.waiting ?? [], wantSent: remote.sent ?? [], wantsAt: Number(remote.at) || Date.now(), wantsFor: player });
+    return { changed: true };
+  } catch (e) {
+    wantsSyncedAt = 0;
+    return { error: e?.message || 'relay' };
+  }
+}
 
 // ---------- the game's "beaux tirages": kept here, and shared in a public history on the relay ----------
 
@@ -716,6 +765,7 @@ export async function pollFeed() {
   const { pulls } = await cached('feed', 50e3, () => game('/feed'));
   const kept = await recordFeed(pulls);
   await sharePulls();
+  scanPullers(pulls);
   return kept;
 }
 
@@ -723,6 +773,67 @@ export async function pollFeed() {
 async function relayPulls(params) {
   try {
     const res = await fetch(`${RELAY}/pulls?${new URLSearchParams(params)}`);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------- the rare cards of the players seen in the "beaux tirages" ----------
+
+const RARE = ['SSR', 'UR', 'SEC'];
+const SCAN_AGAIN = 12 * 3600e3; // a player's collection is read again after 12 hours (the relay says the same)
+const SCAN_MAX = 6; // collections read at each look at the feed
+let scanning = false;
+
+// The players who just pulled a SSR, UR or SEC: their collection is read (public ones only) and their SSR, UR and SEC
+// cards go to the relay, which keeps who has which card for "Qui a cette carte ?" ("sharePulls" setting).
+async function scanPullers(pulls) {
+  if (scanning) return;
+  const ids = [...new Set((pulls ?? []).filter((p) => RARE.includes(p?.card?.rarity) && p.player?.id).map((p) => p.player.id))];
+  if (!ids.length || !(await getSettings()).sharePulls) return;
+  scanning = true;
+  try {
+    const { scannedAt = {} } = await chrome.storage.local.get('scannedAt');
+    const now = Date.now();
+    for (const id in scannedAt) if (now - scannedAt[id] > SCAN_AGAIN) delete scannedAt[id];
+    const todo = ids.filter((id) => !scannedAt[id]).slice(0, 40);
+    if (!todo.length) return;
+    // The relay says which ones nobody read lately (another Aquaman may have just done it).
+    const res = await fetch(`${RELAY}/holdings/stale?players=${todo.map(encodeURIComponent).join(',')}`);
+    if (!res.ok) return;
+    const { stale = [] } = await res.json();
+    const read = stale.slice(0, SCAN_MAX);
+    for (const id of todo) if (!stale.includes(id) || read.includes(id)) scannedAt[id] = now;
+    await chrome.storage.local.set({ scannedAt });
+    for (const id of read) {
+      try {
+        const sc = await readShowcase(id);
+        const cards = new Map();
+        for (const copy of sc.private ? [] : sc?.copies ?? []) {
+          if (!RARE.includes(copy?.card?.rarity) || !copy.card.id) continue;
+          const c = cards.get(copy.card.id) ?? { id: copy.card.id, count: 0, serials: [] };
+          c.count++;
+          if (Number.isInteger(copy.serial)) c.serials.push(copy.serial);
+          cards.set(c.id, c);
+        }
+        await fetch(`${RELAY}/holdings`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ player: { id, name: sc.player?.name ?? null }, private: !!sc.private, cards: [...cards.values()] })
+        });
+      } catch {}
+    }
+  } catch {
+  } finally {
+    scanning = false;
+  }
+}
+
+// The players the relay knows to have a card ({ owners, scanned }), or null when it doesn't answer.
+async function relayHoldings(card) {
+  try {
+    const res = await fetch(`${RELAY}/holdings?card=${encodeURIComponent(card)}`);
     return res.ok ? await res.json() : null;
   } catch {
     return null;
@@ -792,6 +903,11 @@ export async function cardOwners(id) {
     mates.sort((a, b) => b.me - a.me || b.count - a.count);
   } catch {}
 
+  // The players whose collection was read after one of their beaux tirages, other than the player and their friends.
+  const known = await relayHoldings(id);
+  const mateIds = new Set(mates.map((m) => m.player.id));
+  const seen = (known?.owners ?? []).filter((o) => o.player?.id && !mateIds.has(o.player.id));
+
   const remote = await relayPulls({ card: id, limit: 200 });
   if (remote?.pulls) await recordFeed(remote.pulls, true);
   const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
@@ -816,6 +932,8 @@ export async function cardOwners(id) {
     holders,
     market,
     friends: mates,
+    seen,
+    scanned: known?.scanned ?? null,
     pulls,
     pullsSince: since === Infinity ? null : since,
     shared: !!remote
@@ -859,9 +977,9 @@ export async function ownersAmong(cardId, players) {
 
 // ---------- who uses Aquaman (the author only) ----------
 
-const HELLO_EVERY = 6 * 3600e3;
+const HELLO_EVERY = 9.5 * 60e3; // content.js says hello every 10 minutes while a page of the game is open
 
-// Tells the relay, every 6 hours at most, that this player uses Aquaman (kind: "extension" or "userscript").
+// Tells the relay, every 10 minutes at most, that this player uses Aquaman (kind: "extension" or "userscript").
 export async function sayHello(kind) {
   const id = await myId();
   const { helloAt = 0, helloKind, helloFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor']);
@@ -1015,6 +1133,8 @@ export async function answer(msg) {
         return { ok: true };
       case 'want-room':
         return await wantRoom(msg.waiting ?? [], msg.sent ?? []);
+      case 'wants-sync':
+        return await syncWants(!!msg.fresh);
       case 'card-search':
         return { cards: await searchCards(msg.query) };
       case 'card-owners':
@@ -1042,6 +1162,7 @@ export async function answer(msg) {
       case 'feed-poll':
         return { kept: await pollFeed() };
       case 'feed-seen':
+        scanPullers(msg.pulls);
         return { kept: await recordFeed(msg.pulls) };
       case 'collection-stale':
         forget('showcase:', 'shop', 'series', 'wants');
@@ -1066,7 +1187,7 @@ export const newer = (a, b) => {
   return false;
 };
 
-// Stores { version, url, zip, xpi } when the latest GitHub release is newer than this version, else nothing.
+// Stores { version, url, zip, xpi, script } when the latest GitHub release is newer than this version, else nothing.
 export async function checkUpdate() {
   const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { accept: 'application/vnd.github+json' } });
   if (!res.ok) throw new ApiError(res.status, `github_${res.status}`);
@@ -1078,7 +1199,8 @@ export async function checkUpdate() {
       version,
       url: rel.html_url ?? `https://github.com/${REPO}/releases/latest`,
       zip: asset('aquaman-chromium.zip'),
-      xpi: asset('aquaman-firefox.xpi')
+      xpi: asset('aquaman-firefox.xpi'),
+      script: asset('aquaman.user.js')
     };
     await chrome.storage.local.set({ update });
     return update;

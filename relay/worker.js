@@ -9,10 +9,13 @@
 // transaction.
 // Every 5 minutes, the relay also reads the game's feed itself, with the session of the account given in the secret
 // GAME_COOKIE (the "cookie" header of a request of the game); its pulls go through the same queue as the others.
-// Each Aquaman also says, every 6 hours at most, that it is used (player id and name, extension or userscript,
-// version); the list is given only to the author: to a request signed by one of the author's approved devices (each
+// Each Aquaman also says, every 10 minutes, that it is used (player id and name, extension or userscript, version):
+// one line per player and per kind; the list is given only to the author: to a request signed by one of the author's approved devices (each
 // device keeps its own private key; the relay keeps the public keys), or carrying the secret ADMIN_TOKEN, which is
 // only used to approve the first device.
+// The cards a player waits to search (beyond the game's 100) are shared between their devices, like the favourites.
+// The SSR, UR and SEC cards of the players seen in the "beaux tirages" are kept too (read by the Aquaman that saw them,
+// in the player's public collection, every 12 hours at most): "Qui a cette carte ?" lists them.
 // Bindings: DB (D1 database, schema.sql), PULLS_WRITER (Durable Object, the queue of the imports), GAME_COOKIE and
 // ADMIN_TOKEN (secrets).
 
@@ -30,6 +33,11 @@ const MONTH = 31 * 86400e3;
 const GAME_FEED = 'https://poseidon-scans.net/api-game/v1/feed';
 const EVERY_DAY = '0 4 * * *';
 const MAX_FAVORITES = 500;
+const MAX_WANTS = 400;
+const MAX_HOLDINGS = 2000; // cards of one player
+const HOLDINGS_BODY = 256 * 1024;
+const RESCAN = 12 * 3600e3; // a player's collection is read again after this
+const MAX_STALE_ASKED = 40;
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -50,6 +58,10 @@ export default {
     try {
       if (req.method === 'POST' && pathname === '/pity') return json(await pity(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
+      if (req.method === 'POST' && pathname === '/wants') return json(await wants(env, await readBody(req)));
+      if (req.method === 'POST' && pathname === '/holdings') return json(await saveHoldings(env, await readBody(req, HOLDINGS_BODY)));
+      if (req.method === 'GET' && pathname === '/holdings') return json(await findHoldings(env, url.searchParams));
+      if (req.method === 'GET' && pathname === '/holdings/stale') return json(await staleScans(env, url.searchParams));
       if (req.method === 'POST' && pathname === '/pulls') return json(await queuePulls(env, await readBody(req)));
       if (req.method === 'GET' && pathname === '/pulls') return shared(await findPulls(env, url.searchParams));
       if (req.method === 'GET' && pathname === '/players') return shared(await recentPlayers(env, url.searchParams));
@@ -69,10 +81,10 @@ export default {
   }
 };
 
-// JSON body of a request, refused above MAX_BODY.
-async function readBody(req) {
+// JSON body of a request, refused above max.
+async function readBody(req, max = MAX_BODY) {
   const text = await req.text();
-  if (text.length > MAX_BODY) throw new Error('too_large');
+  if (text.length > max) throw new Error('too_large');
   return JSON.parse(text);
 }
 
@@ -107,6 +119,82 @@ async function favorites(env, body) {
     return { list, at: Math.round(at) };
   }
   return saved ? { list: JSON.parse(saved.list), at: saved.at } : { list: null, at: 0 };
+}
+
+// Keeps the most recent lists of searched cards of the player (by the time of their change), and sends them back.
+async function wants(env, body) {
+  const player = String(body?.player ?? '');
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  const clean = (v) => (Array.isArray(v) ? [...new Set(v.filter((id) => typeof id === 'string' && CARD.test(id)))].slice(0, MAX_WANTS) : null);
+  const waiting = clean(body.waiting);
+  const sent = clean(body.sent) ?? [];
+  const at = Number(body.at);
+  const saved = await env.DB.prepare('SELECT waiting, sent, at FROM wants WHERE player = ?1').bind(player).first();
+  if (waiting && Number.isFinite(at) && at > 0 && at < Date.now() + 86400e3 && (!saved || at > saved.at)) {
+    await env.DB.prepare('INSERT INTO wants (player, waiting, sent, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (player) DO UPDATE SET waiting = ?2, sent = ?3, at = ?4')
+      .bind(player, JSON.stringify(waiting), JSON.stringify(sent), Math.round(at))
+      .run();
+    return { waiting, sent, at: Math.round(at) };
+  }
+  return saved ? { waiting: JSON.parse(saved.waiting), sent: JSON.parse(saved.sent), at: saved.at } : { waiting: null, sent: null, at: 0 };
+}
+
+// ---------- the rare cards of the players seen in the "beaux tirages" ----------
+
+// The players of the list (?players=id,id) whose collection wasn't read for RESCAN.
+async function staleScans(env, params) {
+  const ids = [...new Set(String(params.get('players') ?? '').split(','))].filter((id) => PLAYER.test(id)).slice(0, MAX_STALE_ASKED);
+  if (!ids.length) return { stale: [] };
+  const { results } = await env.DB.prepare(`SELECT player_id FROM scans WHERE at > ?1 AND player_id IN (${ids.map((_, i) => `?${i + 2}`).join(', ')})`)
+    .bind(Date.now() - RESCAN, ...ids)
+    .all();
+  const fresh = new Set(results.map((r) => r.player_id));
+  return { stale: ids.filter((id) => !fresh.has(id)) };
+}
+
+// The rare cards of one player, read in their collection: they replace the ones kept (a private collection keeps none).
+async function saveHoldings(env, body) {
+  const player = String(body?.player?.id ?? '');
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  const last = await env.DB.prepare('SELECT at FROM scans WHERE player_id = ?1').bind(player).first();
+  if (last && last.at > Date.now() - 30 * 60e3) return { skipped: true };
+  const cards = new Map();
+  if (!body.private)
+    for (const c of Array.isArray(body.cards) ? body.cards.slice(0, MAX_HOLDINGS) : []) {
+      if (!CARD.test(String(c?.id ?? '')) || cards.has(c.id)) continue;
+      const count = Number.isInteger(c.count) && c.count > 0 && c.count < 1000 ? c.count : 1;
+      const serials = (Array.isArray(c.serials) ? c.serials : []).filter((n) => Number.isInteger(n) && n > 0 && n < 1e7).slice(0, 20);
+      cards.set(c.id, { id: c.id, count, serials: serials.length ? JSON.stringify(serials) : null });
+    }
+  const rows = JSON.stringify([...cards.values()]);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM holdings WHERE player_id = ?1').bind(player),
+    env.DB.prepare(
+      "INSERT INTO holdings (player_id, card_id, count, serials) SELECT ?1, json_extract(value, '$.id'), json_extract(value, '$.count'), json_extract(value, '$.serials') FROM json_each(?2)"
+    ).bind(player, rows),
+    env.DB.prepare(
+      'INSERT INTO scans (player_id, player_name, at, private, cards) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (player_id) DO UPDATE SET player_name = COALESCE(?2, scans.player_name), at = ?3, private = ?4, cards = ?5'
+    ).bind(player, text(body.player.name, 60), Date.now(), body.private ? 1 : 0, cards.size)
+  ]);
+  return { ok: true, cards: cards.size };
+}
+
+// The players known to have a card (?card=), with when their collection was read; and how many collections were read.
+async function findHoldings(env, params) {
+  const card = params.get('card') ?? '';
+  if (!CARD.test(card)) throw new Error('bad_card');
+  const [{ results }, total] = await Promise.all([
+    env.DB.prepare(
+      'SELECT h.player_id, s.player_name, h.count, h.serials, s.at FROM holdings h JOIN scans s ON s.player_id = h.player_id WHERE h.card_id = ?1 ORDER BY s.at DESC LIMIT 300'
+    )
+      .bind(card)
+      .all(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM scans WHERE private = 0').first()
+  ]);
+  return {
+    scanned: total?.n ?? 0,
+    owners: results.map((r) => ({ player: { id: r.player_id, name: r.player_name }, count: r.count, serials: r.serials ? JSON.parse(r.serials) : [], seenAt: r.at }))
+  };
 }
 
 // Lower case without accents, to search the names.
@@ -274,19 +362,28 @@ async function status(env) {
 
 const KINDS = new Set(['extension', 'userscript']);
 
-// An Aquaman says it is used: its line is created, or brought up to date (name, kind, version, last seen).
+// An Aquaman says it is used: the player's line and the line of this kind of Aquaman are created, or brought up to
+// date (name, kind, version, last seen).
 async function hello(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
   const kind = KINDS.has(body.kind) ? body.kind : null;
   const version = /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(String(body.version ?? '')) ? body.version : null;
   const now = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO users (player, name, kind, version, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-     ON CONFLICT (player) DO UPDATE SET name = COALESCE(?2, users.name), kind = COALESCE(?3, users.kind), version = COALESCE(?4, users.version), last_seen = ?5`
-  )
-    .bind(player, text(body.name, 60), kind, version, now)
-    .run();
+  const statements = [
+    env.DB.prepare(
+      `INSERT INTO users (player, name, kind, version, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+       ON CONFLICT (player) DO UPDATE SET name = COALESCE(?2, users.name), kind = COALESCE(?3, users.kind), version = COALESCE(?4, users.version), last_seen = ?5`
+    ).bind(player, text(body.name, 60), kind, version, now)
+  ];
+  if (kind)
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO installs (player, kind, version, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?4)
+         ON CONFLICT (player, kind) DO UPDATE SET version = COALESCE(?3, installs.version), last_seen = ?4`
+      ).bind(player, kind, version, now)
+    );
+  await env.DB.batch(statements);
   return { ok: true };
 }
 
@@ -300,10 +397,29 @@ function isAuthor(req, env) {
   return diff === 0;
 }
 
-// Every player who used Aquaman, the most recently seen first.
+// Every player who used Aquaman, the most recently seen first, with each of their kinds of Aquaman (the players seen
+// before the installs table only have their last kind).
 async function users(env) {
-  const { results } = await env.DB.prepare('SELECT player, name, kind, version, first_seen, last_seen FROM users ORDER BY last_seen DESC LIMIT 5000').all();
-  return { users: results.map((r) => ({ id: r.player, name: r.name, kind: r.kind, version: r.version, firstSeen: r.first_seen, lastSeen: r.last_seen })) };
+  const [{ results }, { results: installs }] = await Promise.all([
+    env.DB.prepare('SELECT player, name, kind, version, first_seen, last_seen FROM users ORDER BY last_seen DESC LIMIT 5000').all(),
+    env.DB.prepare('SELECT player, kind, version, last_seen FROM installs ORDER BY last_seen DESC').all()
+  ]);
+  const byPlayer = new Map();
+  for (const i of installs) {
+    if (!byPlayer.has(i.player)) byPlayer.set(i.player, []);
+    byPlayer.get(i.player).push({ kind: i.kind, version: i.version, lastSeen: i.last_seen });
+  }
+  return {
+    users: results.map((r) => ({
+      id: r.player,
+      name: r.name,
+      kind: r.kind,
+      version: r.version,
+      firstSeen: r.first_seen,
+      lastSeen: r.last_seen,
+      installs: byPlayer.get(r.player) ?? (r.kind ? [{ kind: r.kind, version: r.version, lastSeen: r.last_seen }] : [])
+    }))
+  };
 }
 
 // ---------- the author's devices ----------
