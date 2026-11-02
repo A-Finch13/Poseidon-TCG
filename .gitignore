@@ -1,2 +1,3 @@
 dist/
 relay/.wrangler/
+graphify-out/

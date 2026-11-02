@@ -8,6 +8,15 @@ binding = "DB"
 database_name = "aquaman"
 database_id = "d2015fb6-dc3b-4f72-99c2-2f5c4ac46b91"
 
-# Forgets the openings older than a year, every day at 4 h (UTC).
+# The queue of the imports of the public history of the "beaux tirages": one instance, one import at a time.
+[[durable_objects.bindings]]
+name = "PULLS_WRITER"
+class_name = "PullsWriter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PullsWriter"]
+
+# Every 5 minutes: reads the game's feed (secret GAME_COOKIE). Every day at 4 h (UTC): forgets the openings older than a year.
 [triggers]
-crons = ["0 4 * * *"]
+crons = ["*/5 * * * *", "0 4 * * *"]

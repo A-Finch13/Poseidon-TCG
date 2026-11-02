@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.1.0
+// @version      1.1.1
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -163,7 +163,8 @@ const DEFAULTS = {
   notifyBoosters: true,
   notifyUpdated: true,
   syncPity: true,
-  syncFavorites: true
+  syncFavorites: true,
+  sharePulls: true
 };
 
 // Settings with their default values.
@@ -201,13 +202,6 @@ async function getJson(url) {
   if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
   return body;
 }
-// Same as getJson for a change (PUT, DELETE…) without a body.
-async function getJsonWith(url, method) {
-  const res = await fetch(url, { method, credentials: 'include', headers: { accept: 'application/json' } });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
-  return body;
-}
 const game = (path) => getJson(GAME + path);
 const social = (path) => getJson(SOCIAL + path);
 
@@ -227,9 +221,9 @@ function forget(...prefixes) {
   for (const key of [...memo.keys()]) if (prefixes.some((p) => key.startsWith(p))) memo.delete(key);
 }
 
-// Id of the logged-in player.
+// Id of the logged-in player (read again after a minute: another account may have logged in meanwhile).
 function myId() {
-  return cached('me-id', 30 * 60e3, async () => {
+  return cached('me-id', 60e3, async () => {
     const ids = [];
     try {
       const a = await getJson(`${ORIGIN}/api/auth/check`);
@@ -699,6 +693,33 @@ async function wantedIds() {
   return new Set((wants ?? []).map((w) => w?.card?.id ?? w?.cardId).filter(Boolean));
 }
 
+// The cards searched by the player: those of the game's list, and those Aquaman keeps waiting for a free place
+// (the game takes 100 cards at most).
+async function searchedIds() {
+  const [wanted, waiting] = await Promise.all([wantedIds().catch(() => new Set()), waitingIds()]);
+  for (const id of waiting) wanted.add(id);
+  return wanted;
+}
+
+// The cards waiting in Aquaman.
+async function waitingIds() {
+  return new Set((await chrome.storage.local.get('wantWaiting')).wantWaiting ?? []);
+}
+
+// Places of the game's search list: how many are taken, the cards Aquaman put there that the player now owns
+// (to take out), those still searched, and the waiting cards still to send (neither owned nor already searched).
+async function wantRoom(waiting, sent) {
+  forget('wants');
+  const [wanted, { byCard }] = await Promise.all([wantedIds(), ownership()]);
+  const has = (id) => byCard[id] > 0;
+  return {
+    count: wanted.size,
+    obtained: sent.filter((id) => wanted.has(id) && has(id)),
+    sent: sent.filter((id) => wanted.has(id) && !has(id)),
+    waiting: waiting.filter((id) => !wanted.has(id) && !has(id))
+  };
+}
+
 // Cards of one series, with the number of copies the player owns.
 function seriesCards(id) {
   return cached(`series-cards:${id}`, 60e3, async () => (await game(`/cards?manga=${encodeURIComponent(id)}`)).cards ?? []);
@@ -739,19 +760,25 @@ async function favoriteIds(fresh = false) {
   return exchangeFavorites(local);
 }
 
-// Adds (on) or removes a series from the favourites; returns the new list.
-async function setFavorite(id, on) {
-  const list = (await favoriteIds()).filter((x) => x !== id);
-  if (on) list.push(id);
-  const local = { list, at: Date.now() };
-  await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
-  if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
-  return list;
+// Adds (on) or removes a series from the favourites; returns the new list. Changes run one after the other,
+// so that two stars clicked quickly both count.
+let favChain = Promise.resolve();
+function setFavorite(id, on) {
+  const run = favChain.then(async () => {
+    const list = (await localFavorites()).list.filter((x) => x !== id);
+    if (on) list.push(id);
+    const local = { list, at: Date.now() };
+    await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
+    if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
+    return list;
+  });
+  favChain = run.catch(() => {});
+  return run;
 }
 
 // The favourite series and their cards: owned copies and whether the player searches them.
 async function favoritesReport(fresh = false) {
-  const [ids, all, wanted] = await Promise.all([favoriteIds(fresh), seriesList(), wantedIds().catch(() => new Set())]);
+  const [ids, all, wanted, waiting] = await Promise.all([favoriteIds(fresh), seriesList(), searchedIds(), waitingIds()]);
   const series = ids.map((id) => all.find((s) => s.id === id)).filter(Boolean);
   const cards = await Promise.all(series.map((s) => seriesCards(s.id).catch(() => [])));
   return {
@@ -762,46 +789,34 @@ async function favoritesReport(fresh = false) {
       title: s.title,
       owned: s.owned ?? 0,
       total: s.total ?? 0,
-      cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id) }))
+      cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id), waiting: waiting.has(c.id) }))
     }))
   };
 }
 
-// Puts one card in the player's search list (on) or takes it out.
-async function wantCard(id, on) {
-  const res = await getJsonWith(`${GAME}/cards/${encodeURIComponent(id)}/want`, on ? 'PUT' : 'DELETE');
-  forget('wants');
-  return { wanted: !!res?.wanted };
+// One series: cards the player doesn't have, those not searched yet, and whether it is a favourite.
+async function seriesStatus(id) {
+  const [cards, wanted, favorites] = await Promise.all([seriesCards(id), searchedIds(), favoriteIds()]);
+  const missing = cards.filter((c) => !(c.owned > 0));
+  const toWant = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
+  return { missing: missing.length, toWant: toWant.length, toWantIds: toWant, favorite: favorites.includes(id) };
 }
 
-// Searches every card of a series the player doesn't have yet; stops at the first refusal of the game (a limit, for instance).
-async function wantMissing(seriesId) {
-  const [cards, wanted] = await Promise.all([seriesCards(seriesId), wantedIds()]);
-  const todo = cards.filter((c) => !(c.owned > 0) && !wanted.has(c.id));
-  let added = 0;
-  let refused = null; // the game's message when it stops accepting
-  for (const c of todo) {
-    try {
-      await getJsonWith(`${GAME}/cards/${encodeURIComponent(c.id)}/want`, 'PUT');
-      added++;
-    } catch (e) {
-      refused = e.message;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  forget('wants');
-  return { added, already: cards.filter((c) => !(c.owned > 0)).length - todo.length, left: todo.length - added, refused };
-}
 
-// ---------- who pulled a card: the game's "beaux tirages", kept a while ----------
+// ---------- the game's "beaux tirages": kept here, and shared in a public history on the relay ----------
 
 const FEED_KEEP = 30 * 86400e3;
 const FEED_MAX = 4000;
+// The pulls seen are read every minute and sent to the relay every 5 minutes: the public history is at most
+// 6 minutes behind the game while one Aquaman runs.
+const SHARE_EVERY = 5 * 60e3;
 
-// Adds pulls of the game's feed to the history kept on this device.
-async function recordFeed(pulls) {
-  const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+// A pull kept here, in the shape of the game's feed (what the relay takes and gives back).
+const asFeedPull = (p) => ({ card: { id: p.card.id, name: p.card.name, rarity: p.card.rarity, image: p.card.image, series: p.card.series }, serial: p.serial, player: p.player, pulledAt: new Date(p.at).toISOString() });
+
+// Adds pulls of the game's feed to the history kept on this device (fromRelay: already in the public history).
+async function recordFeed(pulls, fromRelay = false) {
+  const { feedLog = [], feedSince } = await chrome.storage.local.get(['feedLog', 'feedSince']);
   const byKey = new Map(feedLog.map((p) => [p.key, p]));
   for (const p of pulls ?? []) {
     const card = p?.card;
@@ -813,30 +828,309 @@ async function recordFeed(pulls) {
       at: Date.parse(p.pulledAt) || Date.now(),
       serial: p.serial ?? null,
       player: p.player ? { id: p.player.id ?? null, name: p.player.name ?? null } : null,
-      card: { id: card.id, name: card.name, image: card.image, rarity: card.rarity, maxCopies: card.maxCopies ?? null, series: card.series?.title ?? null }
+      card: { id: card.id, name: card.name, image: card.image, rarity: card.rarity, maxCopies: card.maxCopies ?? null, series: card.series?.title ?? card.series ?? null },
+      shared: fromRelay
     });
   }
   const since = Date.now() - FEED_KEEP;
   const kept = [...byKey.values()].filter((p) => p.at >= since).sort((a, b) => b.at - a.at).slice(0, FEED_MAX);
-  await chrome.storage.local.set({ feedLog: kept, feedSince: (await chrome.storage.local.get('feedSince')).feedSince ?? Date.now() });
+  await chrome.storage.local.set({ feedLog: kept, feedSince: feedSince ?? Date.now() });
   return kept.length;
 }
 
-// Reads the game's feed (every 2 minutes at most) and keeps its pulls.
-async function pollFeed() {
-  const { pulls } = await cached('feed', 2 * 60e3, () => game('/feed'));
-  return recordFeed(pulls);
+// Sends the pulls not shared yet to the public history (every 5 minutes at most, "sharePulls" setting).
+async function sharePulls(force = false) {
+  const { feedSharedAt = 0 } = await chrome.storage.local.get('feedSharedAt');
+  if (!force && Date.now() - feedSharedAt < SHARE_EVERY) return;
+  if (!(await getSettings()).sharePulls) return;
+  await chrome.storage.local.set({ feedSharedAt: Date.now() });
+  // Everything waiting goes now, 100 pulls per request.
+  for (let round = 0; round < 10; round++) {
+    const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+    const todo = feedLog.filter((p) => !p.shared && ['SSR', 'UR', 'SEC'].includes(p.card.rarity)).slice(0, 100);
+    if (!todo.length) return;
+    try {
+      const res = await fetch(`${RELAY}/pulls`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pulls: todo.map(asFeedPull) }) });
+      if (!res.ok) return;
+    } catch {
+      return;
+    }
+    const sent = new Set(todo.map((p) => p.key));
+    const { feedLog: now = [] } = await chrome.storage.local.get('feedLog');
+    await chrome.storage.local.set({ feedLog: now.map((p) => (sent.has(p.key) ? { ...p, shared: true } : p)) });
+  }
 }
 
-// Recent pulls whose character or series matches the query (the latest ones without a query).
+// Reads the game's feed (once a minute at most), keeps its pulls and shares them.
+async function pollFeed() {
+  const { pulls } = await cached('feed', 50e3, () => game('/feed'));
+  const kept = await recordFeed(pulls);
+  await sharePulls();
+  return kept;
+}
+
+// The public history of the relay ({ pulls, since, total }), or null when it doesn't answer.
+async function relayPulls(params) {
+  try {
+    const res = await fetch(`${RELAY}/pulls?${new URLSearchParams(params)}`);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+// Recent pulls whose character or series matches the query (the latest ones without a query), here and on the relay.
 async function whoPulled(query = '', rarity = '') {
-  await pollFeed().catch(() => {});
-  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
   const q = fold(query);
+  const [, remote] = await Promise.all([pollFeed().catch(() => {}), relayPulls(q.length >= 2 ? { q, limit: 200 } : { limit: 100 })]);
+  if (remote?.pulls) await recordFeed(remote.pulls, true);
+  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
   const hits = feedLog.filter((p) => (!rarity || p.card.rarity === rarity) && (!q || fold(p.card.name).includes(q) || fold(p.card.series).includes(q)));
   const names = q ? [...new Set(feedLog.filter((p) => fold(p.card.name).includes(q)).map((p) => p.card.name))].slice(0, 8) : [];
-  return { pulls: hits.slice(0, 200), total: hits.length, kept: feedLog.length, since: feedSince, suggestions: names };
+  return {
+    pulls: hits.slice(0, 200),
+    total: hits.length,
+    kept: Math.max(feedLog.length, remote?.total ?? 0),
+    since: Math.min(feedSince ?? Infinity, remote?.since ?? Infinity) === Infinity ? null : Math.min(feedSince ?? Infinity, remote?.since ?? Infinity),
+    shared: !!remote,
+    latest: remote?.latest ?? null,
+    suggestions: names
+  };
 }
+
+// ---------- who has a card ----------
+
+// Cards of the whole game whose name matches (the game's own search).
+async function searchCards(query) {
+  const q = String(query ?? '').trim();
+  if (q.length < 2) return [];
+  const { cards } = await cached(`card-search:${fold(q)}`, 5 * 60e3, () => game(`/cards?q=${encodeURIComponent(q)}&limit=12`));
+  return (cards ?? []).map((c) => ({ id: c.id, name: c.name, variant: c.variant ?? null, image: c.image, rarity: c.rarity, series: c.series?.title ?? null, owned: c.owned ?? 0 }));
+}
+
+// Everyone Aquaman can see with a card: holders (limited cards), sellers, friends, and recent pulls.
+async function cardOwners(id) {
+  const card = await game(`/cards/${encodeURIComponent(id)}`);
+  // The game lists the holders of the limited cards only (an empty list for the others means "not published").
+  const holders = card.maxCopies && Array.isArray(card.holders) ? card.holders.map((x) => ({ serial: x.serial ?? null, player: x.player ? { id: x.player.id, name: x.player.name } : null })) : null;
+
+  let market = [];
+  try {
+    const { listings } = await game(`/market/listings?${new URLSearchParams({ sort: 'price', q: card.name })}`);
+    market = (listings ?? [])
+      .filter((l) => (l.card?.id ?? l.cardId) === id)
+      .map((l) => {
+        const seller = l.seller ?? l.player ?? null;
+        return { price: l.price ?? null, serial: l.serial ?? l.copy?.serial ?? null, player: seller ? { id: seller.id, name: seller.name } : null };
+      });
+  } catch {}
+
+  let mates = [];
+  try {
+    const { me, friends: list } = await friends();
+    const people = [{ id: me, name: null, me: true }, ...list];
+    await Promise.all(
+      people.map(async (p) => {
+        try {
+          const sc = await showcase(p.id);
+          if (sc.private) return;
+          const copies = (sc.copies ?? []).filter((c) => c.card?.id === id);
+          if (copies.length) mates.push({ player: { id: p.id, name: p.name ?? sc.player?.name ?? null }, me: !!p.me, count: copies.length, serials: copies.map((c) => c.serial).filter((n) => n != null) });
+        } catch {}
+      })
+    );
+    mates.sort((a, b) => b.me - a.me || b.count - a.count);
+  } catch {}
+
+  const remote = await relayPulls({ card: id, limit: 200 });
+  if (remote?.pulls) await recordFeed(remote.pulls, true);
+  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
+  const pulls = feedLog.filter((p) => p.card.id === id).map((p) => ({ at: p.at, serial: p.serial, player: p.player }));
+  const since = Math.min(feedSince ?? Infinity, remote?.since ?? Infinity);
+
+  return {
+    card: {
+      id: card.id ?? id,
+      name: card.name,
+      variant: card.variant ?? null,
+      image: card.image,
+      rarity: card.rarity,
+      series: card.series?.title ?? null,
+      owners: card.owners ?? null,
+      circulation: card.circulation ?? null,
+      wants: card.wants ?? null,
+      minted: card.minted ?? null,
+      maxCopies: card.maxCopies ?? null,
+      owned: Array.isArray(card.copies) ? card.copies.length : 0
+    },
+    holders,
+    market,
+    friends: mates,
+    pulls,
+    pullsSince: since === Infinity ? null : since,
+    shared: !!remote
+  };
+}
+
+// Players seen in the "beaux tirages" kept by Aquaman (the most recent first), other than the player and their friends.
+async function knownPlayers(max = 120) {
+  const { me, friends: list } = await friends().catch(() => ({ me: null, friends: [] }));
+  const skip = new Set([me, ...list.map((f) => f.id)]);
+  const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+  let remote = [];
+  try {
+    const res = await fetch(`${RELAY}/players?limit=${max}`);
+    if (res.ok) remote = (await res.json()).players ?? [];
+  } catch {}
+  const seen = new Map();
+  for (const p of [...remote, ...feedLog.map((x) => x.player).filter(Boolean)])
+    if (p.id && !skip.has(p.id) && !seen.has(p.id)) seen.set(p.id, { id: p.id, name: p.name ?? null });
+  return [...seen.values()].slice(0, max);
+}
+
+// Which of these players have the card, read in their public collections.
+async function ownersAmong(cardId, players) {
+  const found = [];
+  let hidden = 0;
+  await Promise.all(
+    players.slice(0, 12).map(async (p) => {
+      try {
+        const sc = await showcase(p.id, 30 * 60e3);
+        if (sc.private) return void hidden++;
+        const copies = (sc.copies ?? []).filter((c) => c.card?.id === cardId);
+        if (copies.length) found.push({ player: { id: p.id, name: p.name ?? sc.player?.name ?? null }, count: copies.length, serials: copies.map((c) => c.serial).filter((n) => n != null) });
+      } catch {
+        hidden++;
+      }
+    })
+  );
+  return { found, hidden };
+}
+
+// ---------- who uses Aquaman (the author only) ----------
+
+const HELLO_EVERY = 6 * 3600e3;
+
+// Tells the relay, every 6 hours at most, that this player uses Aquaman (kind: "extension" or "userscript").
+async function sayHello(kind) {
+  const id = await myId();
+  const { helloAt = 0, helloKind, helloFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor']);
+  if (Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true };
+  let name = null;
+  try {
+    name = (await showcase(id)).player?.name ?? null;
+  } catch {}
+  const res = await fetch(`${RELAY}/hello`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version })
+  });
+  if (res.ok) await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
+  return { ok: res.ok };
+}
+
+// ---------- the author's devices: a key per device, approved once ----------
+
+// The device's key pair, made once: the private key can't be read out (not even by Aquaman), only used to sign.
+function keyStore(mode, use) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('aquaman-keys', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('keys');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction('keys', mode);
+      const req = use(tx.objectStore('keys'));
+      tx.oncomplete = () => resolve(req.result);
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+}
+
+async function deviceKey() {
+  let key = await keyStore('readonly', (store) => store.get('device'));
+  if (!key) {
+    const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    const pub = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    key = { privateKey: pair.privateKey, pub: { kty: pub.kty, crv: pub.crv, x: pub.x, y: pub.y } };
+    await keyStore('readwrite', (store) => store.put(key, 'device'));
+  }
+  return key;
+}
+
+const toBase64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+// A request to the relay's /admin/ addresses, signed with this device's key once it has an id.
+async function adminFetch(method, path, body, extra = {}) {
+  const { adminDevice } = await chrome.storage.local.get('adminDevice');
+  const text = body ? JSON.stringify(body) : '';
+  const headers = { 'content-type': 'application/json', ...extra };
+  if (adminDevice?.id) {
+    const { privateKey } = await deviceKey();
+    const time = Date.now();
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(`${method} ${path} ${time} ${text}`));
+    Object.assign(headers, { 'x-aqm-device': adminDevice.id, 'x-aqm-time': String(time), 'x-aqm-sig': toBase64url(sig) });
+  }
+  return fetch(`${RELAY}${path}`, { method, headers, body: text || undefined });
+}
+
+// This device: { id, state: "pending" | "approved" } or null, checked with the relay while it waits.
+async function adminDevice() {
+  const { adminDevice: device } = await chrome.storage.local.get('adminDevice');
+  if (device?.state !== 'pending') return device ?? null;
+  const res = await fetch(`${RELAY}/admin/devices/state?id=${device.id}`);
+  const { state } = res.ok ? await res.json() : { state: 'pending' };
+  if (state === 'unknown') {
+    await chrome.storage.local.remove('adminDevice');
+    return null;
+  }
+  const next = { ...device, state };
+  await chrome.storage.local.set({ adminDevice: next });
+  return next;
+}
+
+// Asks the relay to approve this device (name: what the author will see, "Brave · Windows" for instance).
+async function requestDevice(name) {
+  const current = await adminDevice();
+  if (current) return current;
+  const { pub } = await deviceKey();
+  const res = await fetch(`${RELAY}/admin/devices/request`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pub, name }) });
+  if (!res.ok) throw new ApiError(res.status, 'relay', `Le relais refuse la demande (${res.status}).`);
+  const device = await res.json();
+  await chrome.storage.local.set({ adminDevice: device });
+  return device;
+}
+
+// Approves this device with the owner's code (only needed for the first device).
+async function approveWithCode(token, name) {
+  const device = await requestDevice(name);
+  const res = await fetch(`${RELAY}/admin/devices/approve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${String(token).trim()}` },
+    body: JSON.stringify({ id: device.id })
+  });
+  if (res.status === 403) return { wrong: true, device };
+  if (!res.ok) throw new ApiError(res.status, 'relay', `Le relais ne répond pas (${res.status}).`);
+  const approved = { ...device, state: 'approved' };
+  await chrome.storage.local.set({ adminDevice: approved });
+  return { device: approved };
+}
+
+// A signed request of the author; a refused one means this device was revoked.
+async function asAuthor(method, path, body) {
+  const device = await adminDevice();
+  if (device?.state !== 'approved') return { needDevice: true, device };
+  const res = await adminFetch(method, path, body);
+  if (res.status === 403) {
+    await chrome.storage.local.remove('adminDevice');
+    return { needDevice: true, device: null, revoked: true };
+  }
+  if (!res.ok) throw new ApiError(res.status, 'relay', `Le relais ne répond pas (${res.status}).`);
+  return res.json();
+}
+
+// Every player who used Aquaman.
+const aquamanUsers = () => asAuthor('GET', '/admin/users');
+
 
 // ---------- messages from content.js ----------
 
@@ -864,10 +1158,35 @@ async function answer(msg) {
         return await favoritesReport(!!msg.fresh);
       case 'favorite':
         return { favorites: await setFavorite(msg.id, !!msg.on) };
-      case 'want':
-        return await wantCard(msg.id, !!msg.on);
-      case 'want-missing':
-        return await wantMissing(msg.id);
+      case 'series-status':
+        return await seriesStatus(msg.id);
+      case 'wants-changed':
+        forget('wants', 'series');
+        return { ok: true };
+      case 'want-room':
+        return await wantRoom(msg.waiting ?? [], msg.sent ?? []);
+      case 'card-search':
+        return { cards: await searchCards(msg.query) };
+      case 'card-owners':
+        return await cardOwners(msg.id);
+      case 'known-players':
+        return { players: await knownPlayers() };
+      case 'owners-among':
+        return await ownersAmong(msg.id, msg.players ?? []);
+      case 'hello':
+        return await sayHello(msg.kind);
+      case 'aquaman-users':
+        return await aquamanUsers();
+      case 'admin-request':
+        return { device: await requestDevice(msg.name) };
+      case 'admin-code':
+        return await approveWithCode(msg.token, msg.name);
+      case 'admin-devices':
+        return await asAuthor('GET', '/admin/devices');
+      case 'admin-approve':
+        return await asAuthor('POST', '/admin/devices/approve', { id: msg.id });
+      case 'admin-revoke':
+        return await asAuthor('POST', '/admin/devices/revoke', { id: msg.id });
       case 'who-pulled':
         return await whoPulled(msg.query, msg.rarity);
       case 'feed-poll':
@@ -978,10 +1297,16 @@ async function handle(msg) {
     return [];
   }
 
-  window.fetch = async function (input, init) {
-    const res = await original.apply(this, arguments);
+  // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through.
+  window.fetch = function (input, init) {
+    const path = pathOf(input);
+    if (!path?.startsWith('/api-game/')) return original.apply(this, arguments);
+    return watch(original.apply(this, arguments), path, input, init);
+  };
+
+  async function watch(pending, path, input, init) {
+    const res = await pending;
     try {
-      const path = pathOf(input);
       const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
       if (path && res.ok) {
         if (method === 'GET' && ME.test(path)) {
@@ -1011,7 +1336,7 @@ async function handle(msg) {
       }
     } catch {}
     return res;
-  };
+  }
 })();
 
 const start = () => {
@@ -1525,9 +1850,6 @@ html.aqm-lock {
 
 .aqm-trade-tile {
   zoom: 1.3;
-}
-.aqm-rel {
-  position: relative;
 }
 .aqm-dot {
   position: absolute;
@@ -2438,7 +2760,7 @@ html.aqm-grabbing * {
   font-size: 12px;
   color: var(--aqm-muted);
 }
-.aqm-fav-head .aqm-chip.is-on {
+.aqm-fav-head .aqm-fav-unstar {
   color: #facc15;
   font-size: 16px;
 }
@@ -2518,6 +2840,376 @@ html.aqm-grabbing * {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* ---------- Collection : album de la série ---------- */
+
+.aqm-album {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 12px;
+}
+.aqm-album-btn {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e4e4e7;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aqm-album-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.aqm-album-btn.is-on {
+  border-color: rgba(250, 204, 21, 0.45);
+  color: #fde047;
+}
+.aqm-album-btn.is-main {
+  border-color: transparent;
+  background: #2563eb;
+  color: #fff;
+}
+.aqm-album-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.aqm-album-note {
+  font-size: 12px;
+  color: var(--aqm-muted);
+}
+
+/* ---------- Qui a cette carte ? ---------- */
+
+.aqm-who-gap {
+  margin-top: 18px;
+}
+.aqm-who-note {
+  margin: 0 0 6px;
+}
+.aqm-who-cards .aqm-mini {
+  cursor: pointer;
+}
+.aqm-who-cards .aqm-mini:hover,
+.aqm-who-cards .aqm-mini:focus-visible {
+  background: rgba(96, 165, 250, 0.14);
+  outline: none;
+}
+.aqm-who-back {
+  margin-bottom: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.aqm-who-card {
+  display: flex;
+  gap: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--aqm-card);
+}
+.aqm-who-card img {
+  width: 92px;
+  border-radius: 10px;
+  aspect-ratio: 63 / 88;
+  object-fit: cover;
+}
+.aqm-who-card > div {
+  flex: 1;
+  min-width: 0;
+}
+.aqm-who-card p {
+  margin: 0 0 2px;
+}
+.aqm-pack-title {
+  font-size: 17px;
+  font-weight: 900;
+  color: #fff;
+}
+.aqm-who-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.aqm-metric {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.aqm-metric small {
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aqm-dim);
+}
+.aqm-metric strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #fff;
+}
+.aqm-owners {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-owner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: var(--aqm-card);
+  font-size: 13px;
+}
+.aqm-owner-serial {
+  min-width: 52px;
+  font-weight: 800;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-owner a {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #e4e4e7;
+  font-weight: 700;
+  text-decoration: none;
+}
+.aqm-owner a:hover {
+  color: #fff;
+  text-decoration: underline;
+}
+.aqm-owner-right {
+  margin-left: auto;
+  font-weight: 700;
+  color: var(--aqm-muted);
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .aqm-who-card img {
+    width: 72px;
+  }
+  .aqm-who-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---------- File de recherche ---------- */
+
+.aqm-queue {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147482500;
+  width: min(360px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 16px;
+  background: var(--aqm-panel);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  color: var(--aqm-text);
+  font-size: 13px;
+  animation: aqm-pop 0.16s ease-out;
+}
+.aqm-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.aqm-queue-head strong {
+  font-size: 13px;
+  font-weight: 800;
+}
+.aqm-queue-btn {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aqm-queue .aqm-bar {
+  margin-top: 8px;
+}
+.aqm-album .aqm-fav-wait {
+  flex-basis: 100%;
+  width: 100%;
+  margin: 4px 0 0;
+}
+.aqm-fav-wait {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  border-radius: 12px;
+}
+.aqm-fav-wait .aqm-queue-head + .aqm-bar,
+.aqm-fav-wait p + .aqm-queue-head {
+  margin-top: 12px;
+}
+.aqm-fav-wait .aqm-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--aqm-muted);
+}
+.aqm-steps {
+  display: flex;
+  height: 8px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.aqm-steps > span {
+  transition: width 0.4s ease;
+}
+.aqm-steps .is-in,
+.aqm-steps-legend .is-in::before {
+  background: #22c55e;
+}
+.aqm-steps .is-sending,
+.aqm-steps-legend .is-sending::before {
+  background: #3b82f6;
+}
+.aqm-steps .is-waiting,
+.aqm-steps-legend .is-waiting::before {
+  background: #d97706;
+}
+.aqm-steps-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.aqm-steps-legend span::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+}
+.aqm-fav-wait .aqm-bar {
+  margin-top: 8px;
+}
+.aqm-fav-wait p {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.aqm-want.is-wait {
+  background: rgba(217, 119, 6, 0.85);
+}
+.aqm-queue p {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--aqm-muted);
+}
+@media (max-width: 640px) {
+  .aqm-queue {
+    right: 8px;
+    left: 8px;
+    bottom: 96px;
+    width: auto;
+  }
+}
+
+.aqm-fav-details {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+.aqm-fav-list {
+  gap: 10px;
+}
+.aqm-fav-series .aqm-fav-cards {
+  margin-top: 14px;
+}
+
+/* ---------- Joueurs avec Aquaman (auteur) ---------- */
+
+.aqm-users-code {
+  display: flex;
+  gap: 8px;
+}
+.aqm-users-stats {
+  margin-top: 4px;
+}
+.aqm-users {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 14px;
+  background: var(--aqm-card);
+  font-size: 13px;
+}
+.aqm-user .aqm-avatar {
+  width: 32px;
+  height: 32px;
+}
+.aqm-user .aqm-name {
+  flex: 1;
+  font-size: 13px;
+}
+.aqm-kind-userscript {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+.aqm-user-seen {
+  min-width: 90px;
+  text-align: right;
+  color: var(--aqm-muted);
+}
+.aqm-device-wait {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(37, 99, 235, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+.aqm-device-wait p {
+  margin: 0;
+}
+.aqm-device-wait p + p {
+  margin-top: 6px;
+}
+.aqm-device-wait strong,
+.aqm-device-code {
+  font: 800 15px ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  letter-spacing: 0.08em;
+  color: #fff;
+}
 `;
   document.head.appendChild(style);
   // ---------- 5. src/content/tutorial.js et content.js : visite, nouveautés, puis tout ce qui s'affiche sur le site ----------
@@ -2555,8 +3247,8 @@ const TOUR = [
   },
   {
     id: 'qui',
-    title: 'Qui a tiré… ?',
-    text: 'Cherche un personnage ou une série : Aquaman te montre les joueurs qui l’ont tiré récemment, avec le numéro de la carte et quand. Il garde les beaux tirages du jeu (SSR, UR, SEC) pendant 30 jours.',
+    title: 'Qui a cette carte ?',
+    text: 'Cherche n’importe quel personnage et choisis sa carte : combien de joueurs l’ont, la liste des détenteurs pour les cartes à tirage limité, ceux qui la vendent au marché, ceux de tes amis qui l’ont, et ceux qui l’ont tirée récemment.',
     find: 'menu-2'
   },
   {
@@ -2568,7 +3260,7 @@ const TOUR = [
   {
     id: 'etoiles',
     title: 'L’étoile des séries',
-    text: 'Sur la page Collection, l’étoile ☆ ajoute une série à tes favoris ; le bouton « ★ Favoris » au-dessus ouvre la liste de leurs personnages.',
+    text: 'Sur la page Collection, l’étoile ☆ ajoute une série à tes favoris ; le bouton « ★ Favoris » au-dessus ouvre la liste de leurs personnages. Quand une série est ouverte, son cadre « Album de la série » a aussi « Ajouter aux favoris » et « Rechercher les manquantes ».',
     page: '/jeu/collection',
     target: '.aqm-fav-bar, .aqm-star'
   },
@@ -2623,6 +3315,16 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.1.1',
+    items: [
+      ['Qui a cette carte ? (menu Plus) : cherche n’importe quel personnage et vois les joueurs qui ont sa carte (détenteurs des cartes limitées, vendeurs au marché, amis) et tous ceux qui l’ont tirée.', 'qui'],
+      ['Base commune des beaux tirages : chaque Aquaman relève les SSR, UR et SEC qui sortent chaque minute et les partage ; « Qui a cette carte ? » s’en sert pour dire qui a tiré une carte et combien de fois.', 'qui'],
+      ['Collection : dans le cadre « Album de la série », « Ajouter aux favoris » et « Rechercher les manquantes » pour la série affichée.', 'etoiles'],
+      ['Rechercher les manquantes : les cartes s’ajoutent au rythme que le jeu accepte, et l’ajout continue pendant que tu changes de page ou ouvres des boosters, avec sa progression en bas de l’écran.'],
+      ['Jusqu’à 200 cartes recherchées de plus : quand la liste du jeu (100 cartes) est pleine, les suivantes attendent dans Aquaman et y entrent au fur et à mesure que tu obtiens les cartes recherchées (Aquaman retire de la liste celles qu’il y avait mises, une fois obtenues). L’ajout se fait en arrière-plan ; sa progression est dans Séries favorites.', 'favoris']
+    ]
+  },
+  {
     version: '1.1.0',
     items: [
       ['Qui a tiré… ? (menu Plus) : les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu gardés 30 jours.', 'qui'],
@@ -2662,6 +3364,8 @@ const CHANGES = [
   const TOUR_HASH = '#aqm-visite';
   const NEWS_HASH = '#aqm-nouveautes';
   const TOUR_STEP = 'aqm-tour-step'; // sessionStorage: step to resume after a page load
+  const AUTHOR_ID = 'cmoht6nr312u6qs135zjtdojg'; // the author's account: the only one shown "Joueurs avec Aquaman"
+  let meId = null;
 
   const ICON_DOTS =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M144,128a16,16,0,1,1-16-16A16,16,0,0,1,144,128ZM60,112a16,16,0,1,0,16,16A16,16,0,0,0,60,112Zm136,0a16,16,0,1,0,16,16A16,16,0,0,0,196,112Z"/></svg>';
@@ -2718,6 +3422,352 @@ const CHANGES = [
     return res;
   }
 
+  // ---------- changes sent from the page ----------
+
+  // The game refuses changes that don't come from its own pages: they are sent from here (with content.fetch on
+  // Firefox, which sends them as the page), never from the background worker.
+  const pageFetch = typeof content !== 'undefined' && content?.fetch ? content.fetch.bind(content) : window.fetch.bind(window);
+
+  async function gameWrite(path, method) {
+    const res = await pageFetch(`/api-game/v1${path}`, { method, credentials: 'include', headers: { accept: 'application/json' } });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const error = new Error(body?.error?.message || `Erreur ${res.status}`);
+      // "Doucement ! Réessaie dans un instant." : the game asks to slow down, the change can be sent again.
+      error.slowDown = res.status === 429 || /doucement|r[ée]essaie|trop de requ/i.test(error.message);
+      error.wait = (Number(res.headers?.get?.('retry-after')) || 0) * 1000;
+      throw error;
+    }
+    return body;
+  }
+
+  // Puts one card in the player's search list (on) or takes it out (also out of the cards waiting in Aquaman).
+  async function wantCard(id, on) {
+    if (!on && (await takeWaiting([id]))) {
+      send({ type: 'wants-changed' });
+      return { wanted: false };
+    }
+    const res = await gameWrite(`/cards/${encodeURIComponent(id)}/want`, on ? 'PUT' : 'DELETE');
+    send({ type: 'wants-changed' });
+    return { wanted: !!res?.wanted };
+  }
+
+  // ---------- search list: a queue that goes on through page changes ----------
+  // The cards to search are kept in the storage: any open page of the game sends them, one at a time, at the pace the
+  // game accepts, and goes on after a change of page or a reload. One tab works at a time (the "owner", with a heartbeat).
+
+  const QUEUE = 'wantQueue';
+  const TAB = Math.random().toString(36).slice(2);
+  const STALE = 10e3; // a tab silent for this long hands the queue over
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  let queueRunning = false;
+  let settled = false; // the page was taken over by React: Aquaman may change it (see whenSettled)
+
+  const readQueue = async () => (await chrome.storage.local.get(QUEUE))[QUEUE] ?? null;
+  const writeQueue = (q) => chrome.storage.local.set({ [QUEUE]: q });
+  // True when another tab is working on the queue right now.
+  const busyElsewhere = (q) => !!q.owner && q.owner !== TAB && (Date.now() - q.beat < STALE || Date.now() < (q.until || 0) + STALE);
+
+  // The game takes 100 cards at most in the search list: the others wait in Aquaman (WAITING) and are sent as places
+  // free up, when the player gets cards of the list. SENT: the cards Aquaman put in the list, taken out once owned.
+  const WAITING = 'wantWaiting';
+  const SENT = 'wantSent';
+  const LIMIT = 'wantLimit';
+  const REFILL = 'wantRefillAt'; // last check of the free places, by any tab
+  const WAIT_MAX = 200; // cards waiting in Aquaman at most, on top of the game's list
+  const ENTERED = 'wantEntered'; // waiting cards gone into the game's list (or obtained) since the waiting list began
+  const CHECK_EVERY = 120e3;
+  const FULL = /d[ée]j[àa]\s*(\d+)|retire|limite|maximum|plein/i; // the game's answer when the list is full
+
+  const readList = async (key) => (await chrome.storage.local.get(key))[key] ?? [];
+
+  // Adds cards at the end of the waiting ones (each once, WAIT_MAX at most); returns how many were added, and how
+  // many didn't fit.
+  async function park(ids) {
+    const waiting = await readList(WAITING);
+    const fresh = ids.filter((id) => !waiting.includes(id));
+    const fit = fresh.slice(0, Math.max(0, WAIT_MAX - waiting.length));
+    if (fit.length) await chrome.storage.local.set({ [WAITING]: [...waiting, ...fit], ...(waiting.length ? {} : { [ENTERED]: 0 }) });
+    return { parked: fit.length, over: fresh.length - fit.length };
+  }
+
+  // Takes cards out of the waiting ones; returns how many were there.
+  async function takeWaiting(ids) {
+    const waiting = await readList(WAITING);
+    const left = waiting.filter((id) => !ids.includes(id));
+    if (left.length !== waiting.length) await chrome.storage.local.set({ [WAITING]: left });
+    return waiting.length - left.length;
+  }
+
+  // Adds cards to the queue (each once); returns { sent } with how many were added. While cards wait for a place,
+  // the new ones wait behind them: { parked, over } (see park).
+  async function enqueueWants(ids, refill = false) {
+    if (!refill && (await readList(WAITING)).length) {
+      const r = await park(ids);
+      checkRoom(20e3);
+      return r;
+    }
+    let q = await readQueue();
+    if (!q || q.finishedAt) q = { ids: [], total: 0, done: 0, refused: null, owner: null, beat: 0, until: 0, tries: 0, finishedAt: 0 };
+    const fresh = ids.filter((id) => !q.ids.includes(id));
+    q.ids.push(...fresh);
+    q.total += fresh.length;
+    q.refill = refill && q.refill !== false; // cards added by the player show the box
+    await writeQueue(q);
+    runQueue();
+    return { sent: fresh.length };
+  }
+
+  const nCards = (n) => `${n} carte${n > 1 ? 's' : ''}`;
+  // Cards that didn't fit in the waiting ones.
+  const overNote = (over) => (over ? ` ${nCards(over)} de trop : Aquaman en garde ${WAIT_MAX} en attente au plus.` : '');
+
+  // What became of the cards given to enqueueWants (r: its answer).
+  function wantsNote(r, free) {
+    if (r.sent == null)
+      return `Ta liste du jeu est pleine : ${nCards(r.parked)} de plus en attente dans Aquaman, ajoutée${r.parked > 1 ? 's' : ''} au fur et à mesure que tu obtiens les cartes recherchées.` + overNote(r.over);
+    return `${nCards(r.sent)} en cours d’ajout : ${free}, la progression reste affichée (en haut de Séries favorites et en bas de l’écran).`;
+  }
+
+  // Sends waiting cards when the search list has free places: first takes out the cards Aquaman put there that the
+  // player now owns. Runs after the collection changed, and every 2 minutes (wait: time since the last check).
+  let roomBusy = false;
+  async function checkRoom(wait = CHECK_EVERY) {
+    if (stopped || roomBusy) return;
+    roomBusy = true;
+    try {
+      await refill(wait);
+    } finally {
+      roomBusy = false;
+    }
+  }
+
+  async function refill(wait) {
+    const waiting = await readList(WAITING);
+    if (!waiting.length) return;
+    const q = await readQueue();
+    if (q?.ids.length) return; // the queue first
+    const { [REFILL]: at = 0, [LIMIT]: limit = 100 } = await chrome.storage.local.get([REFILL, LIMIT]);
+    if (Date.now() - at < wait) return;
+    await chrome.storage.local.set({ [REFILL]: Date.now() });
+    const room = await send({ type: 'want-room', waiting, sent: await readList(SENT) });
+    if (!room || room.error || stopped) return;
+    let freed = 0;
+    for (const id of room.obtained) {
+      try {
+        await gameWrite(`/cards/${encodeURIComponent(id)}/want`, 'DELETE');
+        freed++;
+      } catch {}
+      await pause(900);
+    }
+    // Cards added or taken out of the waiting ones meanwhile are kept as they are.
+    const now = await readList(WAITING);
+    const left = now.filter((id) => !waiting.includes(id) || room.waiting.includes(id));
+    const places = Math.max(0, limit - room.count + freed);
+    // Waiting cards already searched or obtained count as done.
+    const entered = (await chrome.storage.local.get(ENTERED))[ENTERED] ?? 0;
+    await chrome.storage.local.set({ [SENT]: room.sent, [WAITING]: left.slice(places), [ENTERED]: entered + waiting.length - room.waiting.length });
+    if (freed) send({ type: 'wants-changed' });
+    if (places && left.length) await enqueueWants(left.slice(0, places), true);
+  }
+
+  async function stopQueue() {
+    const q = await readQueue();
+    if (!q) return;
+    await writeQueue({ ...q, ids: [], refused: null, stopped: true, finishedAt: Date.now() });
+  }
+
+  // Sends the cards of the queue, waits when the game asks to slow down, stops at a real refusal (a full search list).
+  async function runQueue() {
+    if (queueRunning || stopped) return;
+    const first = await readQueue();
+    if (!first?.ids.length || busyElsewhere(first)) return;
+    queueRunning = true;
+    let gap = 900;
+    try {
+      while (!stopped) {
+        let q = await readQueue();
+        if (!q?.ids.length || busyElsewhere(q)) break;
+        const id = q.ids[0];
+        await writeQueue({ ...q, owner: TAB, beat: Date.now(), until: 0 });
+        try {
+          await gameWrite(`/cards/${encodeURIComponent(id)}/want`, 'PUT');
+          q = await readQueue();
+          if (!q || q.finishedAt) break; // stopped meanwhile
+          const ids = q.ids.filter((x) => x !== id);
+          const { [SENT]: sent = [], [ENTERED]: entered = 0 } = await chrome.storage.local.get([SENT, ENTERED]);
+          await chrome.storage.local.set({ [SENT]: sent.includes(id) ? sent : [...sent, id], ...(q.refill ? { [ENTERED]: entered + 1 } : {}) });
+          await writeQueue({ ...q, ids, done: q.done + 1, tries: 0, beat: Date.now(), finishedAt: ids.length ? 0 : Date.now() });
+          if (ids.length) await pause(gap);
+        } catch (e) {
+          q = await readQueue();
+          if (!q || q.finishedAt) break;
+          if (e.slowDown && q.tries < 6) {
+            gap = Math.min(4000, gap * 1.5);
+            const wait = Math.max(e.wait, Math.min(30e3, 3000 * 2 ** q.tries));
+            await writeQueue({ ...q, tries: q.tries + 1, beat: Date.now(), until: Date.now() + wait });
+            await pause(wait);
+          } else if (FULL.test(e.message)) {
+            // The search list is full: the rest waits in Aquaman for free places.
+            const limit = Number(e.message.match(FULL)?.[1]);
+            if (limit > 0) await chrome.storage.local.set({ [LIMIT]: limit });
+            const before = await readList(WAITING);
+            const waiting = [...q.ids, ...before.filter((x) => !q.ids.includes(x))];
+            const parked = Math.min(q.ids.length, WAIT_MAX);
+            await chrome.storage.local.set({ [WAITING]: waiting.slice(0, WAIT_MAX), [REFILL]: Date.now(), ...(before.length || q.refill ? {} : { [ENTERED]: 0 }) });
+            await writeQueue({ ...q, parked, over: q.ids.length - parked, ids: [], finishedAt: Date.now() });
+          } else await writeQueue({ ...q, refused: e.message, left: q.ids.length, ids: [], finishedAt: Date.now() });
+        }
+      }
+    } finally {
+      queueRunning = false;
+      send({ type: 'wants-changed' });
+    }
+  }
+
+  // The box at the bottom of every page of the game: the cards being added by the player. The waiting cards go in
+  // the background, without a box (their progress is in the favourite series).
+  async function renderBox() {
+    const q = await readQueue();
+    if (!stopped) renderQueue(q && !q.refill ? q : null);
+  }
+
+  // The search of the player and the waiting cards, for the favourite series, kept up to date while it is shown:
+  // a bar in three parts (in the game's list / being sent / waiting in Aquaman). changed: called when cards were
+  // taken out of the waiting ones, or when an adding ended (the series then show what is left to search).
+  function searchPanel(changed) {
+    const panel = h('div', { class: 'aqm-fav-wait', role: 'status', hidden: true });
+    let wasRunning = null;
+    const paint = async () => {
+      if (!panel.isConnected && wasRunning !== null) return void stop();
+      const { [QUEUE]: q = null, [WAITING]: waiting = [], [ENTERED]: entered = 0, [REFILL]: at = 0, [LIMIT]: limit = 100 } =
+        await chrome.storage.local.get([QUEUE, WAITING, ENTERED, REFILL, LIMIT]);
+      const running = !!q?.ids.length;
+      if (wasRunning && !running) changed?.();
+      wasRunning = running;
+      const parts = [];
+      const slow = running && q.until > Date.now() ? ` Le jeu demande de ralentir : reprise dans ${Math.ceil((q.until - Date.now()) / 1000)} s.` : '';
+
+      // The cards the player just asked for.
+      if (running && !q.refill)
+        parts.push(
+          h('div', { class: 'aqm-queue-head' }, h('strong', {}, `🔭 Ajout à ta liste du jeu · ${q.done}/${q.total}`)),
+          h('span', { class: 'aqm-bar' }, h('span', { style: `width:${q.total ? ((100 * q.done) / q.total).toFixed(1) : 0}%` })),
+          h('p', {}, `Les cartes entrent une à une dans ta liste de recherches du jeu (${limit} cartes au plus) ; au-delà, elles passent dans la file d’attente d’Aquaman.${slow}`)
+        );
+
+      // The waiting cards.
+      const sending = running && q.refill ? q.ids.length : 0;
+      const total = entered + sending + waiting.length;
+      if (waiting.length || sending) {
+        const pc = (n) => `${((100 * n) / total).toFixed(1)}%`;
+        const ago = Math.round((Date.now() - at) / 60e3);
+        const next = Math.max(0, Math.ceil((at + CHECK_EVERY - Date.now()) / 60e3));
+        parts.push(
+          h('div', { class: 'aqm-queue-head' },
+            h('strong', {}, `⏳ File d’attente d’Aquaman · ${entered}/${total}`),
+            h('button', {
+              type: 'button',
+              class: 'aqm-queue-btn',
+              onclick: async () => {
+                if (!confirm(`Retirer les ${nCards(waiting.length)} de la file d’attente d’Aquaman ? Celles déjà dans ta liste du jeu y restent.`)) return;
+                await chrome.storage.local.remove([WAITING, ENTERED]);
+                await send({ type: 'wants-changed' });
+                changed?.();
+              }
+            }, 'Vider la file')),
+          h('p', {}, `Ta liste de recherches du jeu est pleine (${limit} cartes). Aquaman garde les suivantes (${WAIT_MAX} au plus) et les y ajoute tout seul dès qu’une place se libère : quand tu obtiens une carte que tu recherches.`),
+          h('span', { class: 'aqm-steps' },
+            h('span', { class: 'is-in', style: `width:${pc(entered)}` }),
+            h('span', { class: 'is-sending', style: `width:${pc(sending)}` }),
+            h('span', { class: 'is-waiting', style: `width:${pc(waiting.length)}` })),
+          h('div', { class: 'aqm-steps-legend' },
+            h('span', { class: 'is-in' }, `${entered} entrée${entered > 1 ? 's' : ''} dans ta liste`),
+            sending ? h('span', { class: 'is-sending' }, `${sending} en cours d’envoi`) : null,
+            h('span', { class: 'is-waiting' }, `${waiting.length} en attente`)),
+          h('div', { class: 'aqm-queue-actions' },
+            h('small', {}, sending
+              ? `Des places se sont libérées : envoi en cours.${slow}`
+              : `Places vérifiées ${at ? (ago ? `il y a ${ago} min` : 'à l’instant') : 'jamais'}${next ? `, prochaine vérification dans ${next} min` : ''}.`),
+            sending ? null : h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => checkRoom(0) }, 'Vérifier maintenant'))
+        );
+      }
+      panel.hidden = !parts.length;
+      panel.replaceChildren(...parts);
+    };
+    const onChange = (changes) => [QUEUE, WAITING, ENTERED, REFILL].some((k) => changes[k]) && paint();
+    const timer = setInterval(paint, 5000);
+    const stop = () => {
+      clearInterval(timer);
+      chrome.storage.onChanged.removeListener?.(onChange);
+    };
+    chrome.storage.onChanged.addListener(onChange);
+    paint();
+    return panel;
+  }
+
+  // The cards being added: progress, then the result.
+  function renderQueue(q) {
+    let box = document.querySelector('.aqm-queue');
+    if (!q || (!q.ids.length && !q.finishedAt) || !location.pathname.startsWith('/jeu')) return void box?.remove();
+    if (!box) box = document.body.appendChild(h('div', { class: 'aqm-root aqm-queue', role: 'status' }));
+    const running = q.ids.length > 0;
+    const added = `${nCards(q.done)} ajoutée${q.done > 1 ? 's' : ''} à ta liste de recherches du jeu`;
+    let title;
+    let lines;
+    if (running) {
+      title = `🔭 Recherche des manquantes · ${q.done}/${q.total}`;
+      lines = [
+        q.until > Date.now()
+          ? `Le jeu demande de ralentir : reprise dans ${Math.ceil((q.until - Date.now()) / 1000)} s.`
+          : 'La recherche continue même si tu changes de page ou ouvres des boosters.'
+      ];
+    } else if (q.stopped) {
+      title = '🔭 Recherche arrêtée';
+      lines = [`✅ ${added}.`];
+    } else if (q.refused) {
+      title = '🔭 Recherche interrompue';
+      lines = [`✅ ${added}.`, `⛔ Le jeu a refusé la suite (« ${q.refused} ») : ${nCards(q.left)} non ajoutée${q.left > 1 ? 's' : ''}.`];
+    } else if (q.parked) {
+      title = '🔭 Ta liste du jeu est pleine';
+      lines = [
+        `✅ ${added}.`,
+        `⏳ ${nCards(q.parked)} mise${q.parked > 1 ? 's' : ''} dans la file d’attente d’Aquaman : ${q.parked > 1 ? 'elles seront ajoutées' : 'elle sera ajoutée'} toute${q.parked > 1 ? 's' : ''} seule${q.parked > 1 ? 's' : ''} dès qu’une place se libère, quand tu obtiens une carte que tu recherches.`,
+        q.over ? `⛔ ${nCards(q.over)} non gardée${q.over > 1 ? 's' : ''} : la file d’attente est pleine (${WAIT_MAX} cartes).` : null,
+        'Suis la file dans Plus › Séries favorites.'
+      ];
+    } else {
+      title = '🔭 Recherche terminée';
+      lines = [`✅ ${added}.`, 'Le jeu te prévient quand elles sont mises en vente.'];
+    }
+    // The bar only while cards are sent (replaceChildren would show a null as text).
+    box.replaceChildren(
+      ...[
+        h('div', { class: 'aqm-queue-head' }, h('strong', {}, title),
+          h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => (running ? stopQueue() : chrome.storage.local.remove(QUEUE)) }, running ? 'Arrêter' : 'OK')),
+        running && h('span', { class: 'aqm-bar' }, h('span', { style: `width:${q.total ? ((100 * q.done) / q.total).toFixed(1) : 0}%` })),
+        ...lines.map((line) => line && h('p', {}, line))
+      ].filter(Boolean)
+    );
+  }
+
+  // The queue changed (in this tab or another one): the box follows, and this tab takes over if needed.
+  function onStorage(changes) {
+    if (stopped || !settled || !changes[QUEUE]) return;
+    renderBox();
+    runQueue();
+  }
+
+  // Every 5 seconds: the countdown of a wait, and a tab that went silent.
+  setInterval(async () => {
+    if (stopped || !settled) return;
+    const q = await readQueue();
+    renderBox();
+    if (q?.finishedAt && Date.now() - q.finishedAt > 60e3) chrome.storage.local.remove(QUEUE);
+    else runQueue();
+    checkRoom();
+  }, 5000);
+
   // Messages posted by inject.js about the site's own requests.
   function onPageMessage(e) {
     if (e.source !== window || typeof e.data?.aquaman !== 'string') return;
@@ -2725,6 +3775,7 @@ const CHANGES = [
       owned = null;
       send({ type: 'collection-stale' });
       setTimeout(schedule, 1500);
+      setTimeout(() => checkRoom(20e3), 3000); // a card searched may just have been obtained
     } else if (e.data.aquaman === 'status') send({ type: 'status', pending: e.data.pending });
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
@@ -2766,6 +3817,14 @@ const CHANGES = [
   }
 
   const setText = (el, text) => el.textContent !== text && (el.textContent = text);
+  // Lets a badge be placed in the corner of an element of the site. Inline style: the site rewrites the classes of its
+  // elements (a selected series, for instance), which would take away a class of Aquaman.
+  function anchorBadges(el) {
+    const position = getComputedStyle(el).position;
+    if (el.style.position === 'relative' || (position && position !== 'static')) return;
+    el.style.position = 'relative';
+    el.dataset.aqmAnchor = '1';
+  }
   const setClass = (el, cls) => el.className !== cls && (el.className = cls);
   const isVisible = (el) => !!el && el.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   const firstVisible = (selector) => [...document.querySelectorAll(selector)].find(isVisible) ?? null;
@@ -2871,10 +3930,11 @@ const CHANGES = [
       { class: 'aqm-root aqm-menu', role: 'menu' },
       item('Classement des amis', 'Cartes uniques et séries complètes', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
-      item('Qui a tiré… ?', 'Les joueurs qui ont tiré un perso', ICON_SEARCH, openWhoPulled),
+      item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
       item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
-      item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews())
+      item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews()),
+      meId === AUTHOR_ID ? item('Joueurs avec Aquaman', 'Réservé à l’auteur', ICON_TROPHY, openUsers) : null
     );
     menu.anchor = anchor;
     document.body.append(menu);
@@ -3422,7 +4482,7 @@ const CHANGES = [
     render();
   }
 
-  // ---------- who pulled a character ----------
+  // ---------- who has a card ----------
 
   // "il y a 5 min", "il y a 3 h", "il y a 2 j".
   function timeAgo(at) {
@@ -3433,83 +4493,368 @@ const CHANGES = [
     return `il y a ${Math.floor(s / 86400)} j`;
   }
 
-  async function openWhoPulled() {
-    const body = openOverlay('Qui a tiré… ?', 'Les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu.');
-    const suggestions = h('datalist', { id: 'aqm-pulled-suggest' });
-    const search = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Nom d’un personnage ou d’une série…', 'aria-label': 'Personnage ou série', list: 'aqm-pulled-suggest', autocomplete: 'off' });
-    const rarityRow = h('div', { class: 'aqm-chips' });
-    const status = h('p', { class: 'aqm-note' }, 'Chargement des tirages…');
-    const list = h('ol', { class: 'aqm-pulled' });
-    body.append(h('div', { class: 'aqm-pick' }, search), h('div', { class: 'aqm-pick' }, rarityRow), status, list, suggestions);
-    let rarity = '';
+  // One line of a list of players: the card's number, the player (link to their profile) and a detail on the right.
+  const playerRow = (serial, player, right, card) =>
+    h(
+      'li',
+      { class: 'aqm-owner' },
+      h('span', { class: 'aqm-owner-serial' }, serial != null ? `#${serial}${card?.maxCopies ? `/${card.maxCopies}` : ''}` : ''),
+      player?.id ? h('a', { href: `/profile/${encodeURIComponent(player.id)}` }, player.name || 'Un joueur') : h('span', { class: 'aqm-muted' }, player?.name || 'Un joueur au profil privé'),
+      h('span', { class: 'aqm-owner-right' }, right ?? '')
+    );
+
+  // Recent pulls of the "beaux tirages" kept by Aquaman, as rows.
+  const pullRows = (pulls) =>
+    pulls.map((p) =>
+      h(
+        'li',
+        { class: 'aqm-pull' },
+        h('a', { href: `/jeu/carte/${encodeURIComponent(p.card.id)}`, class: 'aqm-pull-card' }, h('img', { src: cardImageUrl(p.card.image), alt: '', loading: 'lazy' })),
+        h(
+          'div',
+          { class: 'aqm-pull-main' },
+          h('p', { class: 'aqm-mini-name' }, rarityCode(p.card.rarity), ' ', p.card.name, p.serial != null ? h('span', { class: 'aqm-muted' }, ` #${p.serial}${p.card.maxCopies ? `/${p.card.maxCopies}` : ''}`) : null),
+          p.card.series ? h('p', { class: 'aqm-muted aqm-pull-series' }, p.card.series) : null
+        ),
+        h(
+          'div',
+          { class: 'aqm-pull-who' },
+          p.player?.id ? h('a', { href: `/profile/${encodeURIComponent(p.player.id)}` }, p.player.name || 'Un joueur') : h('span', {}, p.player?.name || 'Un joueur'),
+          h('small', { title: new Date(p.at).toLocaleString('fr-FR') }, timeAgo(p.at))
+        )
+      )
+    );
+
+  async function openWhoHas() {
+    const body = openOverlay('Qui a cette carte ?', 'Cherche n’importe quel personnage : les joueurs qui ont sa carte, qui la vendent et qui l’ont tirée récemment.');
+    const search = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Nom d’un personnage ou d’une série…', 'aria-label': 'Personnage ou série', autocomplete: 'off' });
+    const view = h('div', { class: 'aqm-who' });
+    body.append(h('div', { class: 'aqm-pick' }, search), view);
     let asked = 0;
     let timer = 0;
 
-    const renderRarities = () =>
-      rarityRow.replaceChildren(
-        ...[['', 'Toutes'], ...['SSR', 'UR', 'SEC'].map((c) => [c, c])].map(([code, label]) =>
-          h(
-            'button',
-            {
-              type: 'button',
-              class: `aqm-chip${code ? ` aqm-chip-r aqm-r-${code}` : ''}${code === rarity ? ' is-on' : ''}`,
-              'aria-pressed': String(code === rarity),
-              onclick: () => {
-                rarity = code;
-                load();
-              }
-            },
-            label
-          )
-        )
-      );
-
-    async function load() {
-      renderRarities();
+    // Without a choice: the cards matching the search, then the recent pulls matching it.
+    async function showSearch() {
       const n = ++asked;
       const query = search.value.trim();
-      let res;
+      view.replaceChildren(h('p', { class: 'aqm-note' }, 'Recherche…'));
+      const [found, pulled] = await Promise.all([
+        query.length >= 2 ? ask({ type: 'card-search', query }).catch(() => ({ cards: [] })) : { cards: [] },
+        ask({ type: 'who-pulled', query, rarity: '' }).catch((e) => ({ error: e.message }))
+      ]);
+      if (n !== asked) return;
+      const parts = [];
+      if (query.length >= 2) {
+        parts.push(h('p', { class: 'aqm-label' }, 'Cartes du jeu'));
+        parts.push(
+          found.cards.length
+            ? h(
+                'ul',
+                { class: 'aqm-strip aqm-who-cards' },
+                found.cards.map((c) =>
+                  h(
+                    'li',
+                    { class: `aqm-mini${c.owned ? ' is-owned' : ''}`, role: 'button', tabindex: '0', title: `Qui a ${c.name} ?`, onclick: () => showCard(c.id), onkeydown: (e) => e.key === 'Enter' && showCard(c.id) },
+                    h('img', { src: cardImageUrl(c.image), alt: '', loading: 'lazy' }),
+                    h('div', {}, h('p', { class: 'aqm-mini-name' }, rarityCode(c.rarity), ' ', c.name, c.variant ? ` (${c.variant})` : ''), h('p', { class: 'aqm-muted' }, c.series ?? ''))
+                  )
+                )
+              )
+            : h('p', { class: 'aqm-muted' }, `Aucune carte ne s’appelle « ${query} ».`)
+        );
+      } else parts.push(h('p', { class: 'aqm-note' }, 'Tape au moins 2 lettres du nom d’un personnage, puis choisis sa carte.'));
+      if (!pulled.error) {
+        const since = pulled.since ? new Date(pulled.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) : null;
+        parts.push(h('p', { class: 'aqm-label aqm-who-gap' }, query ? 'Tirages récents' : 'Derniers beaux tirages'));
+        parts.push(h('p', { class: 'aqm-note aqm-who-note' }, `Parmi ${pulled.kept > 1 ? `les ${fmt(pulled.kept)} beaux tirages` : `${fmt(pulled.kept)} beau tirage`} (SSR, UR, SEC) relevé${pulled.kept > 1 ? 's' : ''} par les joueurs qui ont Aquaman${since ? ` depuis le ${since}` : ''}${pulled.shared ? '' : ' (base commune injoignable : seulement ceux de cet appareil)'}.${pulled.latest ? ` Dernier tirage reçu ${timeAgo(pulled.latest)}.` : ''}`));
+        parts.push(pulled.pulls.length ? h('ol', { class: 'aqm-pulled' }, pullRows(pulled.pulls.slice(0, 50))) : h('p', { class: 'aqm-muted' }, 'Aucun tirage récent.'));
+      }
+      view.replaceChildren(...parts);
+    }
+
+    // One card: everyone Aquaman can see with it.
+    async function showCard(id) {
+      const n = ++asked;
+      view.replaceChildren(h('p', { class: 'aqm-note' }, 'Recherche des joueurs qui ont cette carte…'));
+      let r;
       try {
-        res = await ask({ type: 'who-pulled', query, rarity });
+        r = await ask({ type: 'card-owners', id });
       } catch (e) {
-        status.textContent = e.message;
+        view.replaceChildren(h('p', { class: 'aqm-note' }, e.message));
         return;
       }
       if (n !== asked) return;
-      suggestions.replaceChildren(...res.suggestions.map((s) => h('option', { value: s })));
-      const since = res.since ? new Date(res.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) : null;
-      status.textContent = query
-        ? res.total
-          ? `${fmt(res.total)} tirage${res.total > 1 ? 's' : ''} de « ${query} » parmi les ${fmt(res.kept)} beaux tirages gardés${since ? ` depuis le ${since}` : ''}.`
-          : `Personne n’a tiré « ${query} » parmi les ${fmt(res.kept)} beaux tirages gardés${since ? ` depuis le ${since}` : ''}.`
-        : `Les derniers beaux tirages (${fmt(res.kept)} gardés${since ? ` depuis le ${since}` : ''}). Tape un nom pour chercher.`;
-      list.replaceChildren(
-        ...res.pulls.map((p) =>
+      const c = r.card;
+      const stat = (label, value) => (value == null ? null : h('div', { class: 'aqm-metric' }, h('small', {}, label), h('strong', {}, value)));
+      const section = (title, items, empty) => [h('p', { class: 'aqm-label aqm-who-gap' }, title), items.length ? h('ul', { class: 'aqm-owners' }, items) : h('p', { class: 'aqm-muted' }, empty)];
+      view.replaceChildren(
+        h('button', { type: 'button', class: 'aqm-chip aqm-who-back', onclick: showSearch }, '← Retour à la recherche'),
+        h(
+          'div',
+          { class: 'aqm-who-card' },
+          h('a', { href: `/jeu/carte/${encodeURIComponent(c.id)}` }, h('img', { src: cardImageUrl(c.image), alt: '' })),
           h(
-            'li',
-            { class: 'aqm-pull' },
-            h('a', { href: `/jeu/carte/${encodeURIComponent(p.card.id)}`, class: 'aqm-pull-card' }, h('img', { src: cardImageUrl(p.card.image), alt: '', loading: 'lazy' })),
+            'div',
+            {},
+            h('p', { class: 'aqm-pack-title' }, rarityCode(c.rarity), ' ', c.name, c.variant ? ` (${c.variant})` : ''),
+            c.series ? h('p', { class: 'aqm-muted' }, c.series) : null,
+            h('p', { class: 'aqm-muted' }, c.owned ? `Tu l’as${c.owned > 1 ? ` (${c.owned} exemplaires)` : ''}.` : 'Tu ne l’as pas.'),
             h(
               'div',
-              { class: 'aqm-pull-main' },
-              h('p', { class: 'aqm-mini-name' }, rarityCode(p.card.rarity), ' ', p.card.name, p.serial != null ? h('span', { class: 'aqm-muted' }, ` #${p.serial}${p.card.maxCopies ? `/${p.card.maxCopies}` : ''}`) : null),
-              p.card.series ? h('p', { class: 'aqm-muted aqm-pull-series' }, p.card.series) : null
-            ),
-            h(
+              { class: 'aqm-who-stats' },
+              stat('Joueurs qui l’ont', c.owners != null ? fmt(c.owners) : null),
+              stat('En circulation', c.circulation != null ? fmt(c.circulation) : null),
+              stat('Recherchée par', c.wants != null ? fmt(c.wants) : null),
+              stat('Tirage', c.maxCopies ? `${fmt(c.minted ?? 0)}/${fmt(c.maxCopies)}` : 'Illimité')
+            )
+          )
+        ),
+        ...(r.holders
+          ? section(`Détenteurs · ${fmt(r.holders.length)}`, r.holders.map((x) => playerRow(x.serial, x.player, null, c)), 'Personne ne l’a encore.')
+          : [
+              h(
+                'p',
+                { class: 'aqm-note' },
+                c.owners
+                  ? `${fmt(c.owners)} joueur${c.owners > 1 ? 's l’ont' : ' l’a'}, mais le jeu ne publie la liste des détenteurs que pour les cartes à tirage limité. Voici ceux qu’Aquaman peut voir.`
+                  : 'Personne n’a encore cette carte.'
+              )
+            ]),
+        ...section(
+          'En vente au marché',
+          r.market.map((x) => playerRow(x.serial, x.player, x.price != null ? h('span', {}, perles(x.price)) : null, c)),
+          'Personne ne la vend en ce moment.'
+        ),
+        ...section(
+          'Parmi toi et tes amis',
+          r.friends.map((x) => playerRow(x.serials[0] ?? null, { ...x.player, name: x.me ? `${x.player.name ?? 'Toi'} (toi)` : x.player.name }, x.count > 1 ? `×${x.count}` : null, c)),
+          'Aucun de tes amis ne l’a (ou leur collection est privée).'
+        ),
+        ...section(
+          r.pulls.length
+            ? `Tirée ${r.pulls.length} fois${r.pullsSince ? ` depuis le ${new Date(r.pullsSince).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}` : ''}`
+            : 'Tirée récemment',
+          r.pulls.map((x) => playerRow(x.serial, x.player, h('small', { title: new Date(x.at).toLocaleString('fr-FR') }, timeAgo(x.at)), c)),
+          `Aucun tirage relevé${r.pullsSince ? ` depuis le ${new Date(r.pullsSince).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}` : ''} par les joueurs qui ont Aquaman (le jeu ne publie que les beaux tirages SSR, UR et SEC).`
+        ),
+        ...(r.holders ? [] : farther(c, n))
+      );
+    }
+
+    // "Chercher parmi les joueurs vus récemment": their public collections, read a few at a time.
+    function farther(c, n) {
+      const list = h('ul', { class: 'aqm-owners' });
+      const note = h('p', { class: 'aqm-muted', role: 'status' });
+      const go = h('button', { type: 'button', class: 'aqm-album-btn is-main' }, '🔍 Chercher parmi les joueurs vus récemment');
+      go.addEventListener('click', async () => {
+        go.disabled = true;
+        let players;
+        try {
+          players = (await ask({ type: 'known-players' })).players;
+        } catch (e) {
+          note.textContent = e.message;
+          return;
+        }
+        let done = 0;
+        let found = 0;
+        let hidden = 0;
+        for (let i = 0; i < players.length; i += 6) {
+          if (n !== asked) return; // the player went elsewhere
+          note.textContent = `${done}/${players.length} joueurs regardés · ${found} l’${found > 1 ? 'ont' : 'a'}…`;
+          const part = players.slice(i, i + 6);
+          const r = await ask({ type: 'owners-among', id: c.id, players: part }).catch(() => ({ found: [], hidden: part.length }));
+          done += part.length;
+          hidden += r.hidden;
+          found += r.found.length;
+          list.append(...r.found.map((x) => playerRow(x.serials[0] ?? null, x.player, x.count > 1 ? `×${x.count}` : null, c)));
+        }
+        go.hidden = true;
+        note.textContent = players.length
+          ? `${players.length} joueur${players.length > 1 ? 's' : ''} vu${players.length > 1 ? 's' : ''} récemment regardé${players.length > 1 ? 's' : ''} : ${found} l’${found > 1 ? 'ont' : 'a'}${hidden ? ` (${hidden} collection${hidden > 1 ? 's' : ''} privée${hidden > 1 ? 's' : ''} ou illisible${hidden > 1 ? 's' : ''})` : ''}.`
+          : 'Aquaman n’a pas encore vu d’autres joueurs : il les découvre dans les beaux tirages, au fil du temps.';
+      });
+      return [h('p', { class: 'aqm-label aqm-who-gap' }, 'Chercher plus loin'), h('p', { class: 'aqm-muted' }, 'Aquaman peut regarder la collection publique des joueurs vus dans les beaux tirages relevés par tous les joueurs qui l’ont.'), go, note, list];
+    }
+
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(showSearch, 300);
+    });
+    showSearch();
+  }
+
+  // ---------- the players who use Aquaman (the author only) ----------
+
+  // The account logged in on this page, asked to the site itself (never a remembered one: the account may change).
+  async function accountId() {
+    try {
+      const res = await pageFetch('/api/auth/check', { credentials: 'include', headers: { accept: 'application/json' } });
+      return (await res.json())?.user?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function openUsers() {
+    meId = await accountId();
+    if (meId !== AUTHOR_ID) return; // reserved to the author's account, checked again on the site
+    const body = openOverlay('Joueurs avec Aquaman', 'Les joueurs qui utilisent Aquaman, du plus récemment vu au plus ancien. Visible par toi seul.');
+    body.parentElement.classList.add('aqm-panel-wide');
+    const view = h('div');
+    body.append(view);
+
+    // What the author sees in the list of devices, "Brave · Windows" for instance.
+    const deviceName = () => {
+      const ua = navigator.userAgent;
+      const browser = navigator.brave ? 'Brave' : /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) && !/Chrome\//.test(ua) ? 'Safari' : 'Chrome';
+      const system = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iPhone' : /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'Mac' : 'Linux';
+      return `${browser} · ${system}`;
+    };
+    const showCode = (id) => `${id.slice(0, 4)}-${id.slice(4)}`;
+    let polling = 0;
+
+    // This device isn't approved yet: the owner's code once, or the approval from a device already approved.
+    function approve(r) {
+      const input = h('input', { type: 'password', class: 'aqm-search', placeholder: 'Code propriétaire', 'aria-label': 'Code propriétaire', autocomplete: 'off' });
+      const go = h('button', { type: 'button', class: 'aqm-album-btn is-main' }, 'Approuver');
+      const note = h('p', { class: 'aqm-muted', role: 'status' }, r.wrong ? 'Ce code n’est pas le bon.' : r.revoked ? 'Cet appareil a été révoqué.' : '');
+      const submit = async () => {
+        if (!input.value.trim()) return;
+        go.disabled = true;
+        const res = await ask({ type: 'admin-code', token: input.value.trim(), name: deviceName() }).catch((e) => ({ error: e.message }));
+        go.disabled = false;
+        if (res.wrong) note.textContent = 'Ce code n’est pas le bon.';
+        else if (res.error) note.textContent = res.error;
+        else load();
+      };
+      go.addEventListener('click', submit);
+      input.addEventListener('keydown', (e) => e.key === 'Enter' && submit());
+      const pending = r.device?.state === 'pending';
+      const other = h('button', { type: 'button', class: 'aqm-album-btn' }, 'Demander l’approbation à un autre appareil');
+      other.addEventListener('click', async () => {
+        other.disabled = true;
+        await ask({ type: 'admin-request', name: deviceName() }).catch(() => {});
+        load();
+      });
+      view.replaceChildren(
+        h('p', { class: 'aqm-note' }, 'Cet appareil n’est pas encore approuvé. Il ne l’est qu’une fois : ensuite, plus rien à faire.'),
+        pending
+          ? h(
               'div',
-              { class: 'aqm-pull-who' },
-              p.player?.id ? h('a', { href: `/profile/${encodeURIComponent(p.player.id)}` }, p.player.name || 'Un joueur') : h('span', {}, p.player?.name || 'Un joueur'),
-              h('small', { title: new Date(p.at).toLocaleString('fr-FR') }, timeAgo(p.at))
+              { class: 'aqm-device-wait' },
+              h('p', {}, 'Code de cet appareil : ', h('strong', {}, showCode(r.device.id))),
+              h('p', { class: 'aqm-muted' }, 'Ouvre « Joueurs avec Aquaman » sur un appareil déjà approuvé et approuve celui qui porte ce code. Cette page se met à jour toute seule.')
+            )
+          : h('div', { class: 'aqm-pick' }, other),
+        h('p', { class: 'aqm-label aqm-who-gap' }, pending ? 'Ou avec le code propriétaire' : 'Avec le code propriétaire (premier appareil)'),
+        h('div', { class: 'aqm-pick aqm-users-code' }, input, go),
+        note
+      );
+      clearTimeout(polling);
+      if (pending) polling = setTimeout(() => body.isConnected && load(), 5000);
+    }
+
+    // The devices of the author: those waiting (approve or refuse), those approved (revoke).
+    async function devices(box) {
+      const r = await ask({ type: 'admin-devices' }).catch(() => null);
+      if (!r?.devices) return;
+      const { adminDevice: mine } = await chrome.storage.local.get('adminDevice');
+      const act = (label, type, id, main) => {
+        const btn = h('button', { type: 'button', class: `aqm-album-btn${main ? ' is-main' : ''}` }, label);
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          await ask({ type, id }).catch(() => {});
+          devices(box);
+        });
+        return btn;
+      };
+      box.replaceChildren(
+        h('p', { class: 'aqm-label aqm-who-gap' }, 'Mes appareils'),
+        h(
+          'ul',
+          { class: 'aqm-users' },
+          r.devices.map((d) =>
+            h(
+              'li',
+              { class: 'aqm-user' },
+              h('strong', { class: 'aqm-device-code' }, showCode(d.id)),
+              h('span', { class: 'aqm-name' }, d.name || 'Appareil', d.id === mine?.id ? h('span', { class: 'aqm-tag' }, 'Cet appareil') : null),
+              h('span', { class: 'aqm-muted' }, d.state === 'pending' ? 'En attente' : d.lastUsed ? `Utilisé ${timeAgo(d.lastUsed)}` : 'Approuvé'),
+              d.state === 'pending' ? [act('Approuver', 'admin-approve', d.id, true), act('Refuser', 'admin-revoke', d.id)] : act('Révoquer', 'admin-revoke', d.id)
             )
           )
         )
       );
     }
 
-    search.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(load, 250);
-    });
+    async function load() {
+      clearTimeout(polling);
+      view.replaceChildren(h('p', { class: 'aqm-note' }, 'Chargement…'));
+      let r;
+      try {
+        r = await ask({ type: 'aquaman-users' });
+      } catch (e) {
+        view.replaceChildren(h('p', { class: 'aqm-note' }, e.message));
+        return;
+      }
+      if (r.needDevice) return approve(r);
+      show(r.users);
+      const box = h('div');
+      view.append(box);
+      devices(box);
+    }
+
+    function show(all) {
+      const day = Date.now() - 86400e3;
+      const week = Date.now() - 7 * 86400e3;
+      const versions = {};
+      for (const u of all) versions[u.version ?? '?'] = (versions[u.version ?? '?'] ?? 0) + 1;
+      const stat = (label, value) => h('div', { class: 'aqm-metric' }, h('small', {}, label), h('strong', {}, value));
+      const search = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Chercher un joueur…', 'aria-label': 'Chercher un joueur' });
+      const list = h('ul', { class: 'aqm-users' });
+      const render = () => {
+        const q = search.value.trim().toLowerCase();
+        const shown = q ? all.filter((u) => String(u.name ?? '').toLowerCase().includes(q) || u.id.includes(q)) : all;
+        list.replaceChildren(
+          ...shown.map((u) =>
+            h(
+              'li',
+              { class: 'aqm-user' },
+              h('img', { class: 'aqm-avatar', src: avatarUrl(u.id), alt: '', loading: 'lazy' }),
+              h('a', { class: 'aqm-name', href: `/profile/${encodeURIComponent(u.id)}` }, u.name || u.id),
+              h('span', { class: `aqm-tag aqm-kind-${u.kind ?? 'x'}` }, u.kind === 'userscript' ? 'Script' : u.kind === 'extension' ? 'Extension' : '?'),
+              h('span', { class: 'aqm-muted' }, u.version ? `v${u.version}` : ''),
+              h('span', { class: 'aqm-user-seen', title: `Vu la première fois le ${new Date(u.firstSeen).toLocaleDateString('fr-FR')}` }, timeAgo(u.lastSeen))
+            )
+          )
+        );
+      };
+      search.addEventListener('input', render);
+      view.replaceChildren(
+        h(
+          'div',
+          { class: 'aqm-who-stats aqm-users-stats' },
+          stat('Joueurs', fmt(all.length)),
+          stat('Vus ces 24 h', fmt(all.filter((u) => u.lastSeen >= day).length)),
+          stat('Vus ces 7 jours', fmt(all.filter((u) => u.lastSeen >= week).length)),
+          stat('Extension / script', `${fmt(all.filter((u) => u.kind === 'extension').length)} / ${fmt(all.filter((u) => u.kind === 'userscript').length)}`)
+        ),
+        h(
+          'p',
+          { class: 'aqm-note' },
+          'Versions : ',
+          Object.entries(versions)
+            .sort((a, b) => b[1] - a[1])
+            .map(([v, n]) => `${v === '?' ? 'inconnue' : v} (${n})`)
+            .join(', '),
+          '.'
+        ),
+        h('div', { class: 'aqm-pick' }, search),
+        list
+      );
+      render();
+    }
+
     load();
   }
 
@@ -3572,7 +4917,9 @@ const CHANGES = [
       );
     for (const img of strip.querySelectorAll('img[src*="/api/covers/"]')) {
       const tile = img.closest('button, a, [role="radio"]') ?? img.parentElement;
-      if (!tile || tile.querySelector(':scope > .aqm-star')) continue;
+      if (!tile) continue;
+      anchorBadges(tile);
+      if (tile.querySelector(':scope > .aqm-star')) continue;
       const slug = decodeURIComponent(img.getAttribute('src').match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? '');
       const id = seriesBySlug.get(slug);
       if (!id) continue;
@@ -3594,9 +4941,75 @@ const CHANGES = [
         }
       });
       paintStar(star);
-      tile.classList.add('aqm-rel');
       tile.append(star);
     }
+  }
+
+  // ---------- collection: favourite and search buttons in the "Album de la série" panel ----------
+
+  let albumBusy = false;
+
+  function markAlbum() {
+    if (!location.pathname.startsWith('/jeu/collection')) return;
+    const id = new URLSearchParams(location.search).get('serie');
+    const title = document.getElementById('album-title');
+    if (!id || !title || albumBusy) return;
+    const panel = title.closest('section') ?? title.parentElement?.parentElement;
+    if (!panel || panel.closest('.aqm-root')) return;
+    const box = panel.querySelector(':scope > .aqm-album');
+    if (box?.dataset.series === id) return;
+    box?.remove();
+    const fresh = h('div', { class: 'aqm-root aqm-album', 'data-series': id });
+    panel.append(fresh);
+    renderAlbum(fresh, id);
+  }
+
+  async function renderAlbum(box, id) {
+    albumBusy = true;
+    let st;
+    try {
+      st = await ask({ type: 'series-status', id });
+    } catch {
+      box.remove();
+      return;
+    } finally {
+      albumBusy = false;
+    }
+    if (!box.isConnected) return;
+    const note = h('span', { class: 'aqm-album-note', role: 'status' });
+    const fav = h('button', { type: 'button', class: 'aqm-album-btn' });
+    const paintFav = () => {
+      fav.classList.toggle('is-on', st.favorite);
+      fav.textContent = st.favorite ? '★ Dans tes favoris' : '☆ Ajouter aux favoris';
+      fav.title = st.favorite ? 'Retirer des séries favorites' : 'Ajouter aux séries favorites (Plus → Séries favorites)';
+    };
+    fav.addEventListener('click', async () => {
+      fav.disabled = true;
+      await toggleFavorite(id, !st.favorite);
+      st.favorite = !st.favorite;
+      paintFav();
+      fav.disabled = false;
+    });
+    paintFav();
+    const want = h('button', { type: 'button', class: 'aqm-album-btn is-main' });
+    const paintWant = () => {
+      want.hidden = !st.missing;
+      want.disabled = !st.toWant;
+      want.textContent = st.toWant ? `🔭 Rechercher les ${st.toWant} manquante${st.toWant > 1 ? 's' : ''}` : '🔭 Toutes les manquantes sont recherchées';
+      want.title = 'Les mettre dans ta liste de recherches : le jeu te prévient quand elles sont mises en vente';
+    };
+    want.addEventListener('click', async () => {
+      want.disabled = true;
+      const r = await enqueueWants(st.toWantIds);
+      st.toWantIds = [];
+      st.toWant = 0;
+      paintWant();
+      want.textContent = r.sent == null ? '🔭 En attente dans Aquaman' : '🔭 Recherche en cours…';
+      note.textContent = wantsNote(r, 'tu peux changer de page ou ouvrir des boosters');
+    });
+    paintWant();
+    // The progress of the adding and of the waiting cards; once it ended, the buttons show what is left to search.
+    box.replaceChildren(fav, want, note, searchPanel(() => box.isConnected && renderAlbum(box, id)));
   }
 
   async function openFavorites() {
@@ -3606,6 +5019,7 @@ const CHANGES = [
     body.append(status);
     let report;
     let show = 'missing';
+    const opened = new Set(); // series whose cards are shown ("Détails")
     let rarity = '';
     let fresh = true;
     const load = async () => {
@@ -3628,6 +5042,16 @@ const CHANGES = [
     const filters = h('div', { class: 'aqm-sorts' });
     const content = h('div', { class: 'aqm-fav-list' });
     body.append(h('div', { class: 'aqm-pick' }, add), found, filters, content, suggestions);
+    // Once an adding ended or the waiting cards were taken out, the series show what is left to search.
+    filters.before(
+      searchPanel(async () => {
+        fresh = true;
+        try {
+          await load();
+        } catch {}
+        render();
+      })
+    );
 
     // Series matching what is typed, each with a star.
     const renderFound = () => {
@@ -3704,7 +5128,8 @@ const CHANGES = [
           const keep = (c) => (!rarity || c.rarity === rarity) && (show === 'all' || (show === 'missing' && !c.owned) || (show === 'owned' && c.owned > 0) || (show === 'wanted' && c.wanted));
           const cards = s.cards.filter(keep).sort((a, b) => RANKED.indexOf(b.rarity) - RANKED.indexOf(a.rarity) || a.name.localeCompare(b.name));
           const missing = s.cards.filter((c) => !c.owned);
-          const toWant = missing.filter((c) => !c.wanted).length;
+          const toWantIds = missing.filter((c) => !c.wanted).map((c) => c.id);
+          const toWant = toWantIds.length;
           const note = h('p', { class: 'aqm-muted', role: 'status' });
           const wantAll = h(
             'button',
@@ -3714,18 +5139,7 @@ const CHANGES = [
               disabled: !toWant,
               onclick: async () => {
                 wantAll.disabled = true;
-                note.textContent = `Ajout de ${toWant} carte${toWant > 1 ? 's' : ''} à ta liste de recherches…`;
-                try {
-                  const r = await ask({ type: 'want-missing', id: s.id });
-                  note.textContent =
-                    `${r.added} carte${r.added > 1 ? 's' : ''} ajoutée${r.added > 1 ? 's' : ''} à ta liste de recherches.` +
-                    (r.refused ? ` Le jeu a refusé la suite (« ${r.refused} ») : ${r.left} restante${r.left > 1 ? 's' : ''}.` : '');
-                  await load();
-                  setTimeout(render, 1500);
-                } catch (e) {
-                  note.textContent = e.message;
-                  wantAll.disabled = false;
-                }
+                note.textContent = wantsNote(await enqueueWants(toWantIds), 'tu peux fermer cette fenêtre, changer de page ou ouvrir des boosters');
               }
             },
             h('strong', {}, toWant ? `Rechercher les ${toWant} manquante${toWant > 1 ? 's' : ''}` : 'Toutes les manquantes sont recherchées'),
@@ -3750,7 +5164,20 @@ const CHANGES = [
                 'button',
                 {
                   type: 'button',
-                  class: 'aqm-chip is-on',
+                  class: `aqm-chip aqm-fav-details${opened.has(s.id) ? ' is-on' : ''}`,
+                  'aria-expanded': String(opened.has(s.id)),
+                  onclick: () => {
+                    opened.has(s.id) ? opened.delete(s.id) : opened.add(s.id);
+                    render();
+                  }
+                },
+                opened.has(s.id) ? 'Masquer ▴' : `Détails ▾`
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'aqm-chip is-on aqm-fav-unstar',
                   title: 'Retirer des séries favorites',
                   onclick: async () => {
                     await toggleFavorite(s.id, false);
@@ -3762,7 +5189,9 @@ const CHANGES = [
               )
             ),
             note,
-            cards.length
+            !opened.has(s.id)
+              ? null
+              : cards.length
               ? h(
                   'ul',
                   { class: 'aqm-fav-cards' },
@@ -3771,15 +5200,17 @@ const CHANGES = [
                       'button',
                       {
                         type: 'button',
-                        class: `aqm-want${c.wanted ? ' is-on' : ''}`,
-                        title: c.wanted ? 'Ne plus la chercher' : 'Je la cherche : être prévenu quand elle est mise en vente',
+                        class: `aqm-want${c.wanted ? ' is-on' : ''}${c.waiting ? ' is-wait' : ''}`,
+                        title: c.waiting ? 'En attente dans Aquaman (ta liste du jeu est pleine) : ne plus la chercher' : c.wanted ? 'Ne plus la chercher' : 'Je la cherche : être prévenu quand elle est mise en vente',
                         onclick: async (e) => {
                           e.preventDefault();
                           want.disabled = true;
                           try {
-                            const r = await ask({ type: 'want', id: c.id, on: !c.wanted });
+                            const r = await wantCard(c.id, !c.wanted);
                             c.wanted = r.wanted;
+                            c.waiting = false;
                             want.classList.toggle('is-on', c.wanted);
+                            want.classList.remove('is-wait');
                             want.title = c.wanted ? 'Ne plus la chercher' : 'Je la cherche : être prévenu quand elle est mise en vente';
                           } catch (err) {
                             want.title = err.message;
@@ -3843,7 +5274,7 @@ const CHANGES = [
           let tile = frame;
           while (tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll('img').length === 1) tile = tile.parentElement;
           tile.classList.add('aqm-trade-tile');
-          frame.classList.add('aqm-rel');
+          anchorBadges(frame);
           let dot = frame.querySelector(':scope > .aqm-dot');
           if (!dot) dot = frame.appendChild(h('span', { class: 'aqm-root aqm-dot' }));
           setClass(dot, `aqm-root aqm-dot ${n ? 'is-yes' : 'is-no'}${n > 1 ? ' has-count' : ''}`);
@@ -4323,7 +5754,7 @@ const CHANGES = [
     tour = null;
     session(TOUR_STEP, null);
     closeMenu();
-    if (location.hash === TOUR_HASH) history.replaceState(null, '', location.pathname + location.search);
+    if (location.hash.startsWith(TOUR_HASH)) history.replaceState(null, '', location.pathname + location.search);
   }
 
   // Element found by find, once visible (null after ms).
@@ -4434,7 +5865,7 @@ const CHANGES = [
 
   // Once per version: the tour the first time, then what's new after an update ("notifyUpdated" setting).
   async function showTutorialOnce() {
-    if (location.hash === TOUR_HASH || location.hash === NEWS_HASH || session(TOUR_STEP) != null) return;
+    if (location.hash.startsWith(TOUR_HASH) || location.hash === NEWS_HASH || session(TOUR_STEP) != null) return;
     const version = chrome.runtime.getManifest().version;
     const { seenVersion, settings } = await chrome.storage.local.get(['seenVersion', 'settings']);
     if (seenVersion === version) return;
@@ -4445,7 +5876,9 @@ const CHANGES = [
 
   // Opens the tour or what's new from the address (#aqm-visite, #aqm-nouveautes), used by the popup and the notifications.
   function onHash() {
-    if (location.hash === TOUR_HASH && !tour) startTour(0);
+    const step = location.hash.startsWith(`${TOUR_HASH}-`) ? TOUR.findIndex((s) => s.id === location.hash.slice(TOUR_HASH.length + 1)) : -1;
+    if (step >= 0 && !tour) startTour(step);
+    else if (location.hash === TOUR_HASH && !tour) startTour(0);
     else if (location.hash === NEWS_HASH && !overlay) {
       openNews();
       history.replaceState(null, '', location.pathname + location.search);
@@ -4494,7 +5927,7 @@ const CHANGES = [
     if (stopped) return;
     if (!alive()) return shutdown();
     if (!location.pathname.startsWith('/jeu')) return;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, enhanceShowcaseEditor, markTrades, pollFeedNow, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, enhanceShowcaseEditor, markTrades, pollFeedNow, startOnce]) {
       try {
         step();
       } catch (e) {
@@ -4503,10 +5936,10 @@ const CHANGES = [
     }
   }
 
-  // The script has no background worker: while a page of the game is open, the "beaux tirages" are read every 5 minutes.
+  // The script has no background worker: while a page of the game is open, the "beaux tirages" are read every minute.
   let feedAt = 0;
   function pollFeedNow() {
-    if (Date.now() - feedAt < 5 * 60e3) return;
+    if (Date.now() - feedAt < 60e3) return;
     feedAt = Date.now();
     send({ type: 'feed-poll' });
   }
@@ -4562,13 +5995,34 @@ const CHANGES = [
       for (const cls of [...el.classList]) if (cls.startsWith('aqm-')) el.classList.remove(cls);
     });
     document.querySelectorAll('[data-aqm-slot]').forEach((el) => delete el.dataset.aqmSlot);
+    document.querySelectorAll('[data-aqm-anchor]').forEach((el) => {
+      el.style.position = '';
+      delete el.dataset.aqmAnchor;
+    });
     root.classList.remove('aqm-lock');
     if (root.dataset.aqmOwner === owner) delete root.dataset.aqmOwner;
   }
 
-  for (const [target, type, fn, opts] of listeners) target.addEventListener(type, fn, opts);
-  observer.observe(root, { childList: true, subtree: true });
-  run();
+  // Starts once the site's React has taken over the page sent by the server (hydration): an element added before
+  // would not match what React expects ("Minified React error #418").
+  function whenSettled(start) {
+    const idle = () => (window.requestIdleCallback ? requestIdleCallback(start, { timeout: 1500 }) : setTimeout(start, 300));
+    if (document.readyState === 'complete') idle();
+    else addEventListener('load', idle, { once: true });
+  }
+
+  whenSettled(() => {
+    if (stopped) return;
+    settled = true;
+    accountId().then((id) => (meId = id));
+    send({ type: 'hello', kind: owner });
+    for (const [target, type, fn, opts] of listeners) target.addEventListener(type, fn, opts);
+    chrome.storage.onChanged.addListener(onStorage);
+    renderBox();
+    runQueue();
+    observer.observe(root, { childList: true, subtree: true });
+    run();
+  });
 })();
 
   // ---------- 6. src/userscript/panel.js : réglages ----------
@@ -4578,7 +6032,8 @@ const CHANGES = [
   const OPTIONS = [
     ['notifyUpdated', 'Afficher les nouveautés après une mise à jour du script'],
     ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
-    ['syncFavorites', 'Partager mes séries favorites entre mes appareils']
+    ['syncFavorites', 'Partager mes séries favorites entre mes appareils'],
+    ['sharePulls', 'Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)']
   ];
   const ICON_GEAR =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm88-29.84q.06-2.16,0-4.32l14.92-18.64a8,8,0,0,0,1.48-7.06,107.21,107.21,0,0,0-10.88-26.25,8,8,0,0,0-6-3.93l-23.72-2.64q-1.48-1.56-3-3L186,40.54a8,8,0,0,0-3.94-6,107.71,107.71,0,0,0-26.25-10.87,8,8,0,0,0-7.06,1.49L130.16,40Q128,40,125.84,40L107.2,25.11a8,8,0,0,0-7.06-1.48A107.6,107.6,0,0,0,73.89,34.51a8,8,0,0,0-3.93,6L67.32,64.27q-1.56,1.49-3,3L40.54,70a8,8,0,0,0-6,3.94,107.71,107.71,0,0,0-10.87,26.25,8,8,0,0,0,1.49,7.06L40,125.84Q40,128,40,130.16L25.11,148.8a8,8,0,0,0-1.48,7.06,107.21,107.21,0,0,0,10.88,26.25,8,8,0,0,0,6,3.93l23.72,2.64q1.49,1.56,3,3L70,215.46a8,8,0,0,0,3.94,6,107.71,107.71,0,0,0,26.25,10.87,8,8,0,0,0,7.06-1.49L125.84,216q2.16.06,4.32,0l18.64,14.92a8,8,0,0,0,7.06,1.48,107.21,107.21,0,0,0,26.25-10.88,8,8,0,0,0,3.93-6l2.64-23.72q1.56-1.48,3-3L215.46,186a8,8,0,0,0,6-3.94,107.71,107.71,0,0,0,10.87-26.25,8,8,0,0,0-1.49-7.06Z"/></svg>';
@@ -4587,7 +6042,7 @@ const CHANGES = [
   async function openSettings() {
     document.querySelector('.aqm-settings')?.remove();
     const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, ...settings };
+    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, sharePulls: true, ...settings };
     const close = () => {
       back.remove();
       document.removeEventListener('keydown', onKey, true);

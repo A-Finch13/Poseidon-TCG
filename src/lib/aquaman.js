@@ -13,7 +13,8 @@ export const DEFAULTS = {
   notifyBoosters: true,
   notifyUpdated: true,
   syncPity: true,
-  syncFavorites: true
+  syncFavorites: true,
+  sharePulls: true
 };
 
 // Settings with their default values.
@@ -51,13 +52,6 @@ async function getJson(url) {
   if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
   return body;
 }
-// Same as getJson for a change (PUT, DELETE…) without a body.
-async function getJsonWith(url, method) {
-  const res = await fetch(url, { method, credentials: 'include', headers: { accept: 'application/json' } });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, body?.error?.code || `http_${res.status}`, body?.error?.message || `Erreur ${res.status}`);
-  return body;
-}
 const game = (path) => getJson(GAME + path);
 const social = (path) => getJson(SOCIAL + path);
 
@@ -77,9 +71,9 @@ function forget(...prefixes) {
   for (const key of [...memo.keys()]) if (prefixes.some((p) => key.startsWith(p))) memo.delete(key);
 }
 
-// Id of the logged-in player.
+// Id of the logged-in player (read again after a minute: another account may have logged in meanwhile).
 export function myId() {
-  return cached('me-id', 30 * 60e3, async () => {
+  return cached('me-id', 60e3, async () => {
     const ids = [];
     try {
       const a = await getJson(`${ORIGIN}/api/auth/check`);
@@ -549,6 +543,33 @@ async function wantedIds() {
   return new Set((wants ?? []).map((w) => w?.card?.id ?? w?.cardId).filter(Boolean));
 }
 
+// The cards searched by the player: those of the game's list, and those Aquaman keeps waiting for a free place
+// (the game takes 100 cards at most).
+async function searchedIds() {
+  const [wanted, waiting] = await Promise.all([wantedIds().catch(() => new Set()), waitingIds()]);
+  for (const id of waiting) wanted.add(id);
+  return wanted;
+}
+
+// The cards waiting in Aquaman.
+async function waitingIds() {
+  return new Set((await chrome.storage.local.get('wantWaiting')).wantWaiting ?? []);
+}
+
+// Places of the game's search list: how many are taken, the cards Aquaman put there that the player now owns
+// (to take out), those still searched, and the waiting cards still to send (neither owned nor already searched).
+export async function wantRoom(waiting, sent) {
+  forget('wants');
+  const [wanted, { byCard }] = await Promise.all([wantedIds(), ownership()]);
+  const has = (id) => byCard[id] > 0;
+  return {
+    count: wanted.size,
+    obtained: sent.filter((id) => wanted.has(id) && has(id)),
+    sent: sent.filter((id) => wanted.has(id) && !has(id)),
+    waiting: waiting.filter((id) => !wanted.has(id) && !has(id))
+  };
+}
+
 // Cards of one series, with the number of copies the player owns.
 function seriesCards(id) {
   return cached(`series-cards:${id}`, 60e3, async () => (await game(`/cards?manga=${encodeURIComponent(id)}`)).cards ?? []);
@@ -589,19 +610,25 @@ export async function favoriteIds(fresh = false) {
   return exchangeFavorites(local);
 }
 
-// Adds (on) or removes a series from the favourites; returns the new list.
-export async function setFavorite(id, on) {
-  const list = (await favoriteIds()).filter((x) => x !== id);
-  if (on) list.push(id);
-  const local = { list, at: Date.now() };
-  await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
-  if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
-  return list;
+// Adds (on) or removes a series from the favourites; returns the new list. Changes run one after the other,
+// so that two stars clicked quickly both count.
+let favChain = Promise.resolve();
+export function setFavorite(id, on) {
+  const run = favChain.then(async () => {
+    const list = (await localFavorites()).list.filter((x) => x !== id);
+    if (on) list.push(id);
+    const local = { list, at: Date.now() };
+    await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
+    if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
+    return list;
+  });
+  favChain = run.catch(() => {});
+  return run;
 }
 
 // The favourite series and their cards: owned copies and whether the player searches them.
 export async function favoritesReport(fresh = false) {
-  const [ids, all, wanted] = await Promise.all([favoriteIds(fresh), seriesList(), wantedIds().catch(() => new Set())]);
+  const [ids, all, wanted, waiting] = await Promise.all([favoriteIds(fresh), seriesList(), searchedIds(), waitingIds()]);
   const series = ids.map((id) => all.find((s) => s.id === id)).filter(Boolean);
   const cards = await Promise.all(series.map((s) => seriesCards(s.id).catch(() => [])));
   return {
@@ -612,46 +639,34 @@ export async function favoritesReport(fresh = false) {
       title: s.title,
       owned: s.owned ?? 0,
       total: s.total ?? 0,
-      cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id) }))
+      cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id), waiting: waiting.has(c.id) }))
     }))
   };
 }
 
-// Puts one card in the player's search list (on) or takes it out.
-export async function wantCard(id, on) {
-  const res = await getJsonWith(`${GAME}/cards/${encodeURIComponent(id)}/want`, on ? 'PUT' : 'DELETE');
-  forget('wants');
-  return { wanted: !!res?.wanted };
+// One series: cards the player doesn't have, those not searched yet, and whether it is a favourite.
+export async function seriesStatus(id) {
+  const [cards, wanted, favorites] = await Promise.all([seriesCards(id), searchedIds(), favoriteIds()]);
+  const missing = cards.filter((c) => !(c.owned > 0));
+  const toWant = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
+  return { missing: missing.length, toWant: toWant.length, toWantIds: toWant, favorite: favorites.includes(id) };
 }
 
-// Searches every card of a series the player doesn't have yet; stops at the first refusal of the game (a limit, for instance).
-export async function wantMissing(seriesId) {
-  const [cards, wanted] = await Promise.all([seriesCards(seriesId), wantedIds()]);
-  const todo = cards.filter((c) => !(c.owned > 0) && !wanted.has(c.id));
-  let added = 0;
-  let refused = null; // the game's message when it stops accepting
-  for (const c of todo) {
-    try {
-      await getJsonWith(`${GAME}/cards/${encodeURIComponent(c.id)}/want`, 'PUT');
-      added++;
-    } catch (e) {
-      refused = e.message;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  forget('wants');
-  return { added, already: cards.filter((c) => !(c.owned > 0)).length - todo.length, left: todo.length - added, refused };
-}
 
-// ---------- who pulled a card: the game's "beaux tirages", kept a while ----------
+// ---------- the game's "beaux tirages": kept here, and shared in a public history on the relay ----------
 
 const FEED_KEEP = 30 * 86400e3;
 const FEED_MAX = 4000;
+// The pulls seen are read every minute and sent to the relay every 5 minutes: the public history is at most
+// 6 minutes behind the game while one Aquaman runs.
+const SHARE_EVERY = 5 * 60e3;
 
-// Adds pulls of the game's feed to the history kept on this device.
-export async function recordFeed(pulls) {
-  const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+// A pull kept here, in the shape of the game's feed (what the relay takes and gives back).
+const asFeedPull = (p) => ({ card: { id: p.card.id, name: p.card.name, rarity: p.card.rarity, image: p.card.image, series: p.card.series }, serial: p.serial, player: p.player, pulledAt: new Date(p.at).toISOString() });
+
+// Adds pulls of the game's feed to the history kept on this device (fromRelay: already in the public history).
+export async function recordFeed(pulls, fromRelay = false) {
+  const { feedLog = [], feedSince } = await chrome.storage.local.get(['feedLog', 'feedSince']);
   const byKey = new Map(feedLog.map((p) => [p.key, p]));
   for (const p of pulls ?? []) {
     const card = p?.card;
@@ -663,30 +678,309 @@ export async function recordFeed(pulls) {
       at: Date.parse(p.pulledAt) || Date.now(),
       serial: p.serial ?? null,
       player: p.player ? { id: p.player.id ?? null, name: p.player.name ?? null } : null,
-      card: { id: card.id, name: card.name, image: card.image, rarity: card.rarity, maxCopies: card.maxCopies ?? null, series: card.series?.title ?? null }
+      card: { id: card.id, name: card.name, image: card.image, rarity: card.rarity, maxCopies: card.maxCopies ?? null, series: card.series?.title ?? card.series ?? null },
+      shared: fromRelay
     });
   }
   const since = Date.now() - FEED_KEEP;
   const kept = [...byKey.values()].filter((p) => p.at >= since).sort((a, b) => b.at - a.at).slice(0, FEED_MAX);
-  await chrome.storage.local.set({ feedLog: kept, feedSince: (await chrome.storage.local.get('feedSince')).feedSince ?? Date.now() });
+  await chrome.storage.local.set({ feedLog: kept, feedSince: feedSince ?? Date.now() });
   return kept.length;
 }
 
-// Reads the game's feed (every 2 minutes at most) and keeps its pulls.
-export async function pollFeed() {
-  const { pulls } = await cached('feed', 2 * 60e3, () => game('/feed'));
-  return recordFeed(pulls);
+// Sends the pulls not shared yet to the public history (every 5 minutes at most, "sharePulls" setting).
+async function sharePulls(force = false) {
+  const { feedSharedAt = 0 } = await chrome.storage.local.get('feedSharedAt');
+  if (!force && Date.now() - feedSharedAt < SHARE_EVERY) return;
+  if (!(await getSettings()).sharePulls) return;
+  await chrome.storage.local.set({ feedSharedAt: Date.now() });
+  // Everything waiting goes now, 100 pulls per request.
+  for (let round = 0; round < 10; round++) {
+    const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+    const todo = feedLog.filter((p) => !p.shared && ['SSR', 'UR', 'SEC'].includes(p.card.rarity)).slice(0, 100);
+    if (!todo.length) return;
+    try {
+      const res = await fetch(`${RELAY}/pulls`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pulls: todo.map(asFeedPull) }) });
+      if (!res.ok) return;
+    } catch {
+      return;
+    }
+    const sent = new Set(todo.map((p) => p.key));
+    const { feedLog: now = [] } = await chrome.storage.local.get('feedLog');
+    await chrome.storage.local.set({ feedLog: now.map((p) => (sent.has(p.key) ? { ...p, shared: true } : p)) });
+  }
 }
 
-// Recent pulls whose character or series matches the query (the latest ones without a query).
+// Reads the game's feed (once a minute at most), keeps its pulls and shares them.
+export async function pollFeed() {
+  const { pulls } = await cached('feed', 50e3, () => game('/feed'));
+  const kept = await recordFeed(pulls);
+  await sharePulls();
+  return kept;
+}
+
+// The public history of the relay ({ pulls, since, total }), or null when it doesn't answer.
+async function relayPulls(params) {
+  try {
+    const res = await fetch(`${RELAY}/pulls?${new URLSearchParams(params)}`);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+// Recent pulls whose character or series matches the query (the latest ones without a query), here and on the relay.
 export async function whoPulled(query = '', rarity = '') {
-  await pollFeed().catch(() => {});
-  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
   const q = fold(query);
+  const [, remote] = await Promise.all([pollFeed().catch(() => {}), relayPulls(q.length >= 2 ? { q, limit: 200 } : { limit: 100 })]);
+  if (remote?.pulls) await recordFeed(remote.pulls, true);
+  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
   const hits = feedLog.filter((p) => (!rarity || p.card.rarity === rarity) && (!q || fold(p.card.name).includes(q) || fold(p.card.series).includes(q)));
   const names = q ? [...new Set(feedLog.filter((p) => fold(p.card.name).includes(q)).map((p) => p.card.name))].slice(0, 8) : [];
-  return { pulls: hits.slice(0, 200), total: hits.length, kept: feedLog.length, since: feedSince, suggestions: names };
+  return {
+    pulls: hits.slice(0, 200),
+    total: hits.length,
+    kept: Math.max(feedLog.length, remote?.total ?? 0),
+    since: Math.min(feedSince ?? Infinity, remote?.since ?? Infinity) === Infinity ? null : Math.min(feedSince ?? Infinity, remote?.since ?? Infinity),
+    shared: !!remote,
+    latest: remote?.latest ?? null,
+    suggestions: names
+  };
 }
+
+// ---------- who has a card ----------
+
+// Cards of the whole game whose name matches (the game's own search).
+export async function searchCards(query) {
+  const q = String(query ?? '').trim();
+  if (q.length < 2) return [];
+  const { cards } = await cached(`card-search:${fold(q)}`, 5 * 60e3, () => game(`/cards?q=${encodeURIComponent(q)}&limit=12`));
+  return (cards ?? []).map((c) => ({ id: c.id, name: c.name, variant: c.variant ?? null, image: c.image, rarity: c.rarity, series: c.series?.title ?? null, owned: c.owned ?? 0 }));
+}
+
+// Everyone Aquaman can see with a card: holders (limited cards), sellers, friends, and recent pulls.
+export async function cardOwners(id) {
+  const card = await game(`/cards/${encodeURIComponent(id)}`);
+  // The game lists the holders of the limited cards only (an empty list for the others means "not published").
+  const holders = card.maxCopies && Array.isArray(card.holders) ? card.holders.map((x) => ({ serial: x.serial ?? null, player: x.player ? { id: x.player.id, name: x.player.name } : null })) : null;
+
+  let market = [];
+  try {
+    const { listings } = await game(`/market/listings?${new URLSearchParams({ sort: 'price', q: card.name })}`);
+    market = (listings ?? [])
+      .filter((l) => (l.card?.id ?? l.cardId) === id)
+      .map((l) => {
+        const seller = l.seller ?? l.player ?? null;
+        return { price: l.price ?? null, serial: l.serial ?? l.copy?.serial ?? null, player: seller ? { id: seller.id, name: seller.name } : null };
+      });
+  } catch {}
+
+  let mates = [];
+  try {
+    const { me, friends: list } = await friends();
+    const people = [{ id: me, name: null, me: true }, ...list];
+    await Promise.all(
+      people.map(async (p) => {
+        try {
+          const sc = await showcase(p.id);
+          if (sc.private) return;
+          const copies = (sc.copies ?? []).filter((c) => c.card?.id === id);
+          if (copies.length) mates.push({ player: { id: p.id, name: p.name ?? sc.player?.name ?? null }, me: !!p.me, count: copies.length, serials: copies.map((c) => c.serial).filter((n) => n != null) });
+        } catch {}
+      })
+    );
+    mates.sort((a, b) => b.me - a.me || b.count - a.count);
+  } catch {}
+
+  const remote = await relayPulls({ card: id, limit: 200 });
+  if (remote?.pulls) await recordFeed(remote.pulls, true);
+  const { feedLog = [], feedSince = null } = await chrome.storage.local.get(['feedLog', 'feedSince']);
+  const pulls = feedLog.filter((p) => p.card.id === id).map((p) => ({ at: p.at, serial: p.serial, player: p.player }));
+  const since = Math.min(feedSince ?? Infinity, remote?.since ?? Infinity);
+
+  return {
+    card: {
+      id: card.id ?? id,
+      name: card.name,
+      variant: card.variant ?? null,
+      image: card.image,
+      rarity: card.rarity,
+      series: card.series?.title ?? null,
+      owners: card.owners ?? null,
+      circulation: card.circulation ?? null,
+      wants: card.wants ?? null,
+      minted: card.minted ?? null,
+      maxCopies: card.maxCopies ?? null,
+      owned: Array.isArray(card.copies) ? card.copies.length : 0
+    },
+    holders,
+    market,
+    friends: mates,
+    pulls,
+    pullsSince: since === Infinity ? null : since,
+    shared: !!remote
+  };
+}
+
+// Players seen in the "beaux tirages" kept by Aquaman (the most recent first), other than the player and their friends.
+export async function knownPlayers(max = 120) {
+  const { me, friends: list } = await friends().catch(() => ({ me: null, friends: [] }));
+  const skip = new Set([me, ...list.map((f) => f.id)]);
+  const { feedLog = [] } = await chrome.storage.local.get('feedLog');
+  let remote = [];
+  try {
+    const res = await fetch(`${RELAY}/players?limit=${max}`);
+    if (res.ok) remote = (await res.json()).players ?? [];
+  } catch {}
+  const seen = new Map();
+  for (const p of [...remote, ...feedLog.map((x) => x.player).filter(Boolean)])
+    if (p.id && !skip.has(p.id) && !seen.has(p.id)) seen.set(p.id, { id: p.id, name: p.name ?? null });
+  return [...seen.values()].slice(0, max);
+}
+
+// Which of these players have the card, read in their public collections.
+export async function ownersAmong(cardId, players) {
+  const found = [];
+  let hidden = 0;
+  await Promise.all(
+    players.slice(0, 12).map(async (p) => {
+      try {
+        const sc = await showcase(p.id, 30 * 60e3);
+        if (sc.private) return void hidden++;
+        const copies = (sc.copies ?? []).filter((c) => c.card?.id === cardId);
+        if (copies.length) found.push({ player: { id: p.id, name: p.name ?? sc.player?.name ?? null }, count: copies.length, serials: copies.map((c) => c.serial).filter((n) => n != null) });
+      } catch {
+        hidden++;
+      }
+    })
+  );
+  return { found, hidden };
+}
+
+// ---------- who uses Aquaman (the author only) ----------
+
+const HELLO_EVERY = 6 * 3600e3;
+
+// Tells the relay, every 6 hours at most, that this player uses Aquaman (kind: "extension" or "userscript").
+export async function sayHello(kind) {
+  const id = await myId();
+  const { helloAt = 0, helloKind, helloFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor']);
+  if (Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true };
+  let name = null;
+  try {
+    name = (await showcase(id)).player?.name ?? null;
+  } catch {}
+  const res = await fetch(`${RELAY}/hello`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version })
+  });
+  if (res.ok) await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
+  return { ok: res.ok };
+}
+
+// ---------- the author's devices: a key per device, approved once ----------
+
+// The device's key pair, made once: the private key can't be read out (not even by Aquaman), only used to sign.
+function keyStore(mode, use) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('aquaman-keys', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('keys');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction('keys', mode);
+      const req = use(tx.objectStore('keys'));
+      tx.oncomplete = () => resolve(req.result);
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+}
+
+async function deviceKey() {
+  let key = await keyStore('readonly', (store) => store.get('device'));
+  if (!key) {
+    const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    const pub = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    key = { privateKey: pair.privateKey, pub: { kty: pub.kty, crv: pub.crv, x: pub.x, y: pub.y } };
+    await keyStore('readwrite', (store) => store.put(key, 'device'));
+  }
+  return key;
+}
+
+const toBase64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+// A request to the relay's /admin/ addresses, signed with this device's key once it has an id.
+async function adminFetch(method, path, body, extra = {}) {
+  const { adminDevice } = await chrome.storage.local.get('adminDevice');
+  const text = body ? JSON.stringify(body) : '';
+  const headers = { 'content-type': 'application/json', ...extra };
+  if (adminDevice?.id) {
+    const { privateKey } = await deviceKey();
+    const time = Date.now();
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(`${method} ${path} ${time} ${text}`));
+    Object.assign(headers, { 'x-aqm-device': adminDevice.id, 'x-aqm-time': String(time), 'x-aqm-sig': toBase64url(sig) });
+  }
+  return fetch(`${RELAY}${path}`, { method, headers, body: text || undefined });
+}
+
+// This device: { id, state: "pending" | "approved" } or null, checked with the relay while it waits.
+async function adminDevice() {
+  const { adminDevice: device } = await chrome.storage.local.get('adminDevice');
+  if (device?.state !== 'pending') return device ?? null;
+  const res = await fetch(`${RELAY}/admin/devices/state?id=${device.id}`);
+  const { state } = res.ok ? await res.json() : { state: 'pending' };
+  if (state === 'unknown') {
+    await chrome.storage.local.remove('adminDevice');
+    return null;
+  }
+  const next = { ...device, state };
+  await chrome.storage.local.set({ adminDevice: next });
+  return next;
+}
+
+// Asks the relay to approve this device (name: what the author will see, "Brave · Windows" for instance).
+async function requestDevice(name) {
+  const current = await adminDevice();
+  if (current) return current;
+  const { pub } = await deviceKey();
+  const res = await fetch(`${RELAY}/admin/devices/request`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pub, name }) });
+  if (!res.ok) throw new ApiError(res.status, 'relay', `Le relais refuse la demande (${res.status}).`);
+  const device = await res.json();
+  await chrome.storage.local.set({ adminDevice: device });
+  return device;
+}
+
+// Approves this device with the owner's code (only needed for the first device).
+async function approveWithCode(token, name) {
+  const device = await requestDevice(name);
+  const res = await fetch(`${RELAY}/admin/devices/approve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${String(token).trim()}` },
+    body: JSON.stringify({ id: device.id })
+  });
+  if (res.status === 403) return { wrong: true, device };
+  if (!res.ok) throw new ApiError(res.status, 'relay', `Le relais ne répond pas (${res.status}).`);
+  const approved = { ...device, state: 'approved' };
+  await chrome.storage.local.set({ adminDevice: approved });
+  return { device: approved };
+}
+
+// A signed request of the author; a refused one means this device was revoked.
+async function asAuthor(method, path, body) {
+  const device = await adminDevice();
+  if (device?.state !== 'approved') return { needDevice: true, device };
+  const res = await adminFetch(method, path, body);
+  if (res.status === 403) {
+    await chrome.storage.local.remove('adminDevice');
+    return { needDevice: true, device: null, revoked: true };
+  }
+  if (!res.ok) throw new ApiError(res.status, 'relay', `Le relais ne répond pas (${res.status}).`);
+  return res.json();
+}
+
+// Every player who used Aquaman.
+export const aquamanUsers = () => asAuthor('GET', '/admin/users');
+
 
 // ---------- messages from content.js ----------
 
@@ -714,10 +1008,35 @@ export async function answer(msg) {
         return await favoritesReport(!!msg.fresh);
       case 'favorite':
         return { favorites: await setFavorite(msg.id, !!msg.on) };
-      case 'want':
-        return await wantCard(msg.id, !!msg.on);
-      case 'want-missing':
-        return await wantMissing(msg.id);
+      case 'series-status':
+        return await seriesStatus(msg.id);
+      case 'wants-changed':
+        forget('wants', 'series');
+        return { ok: true };
+      case 'want-room':
+        return await wantRoom(msg.waiting ?? [], msg.sent ?? []);
+      case 'card-search':
+        return { cards: await searchCards(msg.query) };
+      case 'card-owners':
+        return await cardOwners(msg.id);
+      case 'known-players':
+        return { players: await knownPlayers() };
+      case 'owners-among':
+        return await ownersAmong(msg.id, msg.players ?? []);
+      case 'hello':
+        return await sayHello(msg.kind);
+      case 'aquaman-users':
+        return await aquamanUsers();
+      case 'admin-request':
+        return { device: await requestDevice(msg.name) };
+      case 'admin-code':
+        return await approveWithCode(msg.token, msg.name);
+      case 'admin-devices':
+        return await asAuthor('GET', '/admin/devices');
+      case 'admin-approve':
+        return await asAuthor('POST', '/admin/devices/approve', { id: msg.id });
+      case 'admin-revoke':
+        return await asAuthor('POST', '/admin/devices/revoke', { id: msg.id });
       case 'who-pulled':
         return await whoPulled(msg.query, msg.rarity);
       case 'feed-poll':

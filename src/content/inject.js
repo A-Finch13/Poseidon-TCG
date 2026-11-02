@@ -37,10 +37,16 @@
     return [];
   }
 
-  window.fetch = async function (input, init) {
-    const res = await original.apply(this, arguments);
+  // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through.
+  window.fetch = function (input, init) {
+    const path = pathOf(input);
+    if (!path?.startsWith('/api-game/')) return original.apply(this, arguments);
+    return watch(original.apply(this, arguments), path, input, init);
+  };
+
+  async function watch(pending, path, input, init) {
+    const res = await pending;
     try {
-      const path = pathOf(input);
       const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
       if (path && res.ok) {
         if (method === 'GET' && ME.test(path)) {
@@ -70,5 +76,5 @@
       }
     } catch {}
     return res;
-  };
+  }
 })();

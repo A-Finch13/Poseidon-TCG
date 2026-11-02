@@ -3,7 +3,8 @@
   const OPTIONS = [
     ['notifyUpdated', 'Afficher les nouveautés après une mise à jour du script'],
     ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
-    ['syncFavorites', 'Partager mes séries favorites entre mes appareils']
+    ['syncFavorites', 'Partager mes séries favorites entre mes appareils'],
+    ['sharePulls', 'Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)']
   ];
   const ICON_GEAR =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm88-29.84q.06-2.16,0-4.32l14.92-18.64a8,8,0,0,0,1.48-7.06,107.21,107.21,0,0,0-10.88-26.25,8,8,0,0,0-6-3.93l-23.72-2.64q-1.48-1.56-3-3L186,40.54a8,8,0,0,0-3.94-6,107.71,107.71,0,0,0-26.25-10.87,8,8,0,0,0-7.06,1.49L130.16,40Q128,40,125.84,40L107.2,25.11a8,8,0,0,0-7.06-1.48A107.6,107.6,0,0,0,73.89,34.51a8,8,0,0,0-3.93,6L67.32,64.27q-1.56,1.49-3,3L40.54,70a8,8,0,0,0-6,3.94,107.71,107.71,0,0,0-10.87,26.25,8,8,0,0,0,1.49,7.06L40,125.84Q40,128,40,130.16L25.11,148.8a8,8,0,0,0-1.48,7.06,107.21,107.21,0,0,0,10.88,26.25,8,8,0,0,0,6,3.93l23.72,2.64q1.49,1.56,3,3L70,215.46a8,8,0,0,0,3.94,6,107.71,107.71,0,0,0,26.25,10.87,8,8,0,0,0,7.06-1.49L125.84,216q2.16.06,4.32,0l18.64,14.92a8,8,0,0,0,7.06,1.48,107.21,107.21,0,0,0,26.25-10.88,8,8,0,0,0,3.93-6l2.64-23.72q1.56-1.48,3-3L215.46,186a8,8,0,0,0,6-3.94,107.71,107.71,0,0,0,10.87-26.25,8,8,0,0,0-1.49-7.06Z"/></svg>';
@@ -12,7 +13,7 @@
   async function openSettings() {
     document.querySelector('.aqm-settings')?.remove();
     const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, ...settings };
+    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, sharePulls: true, ...settings };
     const close = () => {
       back.remove();
       document.removeEventListener('keydown', onKey, true);

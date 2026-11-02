@@ -2,23 +2,23 @@ import { ORIGIN, REPO, answer, checkUpdate, newer, getSettings, gameStatus, poll
 
 const POLL_ALARM = 'aquaman-poll';
 const UPDATE_ALARM = 'aquaman-update';
+const FEED_ALARM = 'aquaman-feed';
 const FIREFOX = navigator.userAgent.includes('Firefox');
 const ICON = chrome.runtime.getURL('icons/icon128.png');
 const UPDATER = 'com.aquaman.updater';
 
 // ---------- alarms ----------
 
-// Boosters waiting and the game's "beaux tirages" every 5 minutes, new versions every 15 minutes.
+// Boosters waiting every 5 minutes, the game's "beaux tirages" every minute, new versions every 15 minutes.
 async function schedule() {
   if ((await chrome.alarms.get(POLL_ALARM))?.periodInMinutes !== 5) await chrome.alarms.create(POLL_ALARM, { delayInMinutes: 0.5, periodInMinutes: 5 });
   if ((await chrome.alarms.get(UPDATE_ALARM))?.periodInMinutes !== 15) await chrome.alarms.create(UPDATE_ALARM, { delayInMinutes: 1, periodInMinutes: 15 });
+  if ((await chrome.alarms.get(FEED_ALARM))?.periodInMinutes !== 1) await chrome.alarms.create(FEED_ALARM, { delayInMinutes: 0.5, periodInMinutes: 1 });
 }
 
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === POLL_ALARM) {
-    pollBoosters();
-    pollFeed().catch(() => {});
-  }
+  if (a.name === POLL_ALARM) pollBoosters();
+  if (a.name === FEED_ALARM) pollFeed().catch(() => {});
   if (a.name === UPDATE_ALARM) lookForUpdate();
 });
 
