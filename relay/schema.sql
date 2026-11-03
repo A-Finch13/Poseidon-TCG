@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS favorites (
   at INTEGER NOT NULL
 );
 
+-- The drawing of every kind of booster's pile, scanned and published by the author for every Aquaman (relay/worker.js).
+CREATE TABLE IF NOT EXISTS pack_designs (
+  kind TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+
 -- The game's "beaux tirages" (SSR, UR, SEC) seen by every Aquaman, public (relay/worker.js).
 CREATE TABLE IF NOT EXISTS pulls (
   k TEXT PRIMARY KEY,

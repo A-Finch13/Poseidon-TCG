@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.2.0
+// @version      1.3.0
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -588,7 +588,8 @@ const RELAY = 'https://aquaman-relay.finch-arhold-git.workers.dev';
 const PITY_EVENTS = 500; // more than the longest pity: older openings change nothing
 const PITY_PULL = 60e3; // the other devices' openings are read once a minute at most
 
-// Openings of the logged-in player kept by Aquaman: { events: [{ id, at, top }], unsynced: [id], syncedAt, syncError }.
+// Openings of the logged-in player kept by Aquaman: { events: [{ id, at, top }], unsynced: [id], syncedAt, syncError,
+// sec }. sec: the relay's count of boosters since the last SEC ({ since, known }), over more than the events kept.
 async function pityState() {
   const id = await myId();
   const { pity = {}, pityRules } = await chrome.storage.local.get(['pity', 'pityRules']);
@@ -600,8 +601,33 @@ async function savePity({ id, all, mine }) {
   await chrome.storage.local.set({ pity: { ...all, [id]: mine } });
 }
 
+// Chance of a SEC in one everyday booster (4 free cards and a 5th of at least R), from the game's odds; null if unknown.
+function secChance() {
+  return cached('sec-chance', 30 * 60e3, async () => {
+    const rarities = await game('/rarities').then((r) => r.rarities ?? []);
+    if (!rarities.some((r) => r.code === 'SEC' && r.weight > 0)) return null;
+    const miss = slotOdds(rarities, new Set(rarities.map((r) => r.code)), RANK.R).reduce((p, slot) => p * (1 - (slot.SEC ?? 0)), 1);
+    return 1 - miss;
+  }).catch(() => null);
+}
+
+// The SEC, which the game doesn't guarantee: boosters since the last one (the relay's count when it has one, as it
+// goes further back), and the chance of one per booster (chance).
+function secReport(mine, chance) {
+  const { events } = mine;
+  let last = -1;
+  for (let i = events.length - 1; i >= 0; i--)
+    if (events[i].top >= RANK.SEC) {
+      last = i;
+      break;
+    }
+  const local = { since: last >= 0 ? events.length - 1 - last : events.length, known: last >= 0 };
+  const sec = mine.sec && mine.sec.since >= local.since ? mine.sec : local;
+  return { since: sec.since, known: !!sec.known, chance };
+}
+
 // What's left before each guarantee; "known" once a card of that rarity was seen, else an upper bound.
-function pityReport(mine, rules, sync) {
+function pityReport(mine, rules, sync, chance = null) {
   const { events } = mine;
   const out = { opened: events.length, sync: sync ? (mine.syncError ? 'error' : mine.syncedAt ? 'ok' : 'waiting') : 'off', syncedAt: mine.syncedAt || null };
   for (const code of Object.keys(PITY)) {
@@ -615,6 +641,7 @@ function pityReport(mine, rules, sync) {
     const since = known ? events.length - 1 - last : events.length;
     out[code] = { since, known, every: rules[code], left: Math.max(1, rules[code] - since) };
   }
+  out.SEC = secReport(mine, chance);
   return out;
 }
 
@@ -637,8 +664,9 @@ async function exchangePity(state, force) {
       body: JSON.stringify({ player: state.id, events: mine.events.filter((e) => waiting.has(e.id)) })
     });
     if (!res.ok) throw new Error(`relay_${res.status}`);
-    const { events } = await res.json();
+    const { events, sec } = await res.json();
     mine.events = mergeEvents(mine.events, Array.isArray(events) ? events : []);
+    mine.sec = Number.isFinite(sec?.since) ? { since: sec.since, known: !!sec.known } : null;
     mine.unsynced = mine.unsynced.filter((id) => !waiting.has(id));
     mine.syncedAt = Date.now();
     mine.syncError = null;
@@ -653,7 +681,7 @@ async function pity(fresh = false) {
   const state = await pityState();
   const on = (await getSettings()).syncPity;
   if (on) await exchangePity(state, fresh);
-  return pityReport(state.mine, state.rules, on);
+  return pityReport(state.mine, state.rules, on, await secChance());
 }
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
@@ -667,11 +695,13 @@ async function recordOpening(boosters) {
     top: Math.max(0, ...rarities.map((r) => RANK[r] ?? 0))
   }));
   mine.events = mergeEvents(mine.events, added);
+  // The relay's SEC count goes on with the new openings until the next exchange.
+  if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
   mine.unsynced = [...new Set([...mine.unsynced, ...added.map((e) => e.id)])].slice(-PITY_EVENTS);
   const on = (await getSettings()).syncPity;
   if (on) await exchangePity(state, true);
   else await savePity(state);
-  return pityReport(mine, rules, on);
+  return pityReport(mine, rules, on, await secChance());
 }
 
 // Keeps the numbers of the shop's text ("une SSR tous les 60 boosters et une UR tous les 190").
@@ -756,6 +786,26 @@ async function exchangeFavorites(local) {
     }
   } catch {}
   return local.list;
+}
+
+// The drawings of every kind of booster published by the author (the relay keeps them a minute in the browsers).
+async function globalPacks() {
+  try {
+    const res = await fetch(`${RELAY}/packs`);
+    if (!res.ok) throw new Error(`relay_${res.status}`);
+    return (await res.json())?.packs ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// The kinds of boosters the shop sells ({ kind, name, art, types }), for the author's scan.
+async function packKinds() {
+  const shop = await cached('shop', 60e3, () => game('/shop'));
+  return (shop?.specials ?? []).map((s) => {
+    const types = Array.isArray(s.types) ? s.types : [];
+    return { kind: s.id, name: s.name ?? null, art: s.art ?? s.kindArt ?? s.image ?? (types[0] ? `/game/boosters/${types[0]}.webp` : null), types };
+  });
 }
 
 // The favourite series, the same on every device when syncing is on.
@@ -1019,6 +1069,20 @@ async function searchCards(query) {
   return (cards ?? []).map((c) => ({ id: c.id, name: c.name, variant: c.variant ?? null, image: c.image, rarity: c.rarity, series: c.series?.title ?? null, owned: c.owned ?? 0 }));
 }
 
+// The cheapest offers of a card on the market, the cheapest first (5 at most), and how many there are.
+async function cardListings(id) {
+  const card = await cached(`card:${id}`, 5 * 60e3, () => game(`/cards/${encodeURIComponent(id)}`));
+  const { listings } = await cached(`listings:${id}`, 30e3, () => game(`/market/listings?${new URLSearchParams({ sort: 'price', q: card.name })}`));
+  const offers = (listings ?? [])
+    .filter((l) => (l.card?.id ?? l.cardId) === id && typeof l.price === 'number')
+    .map((l) => {
+      const seller = l.seller ?? l.player ?? null;
+      return { id: l.id ?? null, price: l.price, serial: l.serial ?? l.copy?.serial ?? null, player: seller ? { id: seller.id, name: seller.name } : null };
+    })
+    .sort((a, b) => a.price - b.price);
+  return { offers: offers.slice(0, 5), count: offers.length, maxCopies: card.maxCopies ?? null };
+}
+
 // Everyone Aquaman can see with a card: holders (limited cards), sellers, friends, and recent pulls.
 async function cardOwners(id) {
   const card = await game(`/cards/${encodeURIComponent(id)}`);
@@ -1274,6 +1338,12 @@ async function answer(msg) {
         return await setPityRules(msg.rules);
       case 'favorites':
         return await favoritesReport(!!msg.fresh);
+      case 'packs-global':
+        return { packs: await globalPacks() };
+      case 'pack-kinds':
+        return { kinds: await packKinds() };
+      case 'packs-publish':
+        return await asAuthor('POST', '/admin/packs', { packs: msg.packs ?? {} });
       case 'favorite':
         return { favorites: await setFavorite(msg.id, !!msg.on) };
       case 'series-status':
@@ -1287,6 +1357,9 @@ async function answer(msg) {
         return await syncWants(!!msg.fresh);
       case 'card-search':
         return { cards: await searchCards(msg.query) };
+      case 'card-listings':
+        if (msg.fresh) forget(`listings:${msg.id}`, 'showcase:');
+        return await cardListings(msg.id);
       case 'card-owners':
         return await cardOwners(msg.id);
       case 'known-players':
@@ -1395,11 +1468,15 @@ async function handle(msg) {
 }
 
 // ---------- 4. src/content/inject.js : lit les réponses que le site reçoit déjà ----------
-// Runs in the page before it loads: tells content.js what the site's own requests change, without changing them.
-//   { aquaman: 'status', pending }   boosters waiting, read from the site's /api-game/v1/me answers
+// Runs in the page before it loads: tells content.js what the site's own requests change. It changes one answer
+// only: the boosters waiting in /api-game/v1/me, limited to the kind chosen on the home page (see content.js).
+//   { aquaman: 'status', pending, boosters }  boosters waiting, read from the site's /api-game/v1/me answers
+//                                    (boosters: [{ id, kind, name, art }], kind and name null for a classic one)
 //   { aquaman: 'opened', boosters }  boosters just opened, each as the rarities of its cards (for the pity counters)
 //   { aquaman: 'feed', pulls }       the game's "beaux tirages", read from its /api-game/v1/feed answers
 //   { aquaman: 'collection-stale' }  a booster was opened, or a trade, sale or purchase went through
+//   { aquaman: 'sell-refused', item, message, ticked }  the game refused to put a copy on sale ({ cardId, copyId,
+//                                    price }); ticked: the copies still ticked in its "Vendre mes doublons" window
 (() => {
   if (window.__aquamanHook) return;
   window.__aquamanHook = true;
@@ -1407,11 +1484,145 @@ async function handle(msg) {
   const ME = /^\/api-game\/v1\/me$/;
   const FEED = /^\/api-game\/v1\/feed$/;
   const OPEN = /^\/api-game\/v1\/boosters\/([^/]+\/open|open-many|open)$/;
+  const ORDERS = /^\/api-game\/v1\/market\/orders$/;
+  const BUY = /^\/api-game\/v1\/shop\/booster$/;
+  const MARKET_BUY = /^\/api-game\/v1\/market\/listings\/([^/]+)\/buy$/;
+  const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
+  // The card of each sale the market last showed (listing id -> { name, rarity }), for the card of a purchase.
+  const listingCards = new Map();
   const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
   const RARITIES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
   const original = window.fetch;
 
+  // The kind of boosters chosen on the home page ('classic' for the boosters without one), '' for all.
+  const chosenKind = () => {
+    try {
+      return sessionStorage.getItem('aqm-booster-kind') || '';
+    } catch {
+      return '';
+    }
+  };
+
   const post = (data) => window.postMessage({ aquaman: data.type, ...data }, location.origin);
+
+  // The page sent by the server is taken over by React piece by piece (hydration), the big ones (the album) sometimes
+  // long after the page loaded, or at once when clicked. An element Aquaman adds in a piece not taken over yet doesn't
+  // match what React expects (error #418) and may leave the page blank. React marks each element it took over
+  // (__reactProps$…, seen only from the page): once every button and link of the page has its mark, data-aqm-hydrated
+  // tells content.js it may change the page (after 15 s at most, for a page with buttons outside React).
+  (function watchHydration() {
+    const started = Date.now();
+    const taken = (el) => Object.keys(el).some((k) => k.startsWith('__reactProps$') || k.startsWith('__reactFiber$'));
+    const check = () => {
+      // (the page's own content: the buttons of other scripts, outside <main>, are never taken over)
+      const own = [...(document.querySelector('main') ?? document.body ?? document).querySelectorAll('button, a[href]')].filter((el) => !el.closest('[class*="aqm-"]'));
+      if ((document.readyState === 'complete' && own.length && own.every(taken)) || Date.now() - started > 15e3)
+        return void document.documentElement.setAttribute('data-aqm-hydrated', '');
+      setTimeout(check, 150);
+    };
+    check();
+  })();
+
+  // The game's store of its status (/me: boosters, Perles…): its useGameStore hook (zustand), found among the site's
+  // modules. Aquaman adds a module of its own to the site's Turbopack, which looks through the modules already loaded
+  // (its context's c). Else, the state among the hooks of the game's components. Returns the state ({ load, … }).
+  let storeHook = null;
+  let storeState = null;
+  async function gameStore() {
+    if (storeHook) return storeHook.getState();
+    if (storeState) return storeState;
+    const T = globalThis.TURBOPACK;
+    if (T && !Array.isArray(T) && typeof T.push === 'function') {
+      const id = `aquaman-${Date.now()}`;
+      try {
+        // Two pushes: the module, then the order to run it (a chunk has one or the other).
+        T.push([
+          'aquaman-store.js',
+          id,
+          (ctx) => {
+            for (const m of Object.values(ctx?.c ?? {}))
+              try {
+                const hook = m?.exports?.useGameStore;
+                if (typeof hook?.getState === 'function' && typeof hook.getState()?.load === 'function') return void (storeHook = hook);
+              } catch {}
+          }
+        ]);
+        T.push(['aquaman-store-run.js', { otherChunks: [], runtimeModuleIds: [id] }]);
+      } catch {}
+      for (let i = 0; i < 10 && !storeHook; i++) await new Promise((r) => setTimeout(r, 20));
+      if (storeHook) return storeHook.getState();
+    }
+    const el = document.querySelector('button, main, div');
+    const key = el && Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+    let fiber = key ? el[key] : null;
+    while (fiber?.return) fiber = fiber.return;
+    const isStore = (v) => v && typeof v === 'object' && typeof v.load === 'function' && typeof v.patch === 'function';
+    const stack = fiber ? [fiber] : [];
+    for (let n = 0; stack.length && n < 50000; n++) {
+      const f = stack.pop();
+      for (let hook = f.memoizedState, i = 0; hook && typeof hook === 'object' && 'next' in hook && i < 80; hook = hook.next, i++)
+        for (const v of [hook.memoizedState, hook.queue?.lastRenderedState, Array.isArray(hook.memoizedState) ? hook.memoizedState[0] : null])
+          if (isStore(v)) return (storeState = v);
+      if (f.sibling) stack.push(f.sibling);
+      if (f.child) stack.push(f.child);
+    }
+    return null;
+  }
+
+  // All the waiting boosters, as the game's last /me gave them (before the filter). Also written on the page
+  // (data-aqm-boosters), where content.js finds them as soon as it starts.
+  let fullPending = null;
+  let forcedPending = null; // the boosters made up for the author's scan, given to the game in its next /me
+  function keepPending(pending) {
+    fullPending = pending;
+    try {
+      document.documentElement.setAttribute('data-aqm-boosters', JSON.stringify(pending.map((b) => ({ id: b.id, kind: b.kindId ?? null, name: b.kindName ?? null, art: b.kindArt ?? null }))));
+    } catch {}
+  }
+
+  // content.js asks the game to read its status again (its Perles after a purchase, its boosters…).
+  window.addEventListener('message', async (e) => {
+    if (e.source !== window || e.data?.aquamanCmd !== 'reload-game') return;
+    try {
+      window.next?.router?.refresh?.(); // the page's own data (a card's copies…)
+    } catch {}
+    try {
+      await (await gameStore())?.load().catch(() => {});
+    } catch {}
+  });
+
+  // content.js sets the game on one kind ('' for all): the game's list of boosters is changed in its store at once
+  // (patch, no request), else read again through the filter (load). Answers once it is done, or at once when the
+  // store can't be found.
+  window.addEventListener('message', async (e) => {
+    if (e.source !== window || e.data?.aquamanCmd !== 'refresh-boosters') return;
+    let ok = false;
+    try {
+      const s = await gameStore();
+      const kind = e.data.kind ?? '';
+      const given = Array.isArray(e.data.items) ? e.data.items : null; // the author's scan: boosters made up by kind
+      if (s && (given || e.data.fresh || e.data.reload || !fullPending || typeof s.patch !== 'function')) {
+        // The game draws its pile afresh only when it reads its boosters itself (load: it goes through its loading
+        // state, the pile comes back with the right picture). Its answer goes through the filter of the kind, or
+        // carries the made-up boosters of the scan.
+        // The scan gives the ids of the player's own boosters: the game gets them whole, as its server sent them (a
+        // booster with an id it doesn't know is drawn with the classic picture).
+        forcedPending = given && given.map((b) => fullPending?.find((x) => x?.id === b.id)).filter(Boolean);
+        if (given && !forcedPending.length) forcedPending = null;
+        try {
+          await s.load().catch(() => {});
+        } finally {
+          forcedPending = null;
+        }
+        ok = true;
+      } else if (s) {
+        // Back to all the boosters while the game's pile is hidden: at once, without a request.
+        s.patch(() => ({ pending: kind ? fullPending.filter((b) => (b?.kindId ?? 'classic') === kind) : fullPending }));
+        ok = true;
+      }
+    } catch {}
+    post({ type: 'boosters-refreshed', ok, id: e.data.id ?? null });
+  });
 
   // Path of a same-origin request, or null.
   function pathOf(input) {
@@ -1420,6 +1631,101 @@ async function handle(msg) {
       return url.origin === location.origin ? url.pathname : null;
     } catch {
       return null;
+    }
+  }
+
+  // A copy in the props of the site's components ({ cardId, copyId, name, serial }), looked for a few levels deep:
+  // { copyId } or a { id, serial }, its card beside it or around it (card: the card met on the way). Lists are left
+  // out: their first copy would be every row's.
+  function findCopy(v, depth, card = null) {
+    if (!v || typeof v !== 'object' || Array.isArray(v) || depth > 4 || v instanceof Node || v.$$typeof) return null;
+    const own = v.card && typeof v.card === 'object' && !Array.isArray(v.card) ? v.card : null;
+    const near = own ?? card;
+    const copyId = typeof v.copyId === 'string' ? v.copyId : typeof v.id === 'string' && 'serial' in v && v.id !== near?.id && !v.rarity ? v.id : null;
+    const cardId = v.cardId ?? near?.id;
+    if (copyId && typeof cardId === 'string') return { cardId, copyId, name: near?.name ?? v.name ?? null, serial: v.serial ?? null };
+    for (const k in v) {
+      if (k === 'children' || k.startsWith('_') || typeof v[k] !== 'object') continue;
+      const found = findCopy(v[k], depth + 1, near);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  // The copy shown by an element: read in the props of the components around it.
+  function copyOf(el) {
+    const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+    let fiber = key ? el[key] : null;
+    for (let i = 0; fiber && i < 20; i++, fiber = fiber.return) {
+      const found = findCopy(fiber.memoizedProps, 0);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  // The copies met in the site's answers (copy id -> { cardId, copyId, name, serial }), and the names of the cards:
+  // the rows of the "Vendre mes doublons" window are found there by their name and number.
+  const seenCopies = new Map();
+  const cardNames = new Map();
+
+  function learnCopies(body) {
+    let left = 300000;
+    const walk = (v, card) => {
+      if (!v || typeof v !== 'object' || --left < 0) return;
+      if (Array.isArray(v)) {
+        for (const x of v) walk(x, card);
+        return;
+      }
+      const isCard = typeof v.rarity === 'string' && typeof v.name === 'string' && typeof v.id === 'string';
+      if (isCard) cardNames.set(v.id, v.name);
+      const own = v.card && typeof v.card === 'object' && !Array.isArray(v.card) ? v.card : null;
+      const near = own ?? (isCard ? v : card);
+      const copyId = typeof v.copyId === 'string' ? v.copyId : !isCard && typeof v.id === 'string' && typeof v.serial === 'number' ? v.id : null;
+      const cardId = typeof v.cardId === 'string' ? v.cardId : near?.id;
+      if (copyId && typeof cardId === 'string') seenCopies.set(copyId, { cardId, copyId, name: near?.name ?? null, serial: typeof v.serial === 'number' ? v.serial : null });
+      for (const k in v) if (v[k] && typeof v[k] === 'object') walk(v[k], near);
+    };
+    walk(body, null);
+  }
+
+  // The copy of a row: its number (#518) and the longest card name found in its text.
+  function copyOfRow(row, taken) {
+    const text = row.textContent;
+    const serial = Number(text.match(/#\s?(\d+)/)?.[1]);
+    let best = null;
+    for (const c of seenCopies.values()) {
+      const name = c.name ?? cardNames.get(c.cardId);
+      if (c.serial !== serial || !name || !text.includes(name) || taken.has(c.copyId)) continue;
+      if (!best || name.length > best.name.length) best = { ...c, name };
+    }
+    return best;
+  }
+
+  // The copies still ticked in the "Vendre mes doublons" window, in its order, each with the price of its row (the
+  // price typed, else its "Valeur ≈").
+  function tickedCopies() {
+    try {
+      const buttons = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root'));
+      const bar = buttons.find((b) => /^tout (d[ée])?cocher/i.test(b.textContent.trim()));
+      if (!bar) return [];
+      const allTicked = /^tout d[ée]cocher/i.test(bar.textContent.trim());
+      const out = [];
+      const taken = new Set();
+      for (const sell of buttons) {
+        if (sell.textContent.trim() !== 'Vendre') continue;
+        let row = sell;
+        while (row.parentElement && !(row.querySelector('img') && /#\s?\d+/.test(row.textContent))) row = row.parentElement;
+        const ticked = allTicked || !!row.querySelector('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"], [data-state="checked"]');
+        const copy = ticked ? copyOfRow(row, taken) ?? copyOf(sell) : null;
+        if (!copy || taken.has(copy.copyId)) continue;
+        taken.add(copy.copyId);
+        const typed = Math.round(Number(row.querySelector('input:not([type="checkbox"])')?.value));
+        const price = typed > 0 ? typed : Math.round(Number(row.textContent.match(/valeur\s*≈?\s*([\d\s  ]+)/i)?.[1]?.replace(/\s/g, '')));
+        if (price > 0) out.push({ ...copy, price });
+      }
+      return out;
+    } catch {
+      return [];
     }
   }
 
@@ -1442,15 +1748,75 @@ async function handle(msg) {
   };
 
   async function watch(pending, path, input, init) {
+    const self = !!window.__aquamanSelf; // a request of Aquaman itself (userscript)
     const res = await pending;
     try {
       const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      // The game sees only the waiting boosters of the chosen kind (all of them when none is left).
+      const kind = chosenKind();
+      if (forcedPending && res.ok && method === 'GET' && ME.test(path)) {
+        const me = await res.clone().json().catch(() => null);
+        if (me && typeof me === 'object') {
+          if (Array.isArray(me.pending)) keepPending(me.pending);
+          return new Response(JSON.stringify({ ...me, pending: forcedPending }), { status: res.status, statusText: res.statusText, headers: res.headers });
+        }
+      }
+      if (kind && !self && res.ok && method === 'GET' && ME.test(path)) {
+        const me = await res.clone().json().catch(() => null);
+        if (Array.isArray(me?.pending)) {
+          keepPending(me.pending);
+          const kept = me.pending.filter((b) => (b?.kindId ?? 'classic') === kind);
+          if (kept.length) {
+            post({ type: 'status', pending: me.pending.length, boosters: me.pending.map((b) => ({ id: b.id, kind: b.kindId ?? null, name: b.kindName ?? null, art: b.kindArt ?? null })) });
+            return new Response(JSON.stringify({ ...me, pending: kept }), { status: res.status, statusText: res.statusText, headers: res.headers });
+          }
+        }
+      }
+      if (path && !res.ok && method === 'POST' && ORDERS.test(path) && res.status !== 429) {
+        const order = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+        if (order?.side === 'sell' && order.copyId)
+          res
+            .clone()
+            .json()
+            .catch(() => null)
+            .then((body) =>
+              post({
+                type: 'sell-refused',
+                item: { cardId: order.cardId, copyId: order.copyId, price: order.price },
+                message: body?.error?.message || `Erreur ${res.status}`,
+                ticked: tickedCopies()
+              })
+            );
+      }
+      if (path && res.ok && method === 'GET' && !FEED.test(path))
+        res
+          .clone()
+          .json()
+          .then(learnCopies)
+          .catch(() => {});
       if (path && res.ok) {
         if (method === 'GET' && ME.test(path)) {
           res
             .clone()
             .json()
-            .then((me) => Array.isArray(me?.pending) && post({ type: 'status', pending: me.pending.length }))
+            .then(
+              (me) =>
+                Array.isArray(me?.pending) &&
+                (keepPending(me.pending), true) &&
+                post({
+                  type: 'status',
+                  pending: me.pending.length,
+                  boosters: me.pending.map((b) => ({ id: b.id, kind: b.kindId ?? null, name: b.kindName ?? null, art: b.kindArt ?? null }))
+                })
+            )
+            .catch(() => {});
+        } else if (method === 'GET' && MARKET_LIST.test(path)) {
+          res
+            .clone()
+            .json()
+            .then((body) => {
+              for (const l of Array.isArray(body?.listings) ? body.listings : []) if (l?.id && l.card?.name) listingCards.set(String(l.id), { name: l.card.name, rarity: l.card.rarity ?? null });
+            })
             .catch(() => {});
         } else if (method === 'GET' && FEED.test(path)) {
           res
@@ -1459,7 +1825,24 @@ async function handle(msg) {
             .then((body) => Array.isArray(body?.pulls) && post({ type: 'feed', pulls: body.pulls }))
             .catch(() => {});
         } else if (method !== 'GET' && WRITE.test(path)) {
-          if (OPEN.test(path))
+          // A card bought on the market: its other sales are hidden (content.js), the player has it now.
+          const bought = path.match(MARKET_BUY)?.[1];
+          const card = bought && listingCards.get(decodeURIComponent(bought));
+          if (card) post({ type: 'market-bought', name: card.name, rarity: card.rarity });
+          // A booster bought in the shop: the game adds it to its boosters without reading /me again, Aquaman too.
+          if (BUY.test(path) && fullPending)
+            res
+              .clone()
+              .json()
+              .then((body) => {
+                const b = body?.booster;
+                if (!b?.id || fullPending.some((x) => x?.id === b.id)) return;
+                keepPending([...fullPending, b]);
+                post({ type: 'status', pending: fullPending.length, boosters: fullPending.map((x) => ({ id: x.id, kind: x.kindId ?? null, name: x.kindName ?? null, art: x.kindArt ?? null })) });
+              })
+              .catch(() => {});
+          // The boosters Aquaman opens itself (window.__aquamanSelf, in the userscript) are counted by Aquaman.
+          if (OPEN.test(path) && !window.__aquamanSelf)
             res
               .clone()
               .json()
@@ -2400,6 +2783,11 @@ html.aqm-grabbing * {
 .aqm-pity-line:has(.aqm-r-SSR) .aqm-bar > span {
   background: linear-gradient(90deg, #eab308, #fde047);
 }
+.aqm-pity-line.is-sec {
+  grid-column: 1 / -1;
+  padding-top: 10px;
+  border-top: 1px solid var(--aqm-line);
+}
 .aqm-pity-note {
   margin: 10px 0 0;
   font-size: 11px;
@@ -2794,6 +3182,16 @@ html.aqm-grabbing * {
   font-weight: 700;
   text-align: right;
 }
+.aqm-pull-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aqm-pull-player .aqm-avatar-sm {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
 .aqm-pull-who a {
   color: #fff;
   text-decoration: none;
@@ -3137,6 +3535,15 @@ html.aqm-grabbing * {
   background: var(--aqm-card);
   font-size: 13px;
 }
+.aqm-avatar-sm {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+.aqm-owner .aqm-avatar-sm + a,
+.aqm-owner .aqm-avatar-sm + span {
+  min-width: 0;
+}
 .aqm-owner-serial {
   min-width: 52px;
   font-weight: 800;
@@ -3172,13 +3579,21 @@ html.aqm-grabbing * {
 
 /* ---------- File de recherche ---------- */
 
-.aqm-queue,
+.aqm-dock,
 .aqm-update {
   position: fixed;
   right: 16px;
   bottom: 16px;
   z-index: 2147482500;
   width: min(360px, calc(100vw - 32px));
+}
+.aqm-dock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.aqm-queue,
+.aqm-update {
   padding: 12px 14px;
   border: 1px solid rgba(96, 165, 250, 0.35);
   border-radius: 16px;
@@ -3294,7 +3709,7 @@ html.aqm-grabbing * {
   color: var(--aqm-muted);
 }
 @media (max-width: 640px) {
-  .aqm-queue,
+  .aqm-dock,
   .aqm-update {
     right: 8px;
     left: 8px;
@@ -3313,6 +3728,296 @@ html.aqm-grabbing * {
 }
 .aqm-fav-series .aqm-fav-cards {
   margin-top: 14px;
+}
+
+/* ---------- Vendre mes doublons ---------- */
+
+.aqm-sales {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.aqm-sell-wait {
+  flex: none;
+  align-self: stretch;
+  margin: 0 0 12px;
+  color: var(--aqm-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.aqm-sell-wait > p:first-child {
+  margin: 0;
+}
+.aqm-sell-waiting {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 2px 16px;
+  max-height: 140px;
+  margin: 8px 0 0;
+  padding: 0 6px 0 0;
+  overflow-y: auto;
+  list-style: none;
+  font-size: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.aqm-sell-waiting::-webkit-scrollbar {
+  width: 6px;
+}
+.aqm-sell-waiting::-webkit-scrollbar-track {
+  background: transparent;
+}
+.aqm-sell-waiting::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.aqm-sell-waiting::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+.aqm-sell-waiting::-webkit-scrollbar-button {
+  display: none;
+}
+.aqm-sell-last {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--aqm-muted);
+}
+.aqm-sell-waiting li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.aqm-sell-waiting li > span:first-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Accueil : les boosters de chaque catégorie, côte à côte ---------- */
+
+/* The game's pile and buttons, replaced by Aquaman's: unseen but still drawn (out of the flow), so that their
+   pictures load (a picture loaded lazily never loads in a box that isn't shown). */
+[data-aqm-hidden] {
+  position: absolute !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+[data-aqm-veiled] {
+  visibility: hidden;
+}
+.aqm-piles {
+  position: relative;
+  flex: none;
+  align-self: auto;
+  max-width: none;
+  width: 100%;
+  padding: 0 0 8px;
+  overflow: hidden;
+}
+.aqm-wheel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.aqm-wheel-track {
+  display: grid;
+}
+.aqm-wheel-controls {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+.aqm-pile {
+  display: flex;
+  grid-area: 1 / 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  justify-self: center;
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.4s, filter 0.4s;
+}
+.aqm-pile:not(.is-front) {
+  z-index: 0;
+  opacity: 0.4;
+  cursor: pointer;
+}
+.aqm-pile.is-front {
+  z-index: 1;
+}
+.aqm-pile.is-away {
+  opacity: 0;
+  pointer-events: none;
+}
+.aqm-pile:not(.is-front) .aqm-pile-art {
+  pointer-events: none;
+}
+.aqm-pile-name {
+  margin: 0;
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.aqm-pile-art {
+  transition: transform 0.25s ease-out, filter 0.25s;
+}
+.aqm-pile-art.is-hover {
+  transform: perspective(900px) rotateX(var(--aqm-tilt-x, 0deg)) rotateY(var(--aqm-tilt-y, 0deg)) translateY(-8px) scale(1.03);
+  filter: drop-shadow(0 18px 30px rgba(37, 99, 235, 0.35));
+  transition: transform 0.08s linear, filter 0.25s;
+}
+.aqm-wheel-arrow {
+  position: absolute;
+  top: 45%;
+  z-index: 3;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  font: inherit;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+.aqm-wheel-arrow:hover {
+  border-color: #3b82f6;
+  background: rgba(37, 99, 235, 0.35);
+}
+.aqm-wheel-arrow.is-prev {
+  left: 8px;
+}
+.aqm-wheel-arrow.is-next {
+  right: 8px;
+}
+.aqm-wheel-dots {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.aqm-wheel-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+}
+.aqm-wheel-dot.is-on {
+  width: 22px;
+  border-radius: 999px;
+  background: #3b82f6;
+}
+@media (max-width: 640px) {
+  .aqm-pile {
+    zoom: 0.72;
+  }
+  .aqm-wheel-arrow {
+    width: 36px;
+    height: 36px;
+    font-size: 22px;
+  }
+}
+.aqm-queue-btn.is-main {
+  border-color: #2563eb;
+  background: #2563eb;
+}
+.aqm-queue-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.aqm-scan-list {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+/* ---------- Page d'une carte : offres du marché ---------- */
+
+.aqm-listings {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.aqm-listings-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+}
+.aqm-listings-head .aqm-label {
+  margin: 0;
+}
+.aqm-listings .aqm-owners {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-buy-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.aqm-buy {
+  height: 30px;
+}
+.aqm-buy-refused {
+  margin: 8px 0 0;
+  color: #fca5a5;
+}
+
+/* ---------- Collection : séries les plus avancées ---------- */
+
+.aqm-fav-bar .aqm-sort-progress {
+  margin-left: 8px;
+}
+.aqm-sort-progress.is-on {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.2);
+  color: #fff;
+}
+
+/* ---------- Collection : onglet Manquantes ---------- */
+
+[data-aqm-owned-card] {
+  display: none !important;
+}
+[data-aqm-pill-off] {
+  opacity: 0 !important;
+}
+[data-aqm-unpicked] {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--aqm-plain-color) !important;
+}
+.aqm-missing-tab.is-on {
+  border-radius: var(--aqm-pill-radius);
+  background: var(--aqm-pill-bg) !important;
+  box-shadow: var(--aqm-pill-shadow);
+  color: var(--aqm-picked-color) !important;
+}
+
+/* ---------- Recycler des cartes ---------- */
+
+.aqm-recycle-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 8px;
 }
 
 /* ---------- Joueurs avec Aquaman (auteur) ---------- */
@@ -3398,6 +4103,51 @@ html.aqm-grabbing * {
     top: 8px;
     bottom: auto;
   }
+}
+
+/* ---------- Marché : « Retirer mes ventes » à côté de « Vendre une carte » ---------- */
+
+.aqm-unlist {
+  margin-left: 8px;
+}
+
+/* ---------- Fenêtre de question (à la place de celles du navigateur) ---------- */
+
+.aqm-panel.is-ask {
+  max-width: 520px;
+}
+.aqm-ask-text {
+  margin: 0 0 12px;
+  color: var(--aqm-text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.aqm-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.aqm-ask-actions .aqm-queue-btn {
+  height: 36px;
+  padding: 0 18px;
+  font-weight: 700;
+}
+
+/* ---------- Marché : les autres annonces d'une carte qu'on vient d'acheter ---------- */
+
+[data-aqm-bought] {
+  display: none !important;
+}
+
+/* ---------- Marché : filtre « Favoris » à côté de « Mes recherches » ---------- */
+
+.aqm-market-fav.is-on {
+  background: #1e3a5f !important;
+  color: #fff !important;
+}
+[data-aqm-unfav] {
+  display: none !important;
 }
 `;
   document.head.appendChild(style);
@@ -3504,6 +4254,24 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.3.0',
+    items: [
+      ['Vendre mes doublons (fenêtre du jeu) : quand le marché est plein, le doublon refusé et ceux encore cochés après lui attendent dans Aquaman (50 au plus), sans recliquer, et sont mis en vente tout seuls, au prix choisi, dès qu’une de tes ventes se conclut. La file s’affiche dans la fenêtre, avec « Vider la file » et « Réessayer maintenant ».'],
+      ['Recycler des cartes (fenêtre du jeu) : aucune carte n’est cochée à l’ouverture, et un bouton « Tout sélectionner » coche toute la liste.'],
+      ['Accueil : sous les garanties SSR et UR, le nombre de boosters depuis ta dernière SEC, sa fréquence moyenne et ta chance d’en avoir une dans les 100 prochains (la SEC n’a pas de garantie).', 'pity'],
+      ['Accueil : quand tes boosters sont de plusieurs catégories, les boosters gratuits s’affichent d’abord, et des flèches passent aux autres catégories (3 visibles à la fois : celle du centre et une de chaque côté), chacune avec son rendu, l’image de son pack et ses boutons « Ouvrir » et « Tout ouvrir », qui n’ouvrent que ceux-là, avec l’animation du jeu. Leur dessin est gardé et partagé entre tes appareils, pour s’afficher tout de suite.'],
+      ['Accueil : un pack acheté dans la boutique s’affiche dès le retour à l’accueil, sans recharger la page.'],
+      ['Marché : un bouton « Retirer mes ventes » à côté de « Vendre une carte » retire toutes tes ventes à prix fixe d’un coup. La file d’attente des doublons est mise en pause le temps du retrait, puis réactivée.'],
+      ['Marché : une fois une carte achetée, ses autres annonces de la même rareté ne s’affichent plus.'],
+      ['Marché : un filtre « ★ Favoris » à côté de « Mes recherches » ne montre que les cartes de tes séries favorites.'],
+      ['Collection : « Les plus avancées » à côté de ★ Favoris range les séries de celle où il te manque le moins de cartes à celle où il en manque le plus (les complètes à la fin). Le tri et la place de la bande sont gardés au retour de la page d’un personnage.'],
+      ['Collection : un onglet « Manquantes » à côté de « Album complet », qui ne montre que les cartes qui te manquent.'],
+      ['Page d’une carte : sous la cote, les 5 offres les moins chères du marché, de la moins chère à la plus chère, avec le vendeur, le numéro et un bouton « Acheter ».'],
+      ['Qui a cette carte ? : la photo de profil de chaque joueur à côté de son nom.', 'qui'],
+      ['Correction : la page Collection ne devient plus blanche quand on clique trop tôt sur « Manquantes » (Aquaman attend que le jeu ait fini de charger la page).']
+    ]
+  },
+  {
     version: '1.2.0',
     items: [
       ['Ma vitrine : la fenêtre reste fluide même avec des centaines de cartes (seules celles proches de l’écran sont dessinées, et Aquaman ne fouille plus toute la fenêtre à chaque changement).', 'vitrine'],
@@ -3601,6 +4369,17 @@ const CHANGES = [
       return false;
     }
   };
+  // The extension reloaded or updated while this page stayed open: its storage and messages throw "Extension context
+  // invalidated" from any timer still running. This copy of Aquaman stops at the first one, quietly (the page's next
+  // load brings the new one).
+  const GONE = /extension context invalidated/i;
+  const onGone = (e) => {
+    if (!GONE.test(String(e.reason?.message ?? e.error?.message ?? e.message ?? ''))) return;
+    e.preventDefault();
+    shutdown();
+  };
+  addEventListener('unhandledrejection', onGone);
+  addEventListener('error', onGone);
 
   // Message to the background worker; null when it can't answer.
   async function send(msg) {
@@ -3626,14 +4405,16 @@ const CHANGES = [
   // Firefox, which sends them as the page), never from the background worker.
   const pageFetch = typeof content !== 'undefined' && content?.fetch ? content.fetch.bind(content) : window.fetch.bind(window);
 
-  async function gameWrite(path, method) {
-    const res = await pageFetch(`/api-game/v1${path}`, { method, credentials: 'include', headers: { accept: 'application/json' } });
+  async function gameWrite(path, method, data) {
+    const headers = data === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' };
+    const res = await pageFetch(`/api-game/v1${path}`, { method, credentials: 'include', headers, body: data === undefined ? undefined : JSON.stringify(data) });
     const body = await res.json().catch(() => null);
     if (!res.ok) {
       const error = new Error(body?.error?.message || `Erreur ${res.status}`);
       // "Doucement ! Réessaie dans un instant." : the game asks to slow down, the change can be sent again.
       error.slowDown = res.status === 429 || /doucement|r[ée]essaie|trop de requ/i.test(error.message);
-      error.wait = (Number(res.headers?.get?.('retry-after')) || 0) * 1000;
+      // The wait the game asks for: its Retry-After header, else the seconds in its message ("Réessaie dans 12 s").
+      error.wait = (Number(res.headers?.get?.('retry-after')) || Number(error.message.match(/(\d+)\s*(?:s\b|sec)/i)?.[1]) || 0) * 1000;
       throw error;
     }
     return body;
@@ -3663,6 +4444,10 @@ const CHANGES = [
 
   const readQueue = async () => (await chrome.storage.local.get(QUEUE))[QUEUE] ?? null;
   const writeQueue = (q) => chrome.storage.local.set({ [QUEUE]: q });
+  // The wait before sending again when the game asks to slow down: the time it gives (5 s when it gives none) and 1 s
+  // more. Never a refusal: the card or copy waits its turn.
+  const slowWait = (e) => (e.wait || 5000) + 1000;
+
   // True when another tab is working on the queue right now.
   const busyElsewhere = (q) => !!q.owner && q.owner !== TAB && (Date.now() - q.beat < STALE || Date.now() < (q.until || 0) + STALE);
 
@@ -3809,9 +4594,9 @@ const CHANGES = [
         } catch (e) {
           q = await readQueue();
           if (!q || q.finishedAt) break;
-          if (e.slowDown && q.tries < 6) {
+          if (e.slowDown) {
             gap = Math.min(4000, gap * 1.5);
-            const wait = Math.max(e.wait, Math.min(30e3, 3000 * 2 ** q.tries));
+            const wait = slowWait(e);
             await writeQueue({ ...q, tries: q.tries + 1, beat: Date.now(), until: Date.now() + wait });
             await pause(wait);
           } else if (FULL.test(e.message)) {
@@ -3846,6 +4631,7 @@ const CHANGES = [
     const panel = h('div', { class: 'aqm-fav-wait', role: 'status', hidden: true });
     let wasRunning = null;
     const paint = async () => {
+      if (stopped || !alive()) return void stop();
       if (!panel.isConnected && wasRunning !== null) return void stop();
       const { [QUEUE]: q = null, [WAITING]: waiting = [], [ENTERED]: entered = 0, [REFILL]: at = 0, [LIMIT]: limit = 100 } =
         await chrome.storage.local.get([QUEUE, WAITING, ENTERED, REFILL, LIMIT]);
@@ -3915,9 +4701,8 @@ const CHANGES = [
 
   // The cards being added: progress, then the result.
   function renderQueue(q) {
-    let box = document.querySelector('.aqm-queue');
-    if (!q || (!q.ids.length && !q.finishedAt) || !location.pathname.startsWith('/jeu')) return void box?.remove();
-    if (!box) box = document.body.appendChild(h('div', { class: 'aqm-root aqm-queue', role: 'status' }));
+    if (!q || (!q.ids.length && !q.finishedAt) || !location.pathname.startsWith('/jeu')) return void document.querySelector('.aqm-dock > .aqm-wants')?.remove();
+    const box = dockBox('aqm-wants');
     const running = q.ids.length > 0;
     const added = `${nCards(q.done)} ajoutée${q.done > 1 ? 's' : ''} à ta liste de recherches du jeu`;
     let title;
@@ -3958,23 +4743,440 @@ const CHANGES = [
     );
   }
 
-  // The queue changed (in this tab or another one): the box follows, and this tab takes over if needed.
+  // A box of the bottom right corner (the cards being added, the duplicates being put on sale), one above the other.
+  function dockBox(cls) {
+    let box = document.querySelector(`.aqm-dock > .${cls}`);
+    if (box) return box;
+    const dock = document.querySelector('.aqm-dock') ?? document.body.appendChild(h('div', { class: 'aqm-root aqm-dock' }));
+    return dock.appendChild(h('div', { class: `aqm-queue ${cls}`, role: 'status' }));
+  }
+
+  // ---------- duplicates on sale: a queue like the search list's ----------
+  // The game's "Vendre mes doublons" window puts the copies on the market itself. When the market takes no more of the
+  // player's sales, each copy it refuses ({ cardId, copyId, price, name }, read by inject.js) waits in Aquaman
+  // (SALES_MAX at most) and is tried again every 2 minutes, by one tab at a time: a sale concluded frees a place.
+
+  const SALES = 'sellQueue';
+  const SALES_WAITING = 'sellWaiting';
+  const SALES_AT = 'sellCheckAt'; // last try of the waiting copies, by any tab
+  const SALES_LAST = 'sellLastAnswer'; // the game's last answer to a try of the waiting copies: { at, message, full }
+  const SALES_PAUSED = 'sellPausedUntil'; // the waiting copies are not tried until then (the sales being withdrawn)
+  const SALES_MAX = 50;
+  // The game's answer when its market is full: "50 ordres en cours au plus." (its sales and purchase orders together).
+  // Any other refusal is about the copy itself: it leaves the queue.
+  const SALES_FULL = /ordres? en cours/i;
+  let salesRunning = false;
+  chrome.storage.local.remove('sellFullMessage'); // a refusal once taken for a full market by the test builds of version 1.3.0
+
+  const readSales = async () => (await chrome.storage.local.get(SALES))[SALES] ?? null;
+  const writeSales = (q) => chrome.storage.local.set({ [SALES]: q });
+  const nCopies = (n) => `${n} doublon${n > 1 ? 's' : ''}`;
+  const salesPaused = async () => ((await chrome.storage.local.get(SALES_PAUSED))[SALES_PAUSED] ?? 0) > Date.now();
+
+
+  // Adds copies to the waiting ones (each once, SALES_MAX at most), at the front for those that were waiting already;
+  // returns how many didn't fit.
+  async function parkSales(items, front = false) {
+    const before = await readList(SALES_WAITING);
+    const fresh = items.filter((x, i) => !before.some((y) => y.copyId === x.copyId) && items.findIndex((y) => y.copyId === x.copyId) === i);
+    const all = front ? [...fresh, ...before] : [...before, ...fresh];
+    await chrome.storage.local.set({ [SALES_WAITING]: all.slice(0, SALES_MAX), ...(front || !before.length ? { [SALES_AT]: Date.now() } : {}) });
+    return Math.max(0, all.length - SALES_MAX);
+  }
+
+  // The game's window had a sale refused: a full market keeps the copy waiting in Aquaman. The game stops its "Mettre N
+  // en vente" at the first refusal: the copies still ticked in its list (ticked, read by inject.js) wait too, without
+  // clicking again.
+  async function onSellRefused(item, message, ticked) {
+    if (salesRunning || !SALES_FULL.test(message)) return; // Aquaman's own sales (userscript), or a refusal about the copy
+    const batch = Date.now() - sellOneAt > 15e3; // not the "Vendre" of one row
+    const named = (x) => ({ cardId: x.cardId, copyId: x.copyId, price: x.price, name: x.name ?? ticked.find((t) => t.copyId === x.copyId)?.name ?? 'Une carte' });
+    const after = batch ? ticked.slice(Math.max(0, ticked.findIndex((t) => t.copyId === item.copyId))) : [];
+    await parkSales([item, ...after].map(named));
+  }
+
+  // Last click on the "Vendre" of one row of the game's window (a sale of one copy).
+  let sellOneAt = 0;
+  function onSellClick(e) {
+    const b = e.target.closest?.('button');
+    if (b && !b.closest('.aqm-root')) sellOneAt = b.textContent.trim() === 'Vendre' ? Date.now() : 0;
+  }
+
+  // Tries the waiting copies again (wait: time since the last try): they go to the queue, and back to the waiting
+  // ones if the market is still full.
+  async function checkSales(wait = CHECK_EVERY) {
+    if (stopped || (await salesPaused())) return;
+    const waiting = await readList(SALES_WAITING);
+    const q = await readSales();
+    if (!waiting.length || q?.items.length) return;
+    const { [SALES_AT]: at = 0 } = await chrome.storage.local.get(SALES_AT);
+    if (Date.now() - at < wait) return;
+    await chrome.storage.local.set({ [SALES_WAITING]: [], [SALES_AT]: Date.now() });
+    await writeSales({ items: waiting, total: waiting.length, done: 0, skipped: [], owner: null, beat: 0, until: 0, tries: 0, finishedAt: 0 });
+    runSales();
+  }
+
+  async function stopSales() {
+    const q = await readSales();
+    if (!q) return;
+    await parkSales(q.items, true);
+    await writeSales({ ...q, items: [], stopped: true, finishedAt: Date.now() });
+  }
+
+  // Puts the copies of the queue on sale, waits when the game asks to slow down, drops a copy it refuses, and puts
+  // the rest back in the waiting ones once the market is full.
+  async function runSales() {
+    if (salesRunning || stopped) return;
+    const first = await readSales();
+    if (!first?.items.length || busyElsewhere(first)) return;
+    salesRunning = true;
+    let gap = 900;
+    try {
+      while (!stopped) {
+        let q = await readSales();
+        if (!q?.items.length || busyElsewhere(q) || (await salesPaused())) break;
+        const item = q.items[0];
+        await writeSales({ ...q, owner: TAB, beat: Date.now(), until: 0 });
+        try {
+          await gameWrite('/market/orders', 'POST', { cardId: item.cardId, side: 'sell', price: item.price, copyId: item.copyId });
+          q = await readSales();
+          if (!q || q.finishedAt) break; // stopped meanwhile
+          const items = q.items.filter((x) => x.copyId !== item.copyId);
+          await writeSales({ ...q, items, done: q.done + 1, tries: 0, beat: Date.now(), finishedAt: items.length ? 0 : Date.now() });
+          chrome.storage.local.set({ [SALES_LAST]: { at: Date.now(), message: null, full: false } });
+          if (items.length) await pause(gap);
+        } catch (e) {
+          q = await readSales();
+          if (!q || q.finishedAt) break;
+          const rest = q.items.filter((x) => x.copyId !== item.copyId);
+          if (e.slowDown) {
+            gap = Math.min(4000, gap * 1.5);
+            const wait = slowWait(e);
+            await writeSales({ ...q, tries: q.tries + 1, beat: Date.now(), until: Date.now() + wait });
+            await pause(wait);
+          } else if (SALES_FULL.test(e.message)) {
+            chrome.storage.local.set({ [SALES_LAST]: { at: Date.now(), message: e.message, full: true } });
+            await parkSales(q.items, true);
+            await writeSales({ ...q, items: [], finishedAt: Date.now() });
+          } else {
+            // This copy can't be sold any more (sold by hand, already on sale, traded…): the next ones go on.
+            chrome.storage.local.set({ [SALES_LAST]: { at: Date.now(), message: e.message, full: false } });
+            const skipped = [...q.skipped, { ...item, reason: e.message }];
+            await writeSales({ ...q, items: rest, skipped, tries: 0, beat: Date.now(), finishedAt: rest.length ? 0 : Date.now() });
+            if (rest.length) await pause(gap);
+          }
+        }
+      }
+    } finally {
+      salesRunning = false;
+    }
+  }
+
+  // The box at the bottom of every page of the game while waiting copies go on sale, then what became of them (only
+  // when at least one was sold: a market still full changes nothing).
+  async function renderSalesBox() {
+    const q = await readSales();
+    const show = q && !q.stopped && (q.done > 0 || (q.items.length && q.items.length < q.total)) && location.pathname.startsWith('/jeu');
+    if (!show || stopped) return void document.querySelector('.aqm-dock > .aqm-sales')?.remove();
+    const box = dockBox('aqm-sales');
+    const running = q.items.length > 0;
+    const waiting = (await readList(SALES_WAITING)).length;
+    const lines = [
+      `✅ ${nCopies(q.done)} de la file d’attente d’Aquaman mis en vente.`,
+      running
+        ? q.until > Date.now()
+          ? `Le jeu demande de ralentir : reprise dans ${Math.ceil((q.until - Date.now()) / 1000)} s.`
+          : 'Une place s’est libérée sur le marché : les suivants partent.'
+        : waiting
+          ? `⏳ ${nCopies(waiting)} encore en attente : ils partiront aux prochaines ventes conclues.`
+          : null,
+      q.skipped.length ? `⛔ ${nCopies(q.skipped.length)} refusé${q.skipped.length > 1 ? 's' : ''} par le jeu (« ${q.skipped.at(-1).reason} »).` : null
+    ];
+    box.replaceChildren(
+      ...[
+        h('div', { class: 'aqm-queue-head' }, h('strong', {}, running ? `🏷️ Mise en vente des doublons · ${q.done}/${q.total}` : '🏷️ Doublons mis en vente'),
+          h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => (running ? stopSales() : chrome.storage.local.remove(SALES)) }, running ? 'Arrêter' : 'OK')),
+        running && h('span', { class: 'aqm-bar' }, h('span', { style: `width:${q.total ? ((100 * q.done) / q.total).toFixed(1) : 0}%` })),
+        ...lines.map((line) => line && h('p', {}, line))
+      ].filter(Boolean)
+    );
+  }
+
+  // The game's "Vente conclue" toast: a place is free on the market, the waiting copies are tried right away.
+  const saleToasts = new WeakSet();
+  function watchSaleToast() {
+    for (const el of elementsWithText(document.body, /^\s*vente conclue\s*$/i)) {
+      if (saleToasts.has(el)) continue;
+      saleToasts.add(el);
+      setTimeout(() => checkSales(0), 1500);
+    }
+  }
+
+  // In the game's "Vendre mes doublons" window, under its whole head (title, text and close button), above the bar
+  // "Tout cocher": what Aquaman adds to it, and its waiting copies.
+  const SELL_BAR = /^tout (d[ée])?cocher/i;
+  function markSellDialog() {
+    if (!location.pathname.startsWith('/jeu')) return;
+    for (const title of document.querySelectorAll('h1, h2, h3, [role="dialog"] [id]')) {
+      if (title.closest('.aqm-root') || !/^vendre mes doublons$/i.test(title.textContent.trim())) continue;
+      const bar = [...(title.closest('[role="dialog"]') ?? document).querySelectorAll('button')].find((b) => SELL_BAR.test(b.textContent.trim()));
+      if (!bar) continue; // not drawn yet
+      // The box shared by the title and the bar, and its child that holds the bar: the panel goes just before it.
+      let block = bar;
+      while (block.parentElement && !block.parentElement.contains(title)) block = block.parentElement;
+      if (!block.parentElement || block.parentElement === document.body || block.parentElement.querySelector(':scope > .aqm-sell-wait')) continue;
+      // As wide as the game's head and bar: the same space on each side as before the bar.
+      const panel = salesPanel();
+      block.before(panel);
+      const parent = block.parentElement;
+      const inset = bar.getBoundingClientRect().left - parent.getBoundingClientRect().left - parseFloat(getComputedStyle(parent).paddingLeft || 0);
+      if (inset > 0) panel.style.marginInline = `${Math.round(inset)}px`;
+    }
+  }
+
+  // The market: once a card is bought, its other sales are hidden for good (the player has it now), kept in
+  // Aquaman's storage.
+  const BOUGHT_KEY = 'marketBought';
+  // The cards bought: "rarity|name" in lower case (the rarity's code: n, r, sr, ssr, ur, sec), the same character in
+  // another rarity stays shown. (A name alone: kept by the first days of this, any rarity.)
+  const boughtNames = new Set();
+  (async () => {
+    try {
+      for (const key of (await chrome.storage.local.get(BOUGHT_KEY))[BOUGHT_KEY] ?? []) boughtNames.add(key);
+    } catch {}
+    hideBoughtCards();
+  })();
+  function addBought(name, rarity) {
+    const code = RANKED.includes(rarity) ? rarity.toLowerCase() : '';
+    boughtNames.add(code ? `${code}|${name.trim().toLowerCase()}` : name.trim().toLowerCase());
+    try {
+      chrome.storage.local.set({ [BOUGHT_KEY]: [...boughtNames] });
+    } catch {}
+    hideBoughtCards();
+  }
+  const BUY_BUTTON = /^(acheter|confirmer|trop cher)$/i;
+  // The sales shown by the market: each is the highest box around its "Acheter" holding no other sale, with its texts
+  // in lower case (the card's name, its series, its rarity as the game writes it: "N" and "Commune").
+  function marketTiles() {
+    const buys = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root') && BUY_BUTTON.test(b.textContent.trim()));
+    return buys.map((b) => {
+      let tile = b;
+      while (tile.parentElement && tile.parentElement !== document.body && buys.filter((x) => tile.parentElement.contains(x)).length === 1) tile = tile.parentElement;
+      return { tile, texts: new Set([...tile.querySelectorAll('*')].filter((el) => !el.childElementCount).map((el) => el.textContent.trim().toLowerCase())) };
+    });
+  }
+
+  function hideBoughtCards() {
+    if (!boughtNames.size || !location.pathname.startsWith('/jeu')) return;
+    for (const { tile, texts } of marketTiles()) {
+      if (tile.hasAttribute('data-aqm-bought')) continue;
+      const rarity = RANKED.find((code) => texts.has(code.toLowerCase()) || texts.has(RARITY_NAMES[code].toLowerCase()))?.toLowerCase();
+      const hidden = [...texts].some((t) => boughtNames.has(t) || (rarity && boughtNames.has(`${rarity}|${t}`)));
+      if (hidden) tile.setAttribute('data-aqm-bought', '');
+    }
+  }
+
+  // Beside the game's "Mes recherches" (the market): a "Favoris" filter that shows only the sales of the favourite
+  // series. Kept for the tab.
+  const MARKET_FAV_KEY = 'aqm-market-fav';
+  let marketFavLoading = false;
+  let marketFavTried = false;
+  const marketFavOn = () => {
+    try {
+      return sessionStorage.getItem(MARKET_FAV_KEY) === '1';
+    } catch {
+      return false;
+    }
+  };
+  function markMarketFavorites() {
+    if (!location.pathname.startsWith('/jeu')) return;
+    const mine = [...document.querySelectorAll('button')].find((b) => !b.closest('.aqm-root') && /^mes recherches$/i.test(b.textContent.trim()));
+    if (!mine) return;
+    const on = marketFavOn();
+    let chip = mine.parentElement.querySelector(':scope > .aqm-market-fav');
+    if (!chip) {
+      // The look of the game's chips not picked (a rarity's), its own state drawn by Aquaman.
+      const plain = [...mine.parentElement.querySelectorAll('button')].find((b) => b !== mine && /^(n|r|sr|ssr|ur|sec)\s*(commune|rare|épique|légendaire|mythique|secrète)$/i.test(b.textContent.trim()));
+      chip = h('button', {
+        type: 'button',
+        class: `${plain?.className ?? mine.className} aqm-market-fav`,
+        title: 'Seulement les cartes de tes séries favorites',
+        onclick: () => {
+          try {
+            marketFavOn() ? sessionStorage.removeItem(MARKET_FAV_KEY) : sessionStorage.setItem(MARKET_FAV_KEY, '1');
+          } catch {}
+          markMarketFavorites();
+        }
+      }, '★ Favoris');
+      mine.after(chip);
+    }
+    chip.classList.toggle('is-on', on);
+    chip.setAttribute('aria-pressed', String(on));
+    if (on && (!favIds || !seriesTitles)) {
+      if (!marketFavLoading && !marketFavTried) {
+        marketFavLoading = true;
+        marketFavTried = true; // (once: without an answer, every sale stays shown)
+        loadFavIds().finally(() => {
+          marketFavLoading = false;
+          markMarketFavorites();
+        });
+      }
+      return;
+    }
+    const titles = new Set(on ? [...favIds].map((id) => seriesTitles.get(id)).filter(Boolean) : []);
+    for (const { tile, texts } of marketTiles()) tile.toggleAttribute('data-aqm-unfav', on && ![...texts].some((t) => titles.has(t)));
+  }
+
+  // Beside the game's "Vendre une carte" (the market): a button that withdraws every fixed-price sale of the player at
+  // once (the cards are free again), one after the other at the pace the game accepts. Aquaman's waiting copies are
+  // paused meanwhile (in every tab), else they would go on sale in the places set free; they go on afterwards.
+  const SELL_CARD = /^vendre une carte$/i;
+  let unlisting = false;
+  function markUnlistButton() {
+    if (!location.pathname.startsWith('/jeu')) return;
+    const sell = [...document.querySelectorAll('button, a')].find((b) => !b.closest('.aqm-root') && SELL_CARD.test(b.textContent.trim()));
+    if (!sell || sell.parentElement.querySelector(':scope > .aqm-unlist')) return;
+    const btn = h('button', { type: 'button', class: `${sell.className} aqm-unlist`, onclick: () => unlistAll(btn) }, 'Retirer mes ventes');
+    sell.after(btn);
+  }
+
+  async function unlistAll(btn) {
+    if (unlisting) return;
+    const sales = (n) => `${n} vente${n > 1 ? 's' : ''}`;
+    let listings;
+    try {
+      listings = ((await gameWrite('/market/listings?mine=1', 'GET'))?.listings ?? []).filter((l) => l?.id);
+    } catch (e) {
+      return void askDialog('Retirer mes ventes', `Le jeu n’a pas donné tes ventes : ${e.message}`);
+    }
+    if (!listings.length) return void askDialog('Retirer mes ventes', 'Tu n’as aucune vente à prix fixe en cours.');
+    const waiting = (await readList(SALES_WAITING)).length + ((await readSales())?.items.length ?? 0);
+    const also = waiting ? `\n\nLa file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps du retrait, puis réactivée.` : '';
+    if (!(await askDialog('Retirer mes ventes', `Retirer tes ${sales(listings.length)} à prix fixe ? Les cartes redeviennent libres.${also}`, 'Retirer', 'Annuler'))) return;
+    unlisting = true;
+    const label = btn.textContent;
+    let done = 0;
+    let failed = null;
+    try {
+      // (a pause that ends by itself if this page is closed meanwhile)
+      await chrome.storage.local.set({ [SALES_PAUSED]: Date.now() + 15 * 60e3 });
+      await stopSales(); // the copies being sent go back to the waiting ones
+      let gap = 600;
+      for (const l of listings) {
+        if (stopped) break;
+        btn.textContent = `Retrait… ${done}/${listings.length}`;
+        for (let tries = 0; ; tries++) {
+          try {
+            await gameWrite(`/market/orders/${encodeURIComponent(l.id)}`, 'DELETE');
+            done++;
+            break;
+          } catch (e) {
+            if (e.slowDown && tries < 5) {
+              gap = Math.min(4000, gap * 1.5);
+              await pause(slowWait(e));
+              continue;
+            }
+            failed = e.message; // (sold meanwhile, already withdrawn…): the next ones go on
+            break;
+          }
+        }
+        await pause(gap);
+      }
+    } finally {
+      try {
+        await chrome.storage.local.remove(SALES_PAUSED); // the waiting copies go on
+      } catch {}
+      unlisting = false;
+    }
+    send({ type: 'collection-stale' });
+    btn.textContent = `✅ ${sales(done)} retirée${done > 1 ? 's' : ''}`;
+    if (failed) await askDialog('Retirer mes ventes', `${sales(listings.length - done)} non retirée${listings.length - done > 1 ? 's' : ''} : « ${failed} ».`);
+    // The game's list of sales and its Perles are read again.
+    setTimeout(() => (done ? location.reload() : (btn.textContent = label)), failed ? 0 : 1200);
+  }
+
+  // The waiting copies, kept up to date while shown; without any, what Aquaman does when the market is full.
+  function salesPanel() {
+    const panel = h('div', { class: 'aqm-root aqm-fav-wait aqm-sell-wait', role: 'status' });
+    let painted = false;
+    const paint = async () => {
+      if (stopped || !alive()) return void stop();
+      if (!panel.isConnected && painted) return void stop();
+      painted = true;
+      const { [SALES]: q = null, [SALES_WAITING]: waiting = [], [SALES_AT]: at = 0, [SALES_LAST]: last = null } = await chrome.storage.local.get([SALES, SALES_WAITING, SALES_AT, SALES_LAST]);
+      const sending = q?.items.length ?? 0;
+      if (!waiting.length && !sending) {
+        panel.replaceChildren(h('p', {}, `🔱 Aquaman : si le marché est plein, jusqu’à ${SALES_MAX} doublons de plus attendent dans Aquaman et sont mis en vente tout seuls, au prix choisi, dès qu’une de tes ventes se conclut.`));
+        return;
+      }
+      const ago = Math.round((Date.now() - at) / 60e3);
+      const next = Math.max(0, Math.ceil((at + CHECK_EVERY - Date.now()) / 60e3));
+      panel.replaceChildren(
+        h('div', { class: 'aqm-queue-head' },
+          h('strong', {}, `⏳ File d’attente d’Aquaman · ${waiting.length}/${SALES_MAX}`),
+          waiting.length
+            ? h('button', {
+                type: 'button',
+                class: 'aqm-queue-btn',
+                onclick: async () => {
+                  if (!confirm(`Retirer les ${nCopies(waiting.length)} de la file d’attente d’Aquaman ? Ceux déjà en vente y restent.`)) return;
+                  await chrome.storage.local.remove(SALES_WAITING);
+                }
+              }, 'Vider la file')
+            : null),
+        h('p', {}, `Le marché est plein : Aquaman garde le doublon refusé et ceux encore cochés après lui (${SALES_MAX} au plus) et les met en vente tout seul, au prix choisi, dès qu’une de tes ventes se conclut. Il vérifie en arrière-plan tant qu’une page du site est ouverte, même dans un autre onglet.`),
+        waiting.length ? h('ul', { class: 'aqm-sell-waiting' }, waiting.map((x) => h('li', {}, h('span', {}, x.name), perles(x.price)))) : null,
+        // What the game said at the last try: its own words, to see why the copies wait.
+        last?.message
+          ? h('p', { class: 'aqm-sell-last' }, `Dernière réponse du jeu ${timeAgo(last.at)} : « ${last.message} »${last.full ? ' (ses ventes et ses ordres d’achat en cours comptent ensemble).' : ' : ce doublon a été retiré de la file.'}`)
+          : null,
+        h('div', { class: 'aqm-queue-actions' },
+          h('small', {}, sending
+            ? `Une place s’est libérée : ${nCopies(sending)} en cours d’envoi.`
+            : `Essayé ${at ? (ago ? `il y a ${ago} min` : 'à l’instant') : 'jamais'}${next ? `, prochain essai dans ${next} min` : ''}.`),
+          sending ? null : h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => checkSales(0) }, 'Réessayer maintenant'))
+      );
+    };
+    const onChange = (changes) => [SALES, SALES_WAITING, SALES_AT, SALES_LAST].some((k) => changes[k]) && paint();
+    const timer = setInterval(paint, 5000);
+    const stop = () => {
+      clearInterval(timer);
+      chrome.storage.onChanged.removeListener?.(onChange);
+    };
+    chrome.storage.onChanged.addListener(onChange);
+    paint();
+    return panel;
+  }
+
+  // The queue changed (in this tab or another one): the boxes follow, and this tab takes over if needed.
   function onStorage(changes) {
-    if (stopped || !settled || !changes[QUEUE]) return;
-    renderBox();
-    runQueue();
+    if (stopped || !settled) return;
+    if (changes[QUEUE]) {
+      renderBox();
+      runQueue();
+    }
+    if (changes[SALES]) {
+      renderSalesBox();
+      runSales();
+    }
   }
 
   let wantsPulledAt = 0;
 
-  // Every 5 seconds: the countdown of a wait, and a tab that went silent.
+  // Every 5 seconds: the countdowns of the waits, a tab that went silent, and the waiting cards and duplicates.
   setInterval(async () => {
     if (stopped || !settled) return;
+    if (!alive()) return shutdown(); // the extension was reloaded: this copy stops
     const q = await readQueue();
     renderBox();
     if (q?.finishedAt && Date.now() - q.finishedAt > 60e3) chrome.storage.local.remove(QUEUE);
     else runQueue();
     checkRoom();
+    const sales = await readSales();
+    renderSalesBox();
+    if (sales?.finishedAt && Date.now() - sales.finishedAt > 60e3) chrome.storage.local.remove(SALES);
+    else runSales();
+    checkSales();
     if (Date.now() - wantsPulledAt > 60e3) {
       wantsPulledAt = Date.now();
       send({ type: 'wants-sync' }); // the other devices' changes
@@ -3989,7 +5191,16 @@ const CHANGES = [
       send({ type: 'collection-stale' });
       setTimeout(schedule, 1500);
       setTimeout(() => checkRoom(20e3), 3000); // a card searched may just have been obtained
-    } else if (e.data.aquaman === 'status') send({ type: 'status', pending: e.data.pending });
+    } else if (e.data.aquaman === 'sell-refused' && e.data.item?.copyId)
+      onSellRefused(e.data.item, String(e.data.message ?? ''), Array.isArray(e.data.ticked) ? e.data.ticked.filter((t) => t?.copyId && t.price > 0) : []);
+    else if (e.data.aquaman === 'status') {
+      send({ type: 'status', pending: e.data.pending });
+      if (Array.isArray(e.data.boosters)) {
+        pendingBoosters = e.data.boosters.filter((b) => b?.id);
+        markBoosterKinds();
+      }
+    }
+    else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
       send({ type: 'opened', boosters: e.data.boosters }).then((report) => {
@@ -4163,7 +5374,8 @@ const CHANGES = [
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
       item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
       item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews()),
-      meId === AUTHOR_ID ? item('Joueurs avec Aquaman', 'Réservé à l’auteur', ICON_TROPHY, openUsers) : null
+      meId === AUTHOR_ID ? item('Joueurs avec Aquaman', 'Réservé à l’auteur', ICON_TROPHY, openUsers) : null,
+      meId === AUTHOR_ID ? item('Scanner les packs', 'Publier le design de chaque booster', ICON_PACK, startScan) : null
     );
     menu.anchor = anchor;
     document.body.append(menu);
@@ -4188,6 +5400,7 @@ const CHANGES = [
   // Full window with a title; returns its body.
   function openOverlay(title, subtitle) {
     closeOverlay();
+    overlayClosed = null;
     const body = h('div', { class: 'aqm-body' });
     const panel = h(
       'div',
@@ -4212,6 +5425,32 @@ const CHANGES = [
     overlay.remove();
     overlay = null;
     root.classList.remove('aqm-lock');
+    const then = overlayClosed;
+    overlayClosed = null;
+    then?.();
+  }
+  let overlayClosed = null; // called once when the window is closed
+
+  // A question in Aquaman's window, in place of the browser's: true for its main button, false when it is closed
+  // another way. Without cancel, a message (its one button closes it). Paragraphs are separated by a blank line.
+  function askDialog(title, text, ok = 'OK', cancel = null) {
+    return new Promise((resolve) => {
+      const body = openOverlay(title);
+      body.closest('.aqm-panel')?.classList.add('is-ask');
+      let answer = false;
+      overlayClosed = () => resolve(answer);
+      const pick = (value) => {
+        answer = value;
+        closeOverlay();
+      };
+      body.append(
+        ...text.split('\n\n').map((p) => h('p', { class: 'aqm-ask-text' }, p)),
+        h('div', { class: 'aqm-ask-actions' },
+          cancel ? h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => pick(false) }, cancel) : null,
+          h('button', { type: 'button', class: 'aqm-queue-btn is-main', onclick: () => pick(true) }, ok))
+      );
+      body.querySelector('.aqm-ask-actions .is-main').focus();
+    });
   }
 
   // Row of chips, one of them selected.
@@ -4722,12 +5961,18 @@ const CHANGES = [
     return `il y a ${Math.floor(s / 86400)} j`;
   }
 
-  // One line of a list of players: the card's number, the player (link to their profile) and a detail on the right.
+  // Profile picture of a player (an empty square for a private profile), to find them again on the site.
+  const avatarOf = (player) =>
+    player?.id ? h('img', { class: 'aqm-avatar aqm-avatar-sm', src: avatarUrl(player.id), alt: '', loading: 'lazy' }) : h('span', { class: 'aqm-avatar aqm-avatar-sm' });
+
+  // One line of a list of players: the card's number, the player (picture and link to their profile) and a detail
+  // on the right.
   const playerRow = (serial, player, right, card) =>
     h(
       'li',
       { class: 'aqm-owner' },
       h('span', { class: 'aqm-owner-serial' }, serial != null ? `#${serial}${card?.maxCopies ? `/${card.maxCopies}` : ''}` : ''),
+      avatarOf(player),
       player?.id ? h('a', { href: `/profile/${encodeURIComponent(player.id)}` }, player.name || 'Un joueur') : h('span', { class: 'aqm-muted' }, player?.name || 'Un joueur au profil privé'),
       h('span', { class: 'aqm-owner-right' }, right ?? '')
     );
@@ -4748,7 +5993,12 @@ const CHANGES = [
         h(
           'div',
           { class: 'aqm-pull-who' },
-          p.player?.id ? h('a', { href: `/profile/${encodeURIComponent(p.player.id)}` }, p.player.name || 'Un joueur') : h('span', {}, p.player?.name || 'Un joueur'),
+          h(
+            'span',
+            { class: 'aqm-pull-player' },
+            avatarOf(p.player),
+            p.player?.id ? h('a', { href: `/profile/${encodeURIComponent(p.player.id)}` }, p.player.name || 'Un joueur') : h('span', {}, p.player?.name || 'Un joueur')
+          ),
           h('small', { title: new Date(p.at).toLocaleString('fr-FR') }, timeAgo(p.at))
         )
       )
@@ -5118,6 +6368,7 @@ const CHANGES = [
 
   let favIds = null; // ids of the favourite series, for the stars of the Collection page
   let seriesBySlug = null; // slug -> id, from the game's series
+  let seriesTitles = null; // id -> title in lower case, from the game's series (the market's "Favoris" filter)
 
   // Reads the favourites (fresh: with the changes made on the other devices right now) and repaints the stars.
   async function loadFavIds(fresh = false) {
@@ -5125,6 +6376,7 @@ const CHANGES = [
     if (!res || res.error) return;
     favIds = new Set(res.favorites.map((s) => s.id));
     seriesBySlug = new Map(res.all.map((s) => [s.slug, s.id]));
+    seriesTitles = new Map(res.all.map((s) => [s.id, String(s.title ?? '').trim().toLowerCase()]));
     document.querySelectorAll('.aqm-star').forEach((star) => paintStar(star));
     const count = document.querySelector('.aqm-fav-open b');
     if (count) count.textContent = String(favIds.size);
@@ -5168,9 +6420,22 @@ const CHANGES = [
         h(
           'div',
           { class: 'aqm-root aqm-fav-bar' },
-          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, String(favIds?.size ?? 0)))
+          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, String(favIds?.size ?? 0))),
+          h('button', {
+            type: 'button',
+            class: 'aqm-chip aqm-sort-progress',
+            'aria-pressed': 'false',
+            onclick: () => {
+              setByProgress(!byProgress);
+              sortByProgress(strip);
+              strip.scrollTo?.({ left: 0, behavior: 'smooth' });
+            },
+            title: 'Les séries où il te manque le moins de cartes en premier'
+          }, 'Les plus avancées')
         )
       );
+    sortByProgress(strip);
+    keepStripPlace(strip);
     for (const img of strip.querySelectorAll('img[src*="/api/covers/"]')) {
       const tile = img.closest('button, a, [role="radio"]') ?? img.parentElement;
       if (!tile) continue;
@@ -5198,6 +6463,416 @@ const CHANGES = [
       });
       paintStar(star);
       tile.append(star);
+    }
+  }
+
+  // The series of the strip from the fewest missing cards to the most (their "15/29": 14 missing), the complete ones
+  // last; "Toutes les séries" stays first. Only the order they are shown in changes (CSS order): the game's own
+  // order is kept.
+  // A series completed during the visit (its count reached its total): the strip is sorted so and shown from its
+  // start, the series left to complete first.
+  // Kept for the tab: back from a character's page, the strip is sorted the same way and shown at the same place.
+  const BY_PROGRESS_KEY = 'aqm-by-progress';
+  const STRIP_LEFT_KEY = 'aqm-strip-left';
+  let byProgress = (() => {
+    try {
+      return sessionStorage.getItem(BY_PROGRESS_KEY) === '1';
+    } catch {
+      return false;
+    }
+  })();
+  function setByProgress(on) {
+    byProgress = on;
+    try {
+      on ? sessionStorage.setItem(BY_PROGRESS_KEY, '1') : sessionStorage.removeItem(BY_PROGRESS_KEY);
+    } catch {}
+  }
+
+  // The strip drawn by the game (again, after a change of page) is scrolled back to where the player left it, then
+  // its place is kept as it scrolls.
+  const placedStrips = new WeakSet();
+  function keepStripPlace(strip) {
+    if (placedStrips.has(strip)) return;
+    placedStrips.add(strip);
+    // (the strip scrolls itself, else the box around it does)
+    const around = [strip, strip.parentElement, strip.parentElement?.parentElement].find((el) => el && /(auto|scroll)/.test(getComputedStyle(el).overflowX));
+    if (around && around !== strip) strip = around;
+    let left = null;
+    try {
+      const kept = sessionStorage.getItem(STRIP_LEFT_KEY);
+      if (kept != null) left = Number(kept) || 0;
+    } catch {}
+    // The game scrolls to the selected series in its own order (once, or smoothly, a moment after it draws the strip):
+    // for 1.5 s the strip is put back each frame, until the player scrolls it. Without a place kept, the selected
+    // series is shown where the sorting put it.
+    let placing = true;
+    const until = Date.now() + 1500;
+    const stop = () => (placing = false);
+    for (const type of ['wheel', 'pointerdown', 'touchstart', 'keydown']) strip.addEventListener(type, stop, { passive: true, once: true });
+    const place = () => {
+      if (!placing || !strip.isConnected || Date.now() > until) return void (placing = false);
+      if (left != null) {
+        if (Math.abs(strip.scrollLeft - left) > 2) strip.scrollLeft = left;
+      } else if (byProgress) {
+        const picked = strip.querySelector('[aria-checked="true"]');
+        if (picked) {
+          const [p, s] = [picked.getBoundingClientRect(), strip.getBoundingClientRect()];
+          const want = Math.max(0, Math.round(strip.scrollLeft + p.left - s.left - (strip.clientWidth - p.width) / 2));
+          if (Math.abs(strip.scrollLeft - want) > 2) strip.scrollLeft = want;
+        }
+      }
+      requestAnimationFrame(place);
+    };
+    requestAnimationFrame(place);
+    let timer = 0;
+    strip.addEventListener(
+      'scroll',
+      () => {
+        if (placing) return; // (the game's scroll, or Aquaman's: not the player's place)
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          try {
+            sessionStorage.setItem(STRIP_LEFT_KEY, String(Math.round(strip.scrollLeft)));
+          } catch {}
+        }, 150);
+      },
+      { passive: true }
+    );
+  }
+  // series (its text without the count) -> missing cards last seen; kept for the tab (a purchase may load the page
+  // again before the player comes back to the collection)
+  const missingSeen = new Map(
+    (() => {
+      try {
+        return Object.entries(JSON.parse(sessionStorage.getItem('aqm-missing-seen') || '{}'));
+      } catch {
+        return [];
+      }
+    })()
+  );
+  function sortByProgress(strip) {
+    const items = [...strip.children].filter((el) => !el.classList.contains('aqm-root'));
+    const count = (el) => {
+      const m = el.textContent.match(/(\d[\d  ]*)\s*\/\s*(\d[\d  ]*)/); // (a title's own figures are apart)
+      if (!m) return null;
+      const [owned, total] = [m[1], m[2]].map((x) => Number(x.replace(/\D/g, '')));
+      return total ? { missing: Math.max(0, total - owned), rate: owned / total } : null;
+    };
+    const rows = items.map((el, i) => ({ el, i, c: count(el), all: /toutes les s[ée]ries/i.test(el.textContent) }));
+    let completed = false;
+    for (const { el, c, all } of rows) {
+      if (!c || all) continue;
+      const key = el.textContent.replace(/\d[\d  ]*\s*\/\s*\d[\d  ]*/, '').trim();
+      if (missingSeen.get(key) > 0 && c.missing === 0) completed = true;
+      missingSeen.set(key, c.missing);
+    }
+    if (completed) setByProgress(true);
+    try {
+      sessionStorage.setItem('aqm-missing-seen', JSON.stringify(Object.fromEntries(missingSeen)));
+    } catch {}
+    const chip = strip.previousElementSibling?.querySelector('.aqm-sort-progress');
+    chip?.classList.toggle('is-on', byProgress);
+    chip?.setAttribute('aria-pressed', String(byProgress));
+    const ranked = rows
+      .sort(
+        (a, b) =>
+          b.all - a.all ||
+          !a.c - !b.c ||
+          (a.c?.missing === 0) - (b.c?.missing === 0) ||
+          (a.c?.missing ?? 0) - (b.c?.missing ?? 0) ||
+          (b.c?.rate ?? 0) - (a.c?.rate ?? 0) ||
+          a.i - b.i
+      );
+    ranked.forEach(({ el }, n) => (el.style.order = byProgress ? String(n) : ''));
+    if (completed) strip.scrollTo?.({ left: 0, behavior: 'smooth' });
+  }
+
+  // ---------- "Recycler des cartes": nothing ticked at first, and a button to tick everything ----------
+
+  const RECYCLE_TITLE = /^recycler des cartes$/i;
+  const recycleSeen = new WeakSet(); // rows already unticked once
+  let recycleOpened = 0; // when the window was found open
+
+  // The tick box of a row: a real one, else the small square drawn before the card's picture.
+  function tickBox(row) {
+    const known = row.querySelector('input[type="checkbox"], [role="checkbox"], [aria-checked]');
+    if (known) return known;
+    const img = row.querySelector('img');
+    for (const el of row.querySelectorAll('*')) {
+      if (el.contains(img) || !(el.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width >= 12 && r.width <= 32 && Math.abs(r.width - r.height) <= 4) return el;
+    }
+    return null;
+  }
+
+  // A drawn box is ticked when its ✓ shows (an unticked one may keep it hidden).
+  function isTicked(box) {
+    if (box.tagName === 'INPUT') return box.checked;
+    const said = box.getAttribute('aria-checked') ?? (box.hasAttribute('data-state') ? String(box.getAttribute('data-state') === 'checked') : null);
+    if (said != null) return said === 'true';
+    const svg = box.querySelector('svg');
+    if (!svg) return false;
+    const r = svg.getBoundingClientRect();
+    const cs = getComputedStyle(svg);
+    return r.width > 0 && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.1 && cs.color !== 'rgba(0, 0, 0, 0)';
+  }
+
+  // The number of cards ticked, from the game's "Recycler N · +X" button (just "Recycler" with none); null if unknown.
+  function recycleCount(dialog) {
+    const b = [...dialog.querySelectorAll('button')].find((x) => !x.closest('.aqm-root') && /^recycler\b/i.test(x.textContent.trim()));
+    return b ? Number(b.textContent.trim().match(/^recycler\s+([\d\s  ]+)/i)?.[1]?.replace(/\s/g, '') || 0) : null;
+  }
+
+  // The window and its rows (one per card: its picture and its number), each with its tick box.
+  function recycleParts() {
+    const title = [...document.querySelectorAll('h1, h2, h3')].find((t) => !t.closest('.aqm-root') && RECYCLE_TITLE.test(t.textContent.trim()));
+    const dialog = title?.closest('[role="dialog"]') ?? title?.parentElement?.parentElement?.parentElement;
+    if (!dialog) return null;
+    const rows = [];
+    for (const img of dialog.querySelectorAll('img')) {
+      let row = img;
+      while (row.parentElement && row.parentElement !== dialog && row.parentElement.querySelectorAll('img').length === 1) row = row.parentElement;
+      const box = row !== img && /#\s?\d+/.test(row.textContent) ? tickBox(row) : null;
+      if (box) rows.push({ row, box });
+    }
+    return { dialog, rows };
+  }
+
+  function markRecycleDialog() {
+    if (!location.pathname.startsWith('/jeu')) return;
+    const parts = recycleParts();
+    if (!parts) return void (recycleOpened = 0);
+    if (!recycleOpened) recycleOpened = Date.now();
+    const { dialog, rows } = parts;
+    if (!rows.length) return;
+    // The rows drawn in the first seconds start unticked; later, the player's choices stay.
+    for (const { row, box } of rows) {
+      if (recycleSeen.has(row)) continue;
+      recycleSeen.add(row);
+      if (Date.now() - recycleOpened < 3000 && isTicked(box)) box.click();
+    }
+    let btn = dialog.querySelector('.aqm-recycle-all');
+    if (!btn) {
+      btn = h('button', { type: 'button', class: 'aqm-queue-btn aqm-recycle-all', onclick: toggleRecycle });
+      rows[0].row.parentElement.before(h('div', { class: 'aqm-root aqm-recycle-bar' }, btn));
+    }
+    const count = recycleCount(dialog);
+    const all = count != null ? count > 0 && count >= rows.length : rows.every((r) => isTicked(r.box));
+    const label = all ? 'Tout désélectionner' : `Tout sélectionner (${rows.length})`;
+    if (btn.textContent !== label) btn.textContent = label;
+  }
+
+  // Ticks every row, or unticks them all when they all are.
+  function toggleRecycle() {
+    const parts = recycleParts();
+    if (!parts) return;
+    // With the game's count: none or all ticked, every row changes; in between, the unticked ones.
+    const count = recycleCount(parts.dialog);
+    const all = count != null ? count > 0 && count >= parts.rows.length : parts.rows.every((r) => isTicked(r.box));
+    if (count === 0 || all) for (const r of parts.rows) r.box.click();
+    else for (const r of parts.rows) if (!isTicked(r.box)) r.box.click();
+    setTimeout(markRecycleDialog, 50);
+  }
+
+  // ---------- a card's page: its 5 cheapest offers on the market ----------
+  // Under the game's "Cote" panel: the offers from the cheapest to the dearest, each with its seller and number.
+
+  let listingsFor = null; // the card whose offers are shown (or being read)
+  function markCardListings() {
+    const id = location.pathname.match(/^\/jeu\/carte\/([^/?#]+)/)?.[1];
+    const box = document.querySelector('.aqm-listings');
+    if (!id) return void box?.remove();
+    const cote = [...document.querySelectorAll('p, span, h2, h3, div')].find((el) => !el.closest('.aqm-root') && !el.childElementCount && /^cote$/i.test(el.textContent.trim()));
+    // The panel of the "Cote": the highest box around its title that holds no other panel's title.
+    let panel = cote;
+    while (panel?.parentElement && !/mes exemplaires/i.test(panel.parentElement.textContent)) panel = panel.parentElement;
+    if (!panel || panel === cote) return;
+    if (box?.dataset.card === id && box.previousElementSibling === panel) return;
+    if (listingsFor === id && box) return;
+    box?.remove();
+    listingsFor = id;
+    const fresh = h('section', { class: 'aqm-root aqm-listings', 'data-card': id }, h('p', { class: 'aqm-label' }, 'En vente au marché'), h('p', { class: 'aqm-muted' }, 'Lecture des offres…'));
+    panel.after(fresh);
+    showListings(fresh, decodeURIComponent(id), false);
+  }
+
+  // The offers in their box, each with a button to buy it (not the player's own); again after a purchase.
+  function showListings(fresh, cardId, again) {
+    ask({ type: 'card-listings', id: cardId, fresh: again })
+      .then((r) => {
+        if (!fresh.isConnected) return;
+        const rows = r.offers.map((o) =>
+          playerRow(
+            o.serial,
+            o.player,
+            h('span', { class: 'aqm-buy-cell' }, perles(o.price), o.id && o.player?.id !== meId ? buyButton(o, fresh, cardId) : null),
+            { maxCopies: r.maxCopies }
+          )
+        );
+        fresh.replaceChildren(
+          h('div', { class: 'aqm-listings-head' },
+            h('p', { class: 'aqm-label' }, 'En vente au marché'),
+            h('small', { class: 'aqm-muted' }, r.count ? `${r.count > 5 ? `5 moins chères sur ${fmt(r.count)}` : `${r.count} offre${r.count > 1 ? 's' : ''}`}, de la moins chère à la plus chère` : '')),
+          rows.length ? h('ul', { class: 'aqm-owners' }, rows) : h('p', { class: 'aqm-muted' }, 'Personne ne la vend pour le moment.')
+        );
+      })
+      .catch((e) => fresh.isConnected && fresh.replaceChildren(h('p', { class: 'aqm-label' }, 'En vente au marché'), h('p', { class: 'aqm-muted' }, e.message)));
+  }
+
+  // What the game's "Mes exemplaires" panel of the card says (to see whether it changed).
+  function myCopiesText() {
+    const label = [...document.querySelectorAll('p, span, h2, h3, div')].find((el) => !el.closest('.aqm-root') && !el.childElementCount && /^mes exemplaires$/i.test(el.textContent.trim()));
+    // (the box around the title that also holds the panel's text)
+    let box = label;
+    while (box?.parentElement && box.textContent.trim().length <= (label?.textContent.trim().length ?? 0) + 5) box = box.parentElement;
+    return box?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+  }
+
+  // Buys an offer at once, as the game's market does; the offers are read again afterwards.
+  function buyButton(offer, box, cardId) {
+    const btn = h('button', { type: 'button', class: 'aqm-queue-btn is-main aqm-buy' }, 'Acheter');
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = 'Achat…';
+      try {
+        await gameWrite(`/market/listings/${encodeURIComponent(offer.id)}/buy`, 'POST');
+        btn.textContent = '✅ Achetée';
+        if (offer.card?.name) addBought(offer.card.name, offer.card.rarity); // its other sales, hidden on the market
+        owned = null;
+        send({ type: 'collection-stale' });
+        // The game's Perles and the card's copies ("Mes exemplaires"), read again; the page is loaded again if the
+        // copies still show the same after 2 s.
+        const before = myCopiesText();
+        window.postMessage({ aquamanCmd: 'reload-game' }, location.origin);
+        setTimeout(() => {
+          if (location.pathname.includes(encodeURIComponent(cardId)) || location.pathname.includes(cardId))
+            if (myCopiesText() === before) location.reload();
+        }, 2000);
+        setTimeout(() => box.isConnected && showListings(box, cardId, true), 1200);
+      } catch (e) {
+        // The game's refusal under the offers (no Perles enough, the offer gone…), then the offers read again.
+        btn.textContent = 'Refusé';
+        btn.title = e.message;
+        box.append(h('p', { class: 'aqm-muted aqm-buy-refused' }, `Achat refusé par le jeu : ${e.message}`));
+        setTimeout(() => box.isConnected && showListings(box, cardId, true), 2500);
+      }
+    });
+    return btn;
+  }
+
+  // ---------- collection: a "Manquantes" tab beside "Mes cartes / Mes doublons / Album complet" ----------
+  // It shows the full album with only the cards marked "Manquante" by the game; the choice is kept for the tab.
+
+  // Off at every visit (never kept: on "Mes cartes" it would hide every card), and only with "Album complet".
+  const VIEW_TABS = /^(mes cartes|mes doublons|album complet)$/i;
+  let missingOn = false;
+  let missingAt = 0; // when it was turned on: the game takes a moment to show "Album complet"
+  const missingOnly = () => missingOn;
+  const setMissingOnly = (on) => {
+    missingOn = on;
+    missingAt = on ? Date.now() : 0;
+    filteredSize = -1;
+  };
+
+  // A tab of the game chosen by the player: the filter stops.
+  let clickingFull = false;
+  addEventListener(
+    'click',
+    (e) => {
+      const b = e.target.closest?.('button');
+      if (!b || clickingFull || b.closest('.aqm-root') || b.classList.contains('aqm-missing-tab') || !VIEW_TABS.test(b.textContent.trim())) return;
+      setMissingOnly(false);
+      setTimeout(markMissingTab, 50);
+    },
+    true
+  );
+
+  function markMissingTab() {
+    if (!location.pathname.startsWith('/jeu/collection')) return;
+    const tabs = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root') && VIEW_TABS.test(b.textContent.trim()));
+    const full = tabs.find((b) => /^album complet$/i.test(b.textContent.trim()));
+    if (!full) return;
+    // The game's selected tab is the one whose look differs from the others.
+    const looks = tabs.map((b) => b.className);
+    const selected = tabs.find((b) => looks.filter((c) => c === b.className).length === 1 && tabs.length > 2) ?? full;
+    if (missingOn && selected !== full && Date.now() - missingAt > 2000) setMissingOnly(false); // another view of the game
+    const on = missingOnly();
+    const plain = tabs.find((b) => b !== selected) ?? full;
+    let tab = full.parentElement.querySelector(':scope > .aqm-missing-tab');
+    if (!tab) {
+      tab = h('button', {
+        type: 'button',
+        onclick: () => {
+          const now = !missingOnly();
+          setMissingOnly(now);
+          if (now && selected !== full) {
+            clickingFull = true; // not a choice of the player: the filter stays
+            full.click();
+            clickingFull = false;
+          }
+          markMissingTab();
+        }
+      });
+      full.after(tab);
+    }
+    // The game shows its selected tab with a pill inside it (a box set over the tab): while the filter is on, the pill
+    // of "Album complet" is hidden and "Manquantes" gets one like it.
+    const pill = [...full.querySelectorAll('*')].find((el) => getComputedStyle(el).position === 'absolute');
+    // (or the tab's own background, when the game colours the button itself)
+    const source = pill ?? (selected === full && !on ? full : null);
+    if (source && !pillLook) {
+      const cs = getComputedStyle(source);
+      if (cs.backgroundColor !== 'rgba(0, 0, 0, 0)' || cs.backgroundImage !== 'none')
+        pillLook = { background: cs.backgroundImage !== 'none' ? cs.backgroundImage : cs.backgroundColor, radius: cs.borderRadius, shadow: cs.boxShadow };
+    }
+    if (!plainColor) plainColor = getComputedStyle(plain).color;
+    if (!pickedColor && selected === full && !on) pickedColor = getComputedStyle(full).color;
+    pill?.toggleAttribute('data-aqm-pill-off', on);
+    full.toggleAttribute('data-aqm-unpicked', on);
+    full.style.setProperty('--aqm-plain-color', plainColor);
+    const look = `${plain.className} aqm-missing-tab${on ? ' is-on' : ''}`;
+    if (tab.className !== look) tab.className = look;
+    tab.style.setProperty('--aqm-pill-bg', pillLook?.background || 'rgba(255, 255, 255, 0.12)');
+    tab.style.setProperty('--aqm-pill-radius', pillLook?.radius || '999px');
+    tab.style.setProperty('--aqm-pill-shadow', pillLook?.shadow && pillLook.shadow !== 'none' ? pillLook.shadow : 'none');
+    tab.style.setProperty('--aqm-picked-color', pickedColor || '#fff');
+    if (tab.textContent !== 'Manquantes') tab.textContent = 'Manquantes';
+    tab.setAttribute('aria-pressed', String(on));
+    filterMissing(on);
+  }
+  let pillLook = null; // the game's pill of the selected tab: its colour, its rounding, its shadow
+  let plainColor = '';
+  let pickedColor = '';
+
+  // Hides the cards of the album that the player has (their label is "× N"), and the series left with none.
+  // Done again only when the page's content changed (its number of elements), the album can hold thousands of cards.
+  let filteredSize = -1;
+  function filterMissing(on) {
+    if (!on) {
+      if (filteredSize !== -1 || document.querySelector('[data-aqm-owned-card]')) document.querySelectorAll('[data-aqm-owned-card]').forEach((el) => el.removeAttribute('data-aqm-owned-card'));
+      filteredSize = -1;
+      return;
+    }
+    const size = (document.querySelector('main') ?? document.body).getElementsByTagName('*').length;
+    if (size === filteredSize) return;
+    filteredSize = size;
+    // The label under each card: "Manquante", or "× 1" (maybe in several pieces of text): the innermost element
+    // whose whole text says it.
+    const LABEL = /^(manquante|[×x]\s*\d+)$/i;
+    const says = (el) => LABEL.test(el.textContent.replace(/\s+/g, ' ').trim());
+    const labels = [...(document.querySelector('main') ?? document.body).querySelectorAll('*')].filter(
+      (el) => el.childElementCount < 4 && !el.closest('.aqm-root') && says(el) && ![...el.children].some(says)
+    );
+    // How many labels each box holds, to find each card's tile: the highest box around its label holding no other.
+    const held = new Map();
+    for (const label of labels) for (let el = label; el; el = el.parentElement) held.set(el, (held.get(el) ?? 0) + 1);
+    for (const label of labels) {
+      let tile = label;
+      while (tile.parentElement && held.get(tile.parentElement) === 1) tile = tile.parentElement;
+      tile.toggleAttribute('data-aqm-owned-card', !/^manquante$/i.test(label.textContent.trim()));
+      if (tile === label) label.removeAttribute('data-aqm-owned-card'); // a label alone, not a card
     }
   }
 
@@ -5970,9 +7645,25 @@ const CHANGES = [
         h('small', {}, p.known ? `${fmt(p.since)} / ${fmt(p.every)} depuis ta dernière ${code}` : `${fmt(p.since)} / ${fmt(p.every)} sans ${code} depuis qu’Aquaman compte`)
       );
     };
+    // The SEC has no guarantee: the boosters since the last one, and what the game's odds give, without a bar.
+    const secLine = () => {
+      const s = pityReport.SEC;
+      if (!s) return null;
+      const n = `${fmt(s.since)}${s.known ? '' : '+'} booster${s.since > 1 ? 's' : ''}`;
+      const odds = s.chance > 0 ? `une tous les ~${fmt(1 / s.chance)} boosters en moyenne · ${pct(1 - (1 - s.chance) ** 100)} d’en avoir une dans les 100 prochains` : null;
+      return h(
+        'div',
+        {
+          class: 'aqm-pity-line is-sec',
+          title: `Pas de garantie pour la SEC : chaque booster a la même chance, la malchance passée ne la rapproche pas.${s.known ? '' : ' Aquaman n’a pas encore vu de SEC sortir : il compte depuis son installation.'}`
+        },
+        h('p', {}, rarityCode('SEC'), ' ', h('strong', {}, n), ' sans SEC'),
+        h('small', {}, odds ? `Pas de garantie : ${odds}.` : 'Pas de garantie pour la SEC.')
+      );
+    };
     box.replaceChildren(
       h('p', { class: 'aqm-label' }, 'Garantie anti-malchance'),
-      h('div', { class: 'aqm-pity-lines' }, line('SSR'), line('UR')),
+      h('div', { class: 'aqm-pity-lines' }, line('SSR'), line('UR'), secLine()),
       h(
         'p',
         { class: 'aqm-pity-note' },
@@ -5984,6 +7675,801 @@ const CHANGES = [
         }[pityReport.sync] ?? 'Compté par Aquaman à chaque booster ouvert.'
       )
     );
+  }
+
+  // ---------- home: the boosters of every kind, side by side ----------
+  // "Tout ouvrir" opens every waiting booster. When they are of several kinds (Classique, Magie…), the game's pile is
+  // drawn once per kind and shown side by side, each with the game's own "Ouvrir" and "Tout ouvrir" buttons: inject.js
+  // gives the game only the boosters of one kind (sessionStorage) and asks its store to read them again, Aquaman
+  // copies what the game drew. A click on a copied button sets the game on that kind and clicks its real button,
+  // with its animation; afterwards the copies are drawn again and the game is back to all of its boosters.
+
+  const KIND_KEY = 'aqm-booster-kind';
+  let pendingBoosters = null; // [{ id, kind, name, art }], all the waiting boosters (inject.js)
+  let boostersAsked = false;
+  let piles = null; // { sig, shots: [{ key, name, count, pile, buttons }] }, the copies shown
+  let drawing = false; // the copies are being drawn
+  let opening = false; // a click on a copied button: the game opens, the copies wait
+  let homeParts = null; // { pile, buttons } of the game, kept once hidden
+
+  const setKind = (key) => {
+    try {
+      key ? sessionStorage.setItem(KIND_KEY, key) : sessionStorage.removeItem(KIND_KEY);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Sets the game on one kind ('' for all) and waits until it has drawn it; false when its store can't be reached.
+  let refreshId = 0;
+  const refreshed = new Map();
+  // fresh: the game draws its pile afresh (its picture is picked when the pile appears), for a copy or an opening.
+  // reload: the game reads its boosters again from the server (after an opening).
+  // items: boosters made up for the author's scan (one kind each time).
+  function showKind(key, fresh = false, reload = false, items = null) {
+    if (!setKind(key)) return Promise.resolve(false);
+    const id = ++refreshId;
+    return new Promise((resolve) => {
+      const done = (ok) => {
+        refreshed.delete(id);
+        // Two frames and a moment for React to draw the pile and the pictures to come.
+        if (ok) requestAnimationFrame(() => requestAnimationFrame(() => pileStill().then(() => resolve(true))));
+        else resolve(false);
+      };
+      refreshed.set(id, done);
+      setTimeout(() => refreshed.get(id)?.(false), 4000);
+      window.postMessage({ aquamanCmd: 'refresh-boosters', id, kind: key, fresh, reload, items }, location.origin);
+    });
+  }
+  const onBoostersRefreshed = (id, ok) => refreshed.get(id)?.(ok);
+
+  // The waiting boosters by kind, in the game's order.
+  function boosterKinds() {
+    const kinds = new Map();
+    for (const b of pendingBoosters ?? []) {
+      const key = b.kind ?? 'classic';
+      if (!kinds.has(key)) kinds.set(key, { key, name: b.name ?? 'Classique', art: b.art ?? null, count: 0 });
+      kinds.get(key).count++;
+    }
+    return [...kinds.values()];
+  }
+
+  // The game's pile of boosters (the big box above its buttons, inside the one that also holds the title "4 à
+  // ouvrir" if need be) and its row of buttons.
+  function findHomeParts() {
+    if (homeParts?.pile.isConnected && homeParts.buttons.isConnected) return homeParts;
+    // "Tout ouvrir", or "Ouvrir" alone when there is one booster.
+    const own = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root'));
+    const all = own.find((b) => /^tout ouvrir/i.test(b.textContent.trim())) ?? own.find((b) => /^ouvrir$/i.test(b.textContent.trim()));
+    if (!all) return null;
+    const buttons = all.parentElement;
+    const TITLE = /à ouvrir/i;
+    const big = (el) => !el.classList.contains('aqm-root') && el.getBoundingClientRect().height > 120;
+    for (let el = buttons, up = 0; el && el !== document.body && up < 6; el = el.parentElement, up++)
+      for (let sib = el.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        if (!big(sib)) continue;
+        if (!TITLE.test(sib.textContent)) return (homeParts = { pile: sib, buttons });
+        for (let box = sib; box; ) {
+          const kids = [...box.children].reverse();
+          const pile = kids.find((c) => big(c) && !TITLE.test(c.textContent));
+          if (pile) return (homeParts = { pile, buttons });
+          box = kids.find((c) => big(c) && TITLE.test(c.textContent)) ?? null;
+        }
+        return null;
+      }
+    return null;
+  }
+
+  // A copy of what the game drew, without ids.
+  function copyOf(el) {
+    const copy = el.cloneNode(true);
+    for (const x of [copy, ...copy.querySelectorAll('[id]')]) x.removeAttribute('id');
+    copy.removeAttribute('data-aqm-hidden');
+    // What is left of an entrance animation (a blur). The opacities stay: a booster stacks layers that the game hides
+    // (a themed booster keeps the classic waves, invisible, over its own picture).
+    for (const x of [copy, ...copy.querySelectorAll('[style]')]) if (/blur/.test(x.style.filter)) x.style.filter = '';
+    return copy;
+  }
+
+  // The copies of the piles, kept for good in Aquaman's own storage (kept when the site's data is cleared), one per
+  // kind whatever the number of its boosters: shown at once, with their counts set right. The game's buttons are kept
+  // as they were with several boosters too ("Ouvrir" and "Tout ouvrir"), for when there are several again. Read once
+  // when Aquaman starts (shotStore stays null until then).
+  const SHOTS_KEY = 'boosterPiles';
+  const KIND_ID = /^[A-Za-z0-9_-]{1,64}$/;
+  // The shapes of a pile: 1, 2, and 3 boosters and more; the author's drawings are kept by kind and shape.
+  const SHAPES = [1, 2, 3];
+  const shapeKey = (kind, count) => `${kind}--n${Math.min(Math.max(count, 1), 3)}`;
+  const SHOTS_V = 9; // the drawings of a pile the game drew itself (load) for its kind and shape, with its picture
+  const ALL_BUTTON = /^tout ouvrir/i;
+  const hasAllButton = (buttons) => [...buttons.querySelectorAll('button')].some((b) => ALL_BUTTON.test(b.textContent.trim()));
+  let shotStore = null;
+  const readShotStore = () => shotStore ?? {};
+
+  async function loadShotStore() {
+    let kept = {};
+    try {
+      kept = (await chrome.storage.local.get(SHOTS_KEY))[SHOTS_KEY] ?? {};
+      // The copies of the previous version, kept by the site (localStorage).
+      const old = JSON.parse(localStorage.getItem('aqm-booster-piles') || 'null');
+      if (old) {
+        kept = { ...old, ...kept };
+        localStorage.removeItem('aqm-booster-piles');
+        chrome.storage.local.set({ [SHOTS_KEY]: kept });
+      }
+    } catch {}
+    shotStore = kept;
+    loadGlobalPacks();
+  }
+
+  // The drawings of every kind published by the author (relay): used first, they are kept here too for the next
+  // starts, and read again from the relay each time.
+  const GLOBAL_KEY = 'globalPacks';
+  let globalStore = {};
+  async function loadGlobalPacks() {
+    try {
+      globalStore = (await chrome.storage.local.get(GLOBAL_KEY))[GLOBAL_KEY] ?? {};
+    } catch {}
+    const res = await send({ type: 'packs-global' });
+    const fresh = res?.packs;
+    if (!fresh || typeof fresh !== 'object' || JSON.stringify(fresh) === JSON.stringify(globalStore)) return;
+    globalStore = fresh;
+    try {
+      chrome.storage.local.set({ [GLOBAL_KEY]: globalStore });
+    } catch {}
+    piles = null; // drawn again with the published drawings
+    markBoosterKinds();
+  }
+
+  function saveShots(shots) {
+    shotStore = { ...readShotStore() };
+    // One drawing per kind and shape of pile (1, 2, 3 boosters and more): the game draws each shape once.
+    for (const shot of shots)
+      shotStore[shapeKey(shot.key, shot.count)] = { v: SHOTS_V, pile: shot.pile.outerHTML, buttons: shot.buttons.outerHTML, many: null, at: Date.now() };
+    try {
+      chrome.storage.local.set({ [SHOTS_KEY]: shotStore });
+    } catch {}
+  }
+
+  // Elements from kept HTML: the game's drawing, but it may come back from the relay, which anyone can write to, so only
+  // what draws is kept: known tags and attributes, pictures of the site only, styles without outside addresses.
+  const SAFE_TAGS = new Set(['div', 'span', 'p', 'strong', 'small', 'b', 'i', 'em', 'button', 'img', 'picture', 'source', 'svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'defs', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask', 'pattern', 'filter', 'fegaussianblur', 'feturbulence', 'fecolormatrix', 'feblend', 'fecomposite', 'feoffset', 'feflood', 'femerge', 'femergenode', 'fedisplacementmap', 'text', 'tspan']);
+  const SAFE_ATTRS = /^(class|style|alt|role|title|type|disabled|width|height|viewbox|d|fill|stroke|stroke-[a-z-]+|fill-[a-z-]+|clip-[a-z-]+|opacity|transform|x|y|x1|x2|y1|y2|cx|cy|r|rx|ry|points|offset|stop-color|stop-opacity|gradientunits|gradienttransform|patternunits|preserveaspectratio|xmlns|loading|decoding|sizes|stddeviation|basefrequency|numoctaves|seed|in|in2|result|mode|operator|values|scale|dx|dy|flood-color|flood-opacity|text-anchor|font-[a-z-]+|letter-spacing|mask|filter|aria-[a-z-]+|data-[a-z0-9-]+)$/i;
+  const siteUrl = (v) => /^\/(?!\/)/.test(v) || v.startsWith(`${location.origin}/`);
+  // A style whose addresses are all of the site (or of the drawing itself: "#…"); a themed pack keeps its picture there.
+  const siteStyle = (v) => {
+    if (/expression|javascript:/i.test(v)) return false;
+    const urls = [...v.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)].map((m) => m[2].trim());
+    return urls.length === (v.match(/url\(/gi) ?? []).length && urls.every((u) => u.startsWith('#') || siteUrl(u));
+  };
+  function fromHtml(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    const el = t.content.firstElementChild;
+    if (!el) return null;
+    for (const x of [...el.querySelectorAll('*')].reverse()) if (!SAFE_TAGS.has(x.tagName.toLowerCase())) x.remove();
+    if (!SAFE_TAGS.has(el.tagName.toLowerCase())) return null;
+    for (const x of [el, ...el.querySelectorAll('*')])
+      for (const a of [...x.attributes]) {
+        const name = a.name.toLowerCase();
+        const value = a.value;
+        const ok =
+          name === 'src'
+            ? siteUrl(value)
+            : name === 'srcset'
+              ? value.split(',').every((part) => siteUrl(part.trim().split(/\s+/)[0] ?? ''))
+              : name === 'style' || name === 'filter' || name === 'mask' || name === 'fill' || name === 'stroke'
+                ? siteStyle(value)
+                : SAFE_ATTRS.test(name);
+        if (!ok) x.removeAttribute(a.name);
+      }
+    return el;
+  }
+
+  // The picture of a themed pack, as the game sets it on each of its boosters (--pack-art): put back in a drawing made
+  // without it (a copy of another pack's pile, an older drawing).
+  function setPackArt(el, art) {
+    if (!el || !art || !siteUrl(art)) return el;
+    for (const x of packBoxes(el)) x.style.setProperty('--pack-art', `url('${art.replace(/['()\\]/g, encodeURIComponent)}')`);
+    return el;
+  }
+  // The boosters drawn by the game in an element: their 3D boxes (the class ending in "__pack"), each holding its faces.
+  const packBoxes = (el) => [el, ...el.querySelectorAll('[class]')].filter((x) => [...x.classList].some((c) => /__pack$/.test(c)));
+  const packArtHtml = (html, art) => {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    setPackArt(t.content.firstElementChild, art);
+    return t.innerHTML;
+  };
+
+  // The count written by the game (the pile's "×5", the button's "Tout ouvrir ×5"), set to n.
+  function setCount(el, n) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) if (/[×x]\s?\d+/.test(t.nodeValue)) t.nodeValue = t.nodeValue.replace(/([×x]\s?)\d+/, `$1${n}`);
+    return el;
+  }
+
+  // The kept copies of every kind, or null when one is missing.
+  function cachedShots(kinds) {
+    const all = readShotStore();
+    const shots = [];
+    for (const k of kinds) {
+      // The drawing of this kind with this shape of pile: the author's published one first, else this player's;
+      // only the current ones (SHOTS_V): the older ones are drawn again.
+      const key = shapeKey(k.key, k.count);
+      // (this player's own drawing first: the game drew it from their real boosters; the published one fills in)
+      const kept = all[key]?.v === SHOTS_V ? all[key] : globalStore[key]?.v === SHOTS_V ? globalStore[key] : null;
+      const pile = kept && fromHtml(kept.pile);
+      const buttons = kept && fromHtml(kept.buttons);
+      if (!pile || !buttons) return null;
+      shots.push({ ...k, pile: setCount(setPackArt(pile, k.art), k.count), buttons: setCount(buttons, k.count) });
+    }
+    return shots;
+  }
+
+  // The pictures shown in an element (its images, its backgrounds), by file name.
+  function pictureFiles(el) {
+    const files = new Set();
+    for (const x of [el, ...el.querySelectorAll('*')]) {
+      const src = x.tagName === 'IMG' ? x.currentSrc || x.getAttribute('src') : getComputedStyle(x).backgroundImage.match(/url\(["']?([^"')]+)/)?.[1];
+      const file = src ? decodeURIComponent(src.split(/[?#]/)[0].split('/').pop() || '') : '';
+      // next/image: the file is in the "url" parameter.
+      const inner = src?.includes('url=') ? decodeURIComponent(new URL(src, location.href).searchParams.get('url') ?? '').split('/').pop() : '';
+      if (file) files.add(file);
+      if (inner) files.add(inner);
+    }
+    return files;
+  }
+
+  // True when the game's pile shows the boosters of this kind: its own picture (Magie…), or none of the other kinds'
+  // pictures for the classic ones.
+  function pileShows(pile, k, kinds) {
+    if (!pile) return false;
+    const files = pictureFiles(pile);
+    const fileOf = (art) => art.split(/[?#]/)[0].split('/').pop();
+    if (k.art) {
+      if (!files.has(fileOf(k.art))) return false;
+      // Its picture loaded (until then the game shows the classic waves in its place).
+      const imgs = [...pile.querySelectorAll('img')].filter((img) => (img.currentSrc || img.getAttribute('src') || '').includes(fileOf(k.art)));
+      return !imgs.length || imgs.some((img) => img.complete && img.naturalWidth > 0);
+    }
+    return !kinds.some((x) => x.art && files.has(fileOf(x.art)));
+  }
+
+  // Waits until the game's pile no longer moves (its animations write inline styles), 1.2 s at most.
+  async function pileStill() {
+    const look = () => {
+      const pile = findHomeParts()?.pile;
+      return pile ? [...pile.querySelectorAll('[style]')].map((x) => x.getAttribute('style')).join('|') + pile.childElementCount : '';
+    };
+    let last = look();
+    for (let still = 0, t = 0; still < 2 && t < 20; t++) {
+      await pause(60);
+      const now = look();
+      still = now === last ? still + 1 : 0;
+      last = now;
+    }
+  }
+
+  // Hides the game's pile and buttons (Aquaman's piles take their place).
+  function hideHome() {
+    const parts = findHomeParts();
+    parts?.pile.setAttribute('data-aqm-hidden', '');
+    parts?.buttons.setAttribute('data-aqm-hidden', '');
+    return parts;
+  }
+
+  // True while the game shows something above the page (the opening of a booster, a window).
+  const gameBusy = () =>
+    !!document.querySelector('[role="dialog"]:not(.aqm-root *), [aria-modal="true"]:not(.aqm-root *)') ||
+    (!overlay && [document.body, document.documentElement].some((el) => getComputedStyle(el).overflow === 'hidden'));
+
+  // Draws the game's pile for each kind, then puts the game back on all of its boosters.
+  async function drawPiles(kinds, sig) {
+    drawing = true;
+    const title = [...document.querySelectorAll('h1, h2, h3')].find((t) => !t.closest('.aqm-root') && /à ouvrir/i.test(t.textContent));
+    title?.setAttribute('data-aqm-veiled', ''); // its count follows the kind being drawn
+    hideHome(); // the game's pile changes kind meanwhile
+    const shots = [];
+    try {
+      for (const k of kinds) {
+        // Without the game's store (or its pile), the game's page stays as it is.
+        if (stopped || !(await showKind(k.key, true))) return void (piles = { sig, shots: null });
+        hideHome(); // the game drew its pile again
+        // The game may change the texts before the picture: the copy waits for the kind's own picture, loaded (5 s at most).
+        let right = false;
+        for (let t = 0; t < 84 && !(right = pileShows(findHomeParts()?.pile, k, kinds)); t++) await pause(60);
+        if (right) await pause(400).then(pileStill); // (the game's fade from the waves to the pack's picture)
+        const parts = findHomeParts();
+        if (!parts) return void (piles = { sig, shots: null });
+        shots.push({ ...k, pile: copyOf(parts.pile), buttons: copyOf(parts.buttons), right: pileShows(parts.pile, k, kinds) });
+      }
+      piles = { sig, shots };
+      saveShots(shots.filter((shot) => shot.right)); // a wrong drawing is shown this once, never kept
+    } finally {
+      await showKind('');
+      await unveilTitle(title);
+      drawing = false;
+    }
+    markBoosterKinds();
+  }
+
+  // A click on a copied button: the game is set on that kind, then its own button is clicked.
+  // ---------- the author's scan of every kind of booster ----------
+  // On the home page, the game draws its pile for boosters made up of each kind (the classic ones and every kind the
+  // shop sells): the drawings are published on the relay, for every Aquaman to show them without drawing anything.
+
+  const SCAN_KEY = 'aqm-scan-packs';
+  const SHOP_KEY = 'aqm-scan-shop'; // the shop's packs read before the home page: [[kind, { html, w, h }], …]
+  const onShop = () => /^\/jeu\/boutique\/?$/.test(location.pathname);
+
+  // The scan starts in the shop (the site forbids loading its pages in a frame), then goes on on the home page.
+  function startScan() {
+    if (onShop()) return void scanShop();
+    try {
+      sessionStorage.setItem(SCAN_KEY, 'shop');
+    } catch {}
+    location.href = '/jeu/boutique';
+  }
+
+  // The scan goes on once the shop, then the home page, shows.
+  function resumeScan() {
+    let step;
+    try {
+      step = sessionStorage.getItem(SCAN_KEY);
+      if (meId !== AUTHOR_ID || !((step === 'shop' && onShop()) || (step === '1' && /^\/jeu\/?$/.test(location.pathname)))) return;
+      sessionStorage.removeItem(SCAN_KEY);
+    } catch {
+      return;
+    }
+    if (step === 'shop') scanShop();
+    else scanPacks();
+  }
+
+  // The design of each pack the shop sells, kept for the home page's scan.
+  async function scanShop() {
+    if (scanning) return;
+    scanning = true;
+    const body = openOverlay('Scanner les packs', 'Aquaman lit d’abord le design de chaque pack de la boutique, puis le jeu dessine tes boosters en attente sur l’accueil.');
+    const status = h('p', { class: 'aqm-note' }, 'Lecture des packs de la boutique (jusqu’à 20 s)…');
+    body.append(status);
+    let designs = new Map();
+    try {
+      const kinds = (await ask({ type: 'pack-kinds' })).kinds.filter((k) => k.kind && KIND_ID.test(k.kind));
+      designs = await readShopPacks(kinds);
+    } catch (e) {
+      status.textContent = e.message;
+    } finally {
+      scanning = false;
+    }
+    try {
+      sessionStorage.setItem(SHOP_KEY, JSON.stringify([...designs]));
+      sessionStorage.setItem(SCAN_KEY, '1');
+    } catch {}
+    status.textContent = `${designs.size} pack${designs.size > 1 ? 's' : ''} trouvé${designs.size > 1 ? 's' : ''} dans la boutique : retour à l’accueil…`;
+    await pause(800);
+    location.href = '/jeu';
+  }
+
+  // The shop's packs read by scanShop (once).
+  function shopDesigns() {
+    try {
+      const list = JSON.parse(sessionStorage.getItem(SHOP_KEY) || '[]');
+      sessionStorage.removeItem(SHOP_KEY);
+      return new Map(list);
+    } catch {
+      return new Map();
+    }
+  }
+
+  let scanning = false;
+  async function scanPacks() {
+    if (scanning) return;
+    scanning = true;
+    const body = openOverlay('Scanner les packs', 'Le jeu dessine tes boosters en attente (1, 2 et 3 boosters et plus), puis Aquaman met le design de chaque pack de la boutique dans ces piles ; les dessins sont publiés pour toutes les extensions.');
+    const status = h('p', { class: 'aqm-note' }, 'Lecture des boosters de la boutique…');
+    const list = h('ul', { class: 'aqm-scan-list' });
+    body.append(status, list);
+    while (drawing || opening) await pause(200);
+    drawing = true;
+    const title = [...document.querySelectorAll('h1, h2, h3')].find((t) => !t.closest('.aqm-root') && /à ouvrir/i.test(t.textContent));
+    title?.setAttribute('data-aqm-veiled', '');
+    const packs = {};
+    const frames = {}; // shape -> a pile drawn by the game: { pile, buttons }, where the shop's packs go
+    const themed = {}; // shape -> a themed pile drawn by the game: { pile, buttons, art, name }
+    let themedPack = null; // one themed booster drawn by the game: { style, html, art, name }
+    let shop = [];
+    try {
+      try {
+        shop = (await ask({ type: 'pack-kinds' })).kinds;
+      } catch (e) {
+        status.textContent = e.message;
+      }
+      // First the player's own boosters: the game draws a booster rightly only from its real id. Each kind is drawn
+      // with as many of its boosters as the player has (1, 2, 3 and more): the shapes of the piles. The shop's packs
+      // come after, in these piles.
+      const mine = boosterKinds().map((k) => ({ ...k, kind: k.key, ids: (pendingBoosters ?? []).filter((b) => (b.kind ?? 'classic') === k.key).map((b) => b.id) }));
+      const kinds = mine;
+      const all = kinds.map((k) => ({ key: k.kind, art: k.art }));
+      for (const [i, k] of kinds.entries()) {
+        const line = h('li', {}, h('strong', {}, k.name ?? k.kind), ' : ');
+        list.append(line);
+        const kind = { key: k.kind, art: k.art };
+        const drawn = [];
+        // The pile as the game draws it with 1, 2, and 3 boosters and more (its fan, its "Tout ouvrir").
+        for (const n of SHAPES) {
+          if (k.ids.length < n) break; // not enough of this kind for this shape
+          status.textContent = `Dessin de ${k.name ?? k.kind} avec ${n} booster${n > 1 ? 's' : ''} (${i + 1}/${kinds.length})…`;
+          const items = k.ids.slice(0, n).map((id) => ({ id }));
+          if (!(await showKind('', true, false, items))) break;
+          hideHome();
+          let right = false;
+          for (let t = 0; t < 84 && !(right = pileShows(findHomeParts()?.pile, kind, all)); t++) await pause(60);
+          if (right) await pause(400).then(pileStill); // (the game's fade from the waves to the pack's picture)
+          const parts = findHomeParts();
+          if (!parts || !pileShows(parts.pile, kind, all)) continue;
+          const buttons = copyOf(parts.buttons).outerHTML;
+          packs[shapeKey(k.kind, n)] = { v: SHOTS_V, pile: copyOf(parts.pile).outerHTML, buttons, many: hasAllButton(parts.buttons) ? buttons : null, name: k.name, art: k.art };
+          // The game's pile with n boosters: the frame of the shop's packs below (each of its boxes takes the pack's).
+          if (!frames[n] || k.kind === 'classic') frames[n] = { pile: packs[shapeKey(k.kind, n)].pile, buttons };
+          // A themed booster drawn by the game: the model of every other themed pack (only its picture and name change).
+          if (k.art && !themed[n]) themed[n] = { pile: packs[shapeKey(k.kind, n)].pile, buttons, art: k.art, name: k.name };
+          if (k.art && !themedPack) themedPack = packOf(parts.pile, k);
+          drawn.push(n === 3 ? '3+' : String(n));
+        }
+        line.append(
+          drawn.length
+            ? `✅ dessiné par le jeu avec ${drawn.join(', ')} booster${drawn.length > 1 || drawn[0] !== '1' ? 's' : ''}${drawn.length < 3 ? ' (les autres formes viennent de la boutique)' : ''}.`
+            : '⛔ dessin incomplet (image du booster introuvable).'
+        );
+      }
+    } finally {
+      await showKind('', false, true); // back to the player's own boosters
+      await unveilTitle(title);
+      drawing = false;
+      scanning = false;
+    }
+
+    // The shop's packs (every kind it sells, owned or not), each put in the game's piles of 1, 2 and 3+ boosters:
+    // for the kinds and the shapes the player's own boosters couldn't give.
+    // The other themed packs (the shop's, and the shapes the player's boosters couldn't give): the piles are the same
+    // for every themed pack, only the picture and the name change. A themed pile drawn by the game is copied with
+    // them changed; for a shape it didn't give, its themed booster goes in the game's pile of that shape. Without any
+    // themed booster of the player, the shop's packs are read in the shop page.
+    const shapes = SHAPES.filter((n) => themed[n] || frames[n]);
+    const owned = new Map(boosterKinds().filter((k) => k.art).map((k) => [k.key, k]));
+    const wanted = [...shop.filter((k) => k.kind && KIND_ID.test(k.kind)), ...[...owned.values()].map((k) => ({ kind: k.key, name: k.name, art: k.art }))]
+      .filter((k, i, all) => all.findIndex((x) => x.kind === k.kind) === i)
+      .filter((k) => k.art && shapes.some((n) => !packs[shapeKey(k.kind, n)]));
+    const designs = shopDesigns();
+    if (wanted.length) status.textContent = `${designs.size} pack${designs.size > 1 ? 's' : ''} trouvé${designs.size > 1 ? 's' : ''} dans la boutique.`;
+    for (const k of wanted) {
+      const line = h('li', {}, h('strong', {}, k.name ?? k.kind), designs?.get(k.kind) ? ' (boutique) : ' : ' (copie) : ');
+      list.append(line);
+      const made = [];
+      for (const n of shapes) {
+        if (packs[shapeKey(k.kind, n)]) continue; // drawn by the game from the player's own boosters
+        // The shop's pack in the game's pile of this shape; else (a pack the shop page doesn't show) a themed pile
+        // drawn by the game, with the pack's picture and name.
+        let pile = null;
+        let buttons = frames[n]?.buttons ?? themed[n]?.buttons;
+        if (frames[n] && designs?.get(k.kind)) pile = fillPile(frames[n].pile, designs.get(k.kind));
+        else if (themed[n]) {
+          pile = renamePack(themed[n].pile, themed[n], k);
+          buttons = themed[n].buttons;
+        } else if (frames[n] && themedPack) pile = fillPile(frames[n].pile, { ...themedPack, html: renamePack(themedPack.html, themedPack, k) });
+        if (!pile || !buttons) continue;
+        packs[shapeKey(k.kind, n)] = { v: SHOTS_V, pile: packArtHtml(pile, k.art), buttons, many: null, name: k.name, art: k.art };
+        made.push(n === 3 ? '3+' : String(n));
+      }
+      line.append(made.length ? `✅ dessiné avec ${made.join(', ')} booster${made.length > 1 || made[0] !== '1' ? 's' : ''}.` : '⛔ pas de modèle pour ce pack.');
+    }
+    // Once the scan is over, closing its window loads the page again (the game and the piles start afresh), after
+    // the publication if it is still under way.
+    let publishing = Promise.resolve();
+    if (overlay?.contains(body)) overlayClosed = () => publishing.finally(() => location.reload());
+    const n = Object.keys(packs).length; // one per kind and shape
+    if (!n) return void (status.textContent = 'Aucun dessin à publier.');
+    status.textContent = `Publication de ${n} dessin${n > 1 ? 's' : ''}…`;
+    publishing = send({ type: 'packs-publish', packs });
+    const res = await publishing;
+    if (res?.needDevice) status.textContent = 'Cet appareil n’est pas approuvé : approuve-le d’abord dans Plus › Joueurs avec Aquaman.';
+    else if (!res || res.error) status.textContent = `Le relais a refusé la publication${res?.error ? ` (${res.error})` : ''}.`;
+    else {
+      status.textContent = `✅ ${res.published ?? n} dessin${n > 1 ? 's' : ''} publié${n > 1 ? 's' : ''} : toutes les extensions les affichent désormais.`;
+      globalStore = { ...globalStore, ...packs };
+      try {
+        chrome.storage.local.set({ [GLOBAL_KEY]: globalStore });
+      } catch {}
+      piles = null;
+      markBoosterKinds();
+    }
+  }
+
+  // One booster of a pile drawn by the game: its box ({ style, html }, the faces inside), with its kind's art and name.
+  function packOf(pile, k) {
+    const box = packBoxes(pile)[0];
+    return box ? { style: box.getAttribute('style') ?? '', html: copyOf(box).innerHTML, art: k.art, name: k.name } : null;
+  }
+
+  // A themed drawing made for another pack: the picture of the model (from.art) becomes the pack's (k.art), and its
+  // name (from.name, as the game writes it) becomes the pack's.
+  function renamePack(html, from, k) {
+    const file = (art) => art.split(/[?#]/)[0].split('/').pop();
+    const oldFile = file(from.art);
+    const newArt = k.art.split(/[?#]/)[0];
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    for (const el of t.content.querySelectorAll('*'))
+      for (const a of [...el.attributes]) if (a.value.includes(oldFile)) el.setAttribute(a.name, a.value.split(from.art.split(/[?#]/)[0]).join(newArt).split(oldFile).join(file(k.art)));
+    if (from.name && k.name) {
+      const walker = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const text = n.nodeValue.trim();
+        if (text.toLowerCase() !== from.name.toLowerCase()) continue;
+        const name = text === text.toUpperCase() ? k.name.toUpperCase() : k.name;
+        n.nodeValue = n.nodeValue.replace(text, name);
+      }
+    }
+    return [...t.content.childNodes].map((x) => x.outerHTML ?? '').join('');
+  }
+
+  // A pile drawn by the game with another pack in each of its boxes (design: { style, html }); its fan, its tilts
+  // and its count stay. Null when the pile has no box.
+  function fillPile(pileHtml, design) {
+    const t = document.createElement('template');
+    t.innerHTML = pileHtml;
+    const pile = t.content.firstElementChild;
+    const boxes = pile ? packBoxes(pile) : [];
+    if (!boxes.length) return null;
+    for (const box of boxes) {
+      box.setAttribute('style', design.style ?? '');
+      box.innerHTML = design.html;
+    }
+    return pile.outerHTML;
+  }
+
+  // The shop page (shown): the box of each kind's pack ({ style, html }), found by its picture or its title.
+  async function readShopPacks(kinds) {
+    const found = new Map();
+    const fileOf = (art) => (art ?? '').split(/[?#]/)[0].split('/').pop();
+    for (let t = 0; t < 80 && found.size < kinds.length; t++) {
+      await pause(250);
+      const boxes = packBoxes(document.body).filter((x) => !x.closest('.aqm-root'));
+      for (const k of kinds) {
+        if (found.has(k.kind)) continue;
+        const name = k.name?.toLowerCase();
+        const box =
+          (k.art && boxes.find((x) => (x.getAttribute('style') ?? '').includes(fileOf(k.art)))) ||
+          (name && boxes.find((x) => x.querySelector('[class*="__packTitle"]')?.textContent.trim().toLowerCase() === name));
+        if (box) found.set(k.kind, { style: box.getAttribute('style') ?? '', html: copyOf(box).innerHTML });
+      }
+      if (found.size && t > 40) break; // the kinds left are not in the shop
+    }
+    return found;
+  }
+
+  // The title "N à ouvrir" stays hidden until the game's count (which it animates) is back to all the boosters.
+  async function unveilTitle(title) {
+    // (the number of boosters as inject.js last wrote it: it may change meanwhile, after an opening)
+    const all = () => {
+      try {
+        return JSON.parse(document.documentElement.getAttribute('data-aqm-boosters') || '[]').length;
+      } catch {
+        return (pendingBoosters ?? []).length;
+      }
+    };
+    for (let t = 0; t < 40 && title?.isConnected && !new RegExp(`^\\D*${all()}\\b`).test(title.textContent.trim()); t++) await pause(60);
+    title?.removeAttribute('data-aqm-veiled');
+  }
+
+  async function openFromCopy(key, index) {
+    if (drawing || opening) return;
+    opening = true;
+    const title = [...document.querySelectorAll('h1, h2, h3')].find((t) => !t.closest('.aqm-root') && /à ouvrir/i.test(t.textContent));
+    title?.setAttribute('data-aqm-veiled', ''); // its count goes through the kind's
+    try {
+      if (!(await showKind(key, true))) return;
+      title?.removeAttribute('data-aqm-veiled'); // the game counts the boosters of the kind it opens
+      const real = [...(findHomeParts()?.buttons.querySelectorAll('button') ?? [])][index];
+      real?.click();
+      // The game opens (its window shows): the copies are drawn again once it is done.
+      const started = Date.now();
+      while (!stopped && (Date.now() - started < 1500 || gameBusy())) await pause(500);
+      // Back to all the boosters, read again (the opened ones are gone).
+      title?.setAttribute('data-aqm-veiled', '');
+      await showKind('', false, true);
+      await unveilTitle(title);
+    } finally {
+      title?.removeAttribute('data-aqm-veiled');
+      opening = false;
+      piles = null;
+      markBoosterKinds();
+    }
+  }
+
+  function markBoosterKinds() {
+    if (!/^\/jeu\/?$/.test(location.pathname) || drawing || opening) return;
+    // The game read its boosters before Aquaman listened: inject.js wrote them on the page; else Aquaman reads them
+    // once itself (all of them).
+    try {
+      const kept = JSON.parse(document.documentElement.getAttribute('data-aqm-boosters') || 'null');
+      if (Array.isArray(kept)) pendingBoosters = kept.filter((b) => b?.id);
+    } catch {}
+    if (!pendingBoosters && !boostersAsked) {
+      boostersAsked = true;
+      setKind('');
+      window.__aquamanSelf = true; // in the userscript, inject.js leaves this answer whole
+      const asked = pageFetch('/api-game/v1/me', { credentials: 'include', headers: { accept: 'application/json' } });
+      window.__aquamanSelf = false;
+      asked
+        .then((res) => (res.ok ? res.json() : null))
+        .then((me) => {
+          if (!Array.isArray(me?.pending) || pendingBoosters) return;
+          pendingBoosters = me.pending.filter((b) => b?.id).map((b) => ({ id: b.id, kind: b.kindId ?? null, name: b.kindName ?? null, art: b.kindArt ?? null }));
+          markBoosterKinds();
+        })
+        .catch(() => {});
+    }
+    const kinds = boosterKinds();
+    const parts = findHomeParts();
+    let strip = document.querySelector('.aqm-piles');
+    const off = () => {
+      strip?.remove();
+      document.querySelectorAll('[data-aqm-hidden]').forEach((el) => el.removeAttribute('data-aqm-hidden'));
+    };
+    if (!parts || kinds.length < 2) return off();
+    const sig = kinds.map((k) => `${k.key}:${k.count}`).join('|');
+    // New counts: the piles are drawn again (not while the game shows an opening).
+    if (piles?.sig !== sig) {
+      if (!shotStore) return; // the kept copies are being read
+      // The piles already seen are shown at once; the game draws only the kinds never seen.
+      const known = cachedShots(kinds);
+      if (known) piles = { sig, shots: known };
+      else {
+        if (!gameBusy()) drawPiles(kinds, sig);
+        return;
+      }
+    }
+    if (!piles.shots) return off();
+    parts.pile.setAttribute('data-aqm-hidden', '');
+    parts.buttons.setAttribute('data-aqm-hidden', '');
+    if (!strip || strip.previousElementSibling !== parts.pile) {
+      strip?.remove();
+      strip = h('div', { class: 'aqm-root aqm-piles' });
+      parts.pile.after(strip);
+    }
+    if (strip.dataset.sig === sig) return;
+    strip.dataset.sig = sig;
+    renderWheel(strip, piles.shots);
+  }
+
+  // The piles, the free boosters first: one in front and its neighbours beside it, in a row that turns (three kinds
+  // or more), with arrows, a click on a pile beside or a swipe.
+  let wheelKey = null; // the kind in front, kept while the piles are drawn again
+  function renderWheel(strip, shots) {
+    const ordered = [...shots].sort((a, b) => (b.key === 'classic') - (a.key === 'classic'));
+    const n = ordered.length;
+    let at = Math.max(0, ordered.findIndex((s) => s.key === wheelKey));
+    // The game's buttons of each kind: under the piles, they don't move and follow the kind in front.
+    const buttonsOf = ordered.map((shot) => {
+      const buttons = shot.buttons.cloneNode(true);
+      [...buttons.querySelectorAll('button')].forEach((b, j) =>
+        b.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openFromCopy(shot.key, j);
+        })
+      );
+      return buttons;
+    });
+    const controls = h('div', { class: 'aqm-wheel-controls' });
+    const items = ordered.map((shot, i) => {
+      const art = h('div', { class: 'aqm-pile-art' }, shot.pile.cloneNode(true));
+      tiltOnHover(art);
+      const pick = () => {
+        const front = ((at % n) + n) % n;
+        if (i !== front) turn(i - front);
+      };
+      return h('div', { class: 'aqm-pile', onclick: pick }, h('p', { class: 'aqm-pile-name' }, shot.name), art);
+    });
+    const track = h('div', { class: 'aqm-wheel-track' }, items);
+    const arrow = (dir, label) => h('button', { type: 'button', class: `aqm-wheel-arrow is-${dir < 0 ? 'prev' : 'next'}`, 'aria-label': label, onclick: () => turn(dir) }, dir < 0 ? '‹' : '›');
+    const dots = h('div', { class: 'aqm-wheel-dots' });
+    const prev = arrow(-1, 'Catégorie précédente');
+    const next = arrow(1, 'Catégorie suivante');
+    strip.replaceChildren(h('div', { class: 'aqm-wheel' }, prev, track, next), controls, dots);
+
+    let width = 0;
+    function place() {
+      fitStrip(strip);
+      width = width || Math.max(...items.map((el) => el.offsetWidth)) || 360;
+      const room = strip.clientWidth || width;
+      // Three kinds shown at most: the one in front and a neighbour on each side (never over it, and only when the
+      // field is wide enough); the others wait behind them, unseen. From three kinds on, the row goes round.
+      const front = ((at % n) + n) % n;
+      const half = Math.floor(n / 2);
+      const side = 0.72;
+      const offset = Math.round(width / 2 + (width * side) / 2 + 40);
+      const fits = offset + (width * side) / 2 <= room / 2 - 8;
+      items.forEach((el, i) => {
+        const d = n >= 3 ? ((((i - front) % n) + n + half) % n) - half : i - front;
+        el.style.transform = d ? `translateX(${Math.sign(d) * offset}px) scale(${Math.abs(d) > 1 ? side * 0.8 : side})` : 'none';
+        el.classList.toggle('is-front', !d);
+        el.classList.toggle('is-away', Math.abs(d) > 1 || (!!d && !fits));
+      });
+      wheelKey = ordered[front].key;
+      if (controls.firstChild !== buttonsOf[front]) controls.replaceChildren(buttonsOf[front]);
+      // Two kinds: no arrow toward nothing.
+      prev.hidden = n < 3 && at === 0;
+      next.hidden = n < 3 && at === n - 1;
+      dots.replaceChildren(...ordered.map((s, i) => h('button', { type: 'button', class: `aqm-wheel-dot${i === front ? ' is-on' : ''}`, 'aria-label': s.name, title: s.name, onclick: () => turn(i - front) })));
+    }
+    // The wheel turns the shortest way; two kinds go from one to the other.
+    function turn(dir) {
+      if (n >= 3) at += dir > n / 2 ? dir - n : dir < -n / 2 ? dir + n : dir;
+      else at = Math.min(n - 1, Math.max(0, at + Math.sign(dir)));
+      place();
+    }
+    let touchX = null;
+    track.addEventListener('touchstart', (e) => (touchX = e.touches[0].clientX), { passive: true });
+    track.addEventListener('touchend', (e) => {
+      const dx = (e.changedTouches[0]?.clientX ?? touchX) - touchX;
+      if (touchX != null && Math.abs(dx) > 40) turn(dx < 0 ? 1 : -1);
+      touchX = null;
+    });
+    place();
+    requestAnimationFrame(() => {
+      width = 0;
+      place();
+    });
+  }
+
+  // The strip takes the whole inner width of the home's field (the rounded box around the boosters), whatever the
+  // width of the column it is in.
+  function fitStrip(strip) {
+    let field = strip.parentElement;
+    while (field && field !== document.body) {
+      const cs = getComputedStyle(field);
+      if (parseFloat(cs.borderTopLeftRadius) >= 16 && field.clientWidth >= 480) break;
+      field = field.parentElement;
+    }
+    if (!field || field === document.body) field = document.querySelector('main') ?? strip.parentElement;
+    const cs = getComputedStyle(field);
+    const r = field.getBoundingClientRect();
+    const left = r.left + parseFloat(cs.paddingLeft) + 16;
+    const width = Math.max(0, r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 32);
+    strip.style.width = `${Math.round(width)}px`;
+    strip.style.left = '0px';
+    strip.style.left = `${Math.round(left - strip.getBoundingClientRect().left)}px`;
+  }
+  let fitTimer = 0;
+  addEventListener('resize', () => {
+    clearTimeout(fitTimer);
+    fitTimer = setTimeout(() => {
+      const strip = document.querySelector('.aqm-piles');
+      if (stopped || !strip) return;
+      delete strip.dataset.sig; // drawn again at the new width
+      markBoosterKinds();
+    }, 150);
+  });
+
+  // The booster in front leans toward the pointer and rises, like the game's own.
+  function tiltOnHover(el) {
+    el.addEventListener('pointermove', (e) => {
+      const r = el.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width - 0.5;
+      const y = (e.clientY - r.top) / r.height - 0.5;
+      el.style.setProperty('--aqm-tilt-x', `${(-y * 12).toFixed(2)}deg`);
+      el.style.setProperty('--aqm-tilt-y', `${(x * 14).toFixed(2)}deg`);
+      el.classList.add('is-hover');
+    });
+    el.addEventListener('pointerleave', () => {
+      el.classList.remove('is-hover');
+      el.style.removeProperty('--aqm-tilt-x');
+      el.style.removeProperty('--aqm-tilt-y');
+    });
   }
 
   // ---------- guided tour ----------
@@ -6224,7 +8710,7 @@ const CHANGES = [
     if (!alive()) return shutdown();
     if (!location.pathname.startsWith('/jeu')) return;
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, lookForUpdate, startOnce]) {
       try {
         step();
       } catch (e) {
@@ -6307,6 +8793,7 @@ const CHANGES = [
     [document, 'pointerup', (e) => press && e.pointerId === press.id && endPress(true, e)],
     [document, 'pointercancel', (e) => press && e.pointerId === press.id && endPress(false, e)],
     [document, 'pointerdown', onOutside, true],
+    [document, 'click', onSellClick, true],
     [document, 'keydown', onKey],
     [window, 'resize', closeMenu],
     [window, 'popstate', closeOverlay],
@@ -6346,10 +8833,39 @@ const CHANGES = [
 
   // Starts once the site's React has taken over the page sent by the server (hydration): an element added before
   // would not match what React expects ("Minified React error #418").
+  // inject.js says when React took over every button of the page (data-aqm-hydrated): the album of the collection is
+  // sometimes taken over long after the page loaded. (16 s at most, without inject.js.)
   function whenSettled(start) {
     const idle = () => (window.requestIdleCallback ? requestIdleCallback(start, { timeout: 1500 }) : setTimeout(start, 300));
-    if (document.readyState === 'complete') idle();
-    else addEventListener('load', idle, { once: true });
+    const since = Date.now();
+    const wait = () => (document.documentElement.hasAttribute('data-aqm-hydrated') || Date.now() - since > 16e3 ? idle() : setTimeout(wait, 150));
+    if (document.readyState === 'complete') wait();
+    else addEventListener('load', wait, { once: true });
+  }
+
+  // The home's boosters are shown as soon as the game draws its pile, without waiting for the whole page (see
+  // whenSettled): the pile only comes once the game has read its boosters, after React took the page over. run()
+  // takes over once the page is settled.
+  addEventListener('message', (e) => {
+    if (e.source === window && e.data?.aquaman === 'boosters-refreshed') onBoostersRefreshed(e.data.id, !!e.data.ok);
+  });
+  loadShotStore().then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
+  if (/^\/jeu\/?$/.test(location.pathname)) {
+    let frame = 0;
+    const early = new MutationObserver(() => {
+      if (settled || stopped) return early.disconnect();
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (settled || stopped) return;
+        try {
+          markBoosterKinds();
+        } catch (e) {
+          console.warn('[Aquaman]', e);
+        }
+      });
+    });
+    early.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   whenSettled(() => {
@@ -6360,6 +8876,8 @@ const CHANGES = [
     chrome.storage.onChanged.addListener(onStorage);
     renderBox();
     runQueue();
+    renderSalesBox();
+    runSales();
     observer.observe(root, { childList: true, subtree: true });
     run();
   });

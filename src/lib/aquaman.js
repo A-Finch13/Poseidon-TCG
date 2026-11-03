@@ -438,7 +438,8 @@ export const RELAY = 'https://aquaman-relay.finch-arhold-git.workers.dev';
 const PITY_EVENTS = 500; // more than the longest pity: older openings change nothing
 const PITY_PULL = 60e3; // the other devices' openings are read once a minute at most
 
-// Openings of the logged-in player kept by Aquaman: { events: [{ id, at, top }], unsynced: [id], syncedAt, syncError }.
+// Openings of the logged-in player kept by Aquaman: { events: [{ id, at, top }], unsynced: [id], syncedAt, syncError,
+// sec }. sec: the relay's count of boosters since the last SEC ({ since, known }), over more than the events kept.
 async function pityState() {
   const id = await myId();
   const { pity = {}, pityRules } = await chrome.storage.local.get(['pity', 'pityRules']);
@@ -450,8 +451,33 @@ async function savePity({ id, all, mine }) {
   await chrome.storage.local.set({ pity: { ...all, [id]: mine } });
 }
 
+// Chance of a SEC in one everyday booster (4 free cards and a 5th of at least R), from the game's odds; null if unknown.
+function secChance() {
+  return cached('sec-chance', 30 * 60e3, async () => {
+    const rarities = await game('/rarities').then((r) => r.rarities ?? []);
+    if (!rarities.some((r) => r.code === 'SEC' && r.weight > 0)) return null;
+    const miss = slotOdds(rarities, new Set(rarities.map((r) => r.code)), RANK.R).reduce((p, slot) => p * (1 - (slot.SEC ?? 0)), 1);
+    return 1 - miss;
+  }).catch(() => null);
+}
+
+// The SEC, which the game doesn't guarantee: boosters since the last one (the relay's count when it has one, as it
+// goes further back), and the chance of one per booster (chance).
+function secReport(mine, chance) {
+  const { events } = mine;
+  let last = -1;
+  for (let i = events.length - 1; i >= 0; i--)
+    if (events[i].top >= RANK.SEC) {
+      last = i;
+      break;
+    }
+  const local = { since: last >= 0 ? events.length - 1 - last : events.length, known: last >= 0 };
+  const sec = mine.sec && mine.sec.since >= local.since ? mine.sec : local;
+  return { since: sec.since, known: !!sec.known, chance };
+}
+
 // What's left before each guarantee; "known" once a card of that rarity was seen, else an upper bound.
-function pityReport(mine, rules, sync) {
+function pityReport(mine, rules, sync, chance = null) {
   const { events } = mine;
   const out = { opened: events.length, sync: sync ? (mine.syncError ? 'error' : mine.syncedAt ? 'ok' : 'waiting') : 'off', syncedAt: mine.syncedAt || null };
   for (const code of Object.keys(PITY)) {
@@ -465,6 +491,7 @@ function pityReport(mine, rules, sync) {
     const since = known ? events.length - 1 - last : events.length;
     out[code] = { since, known, every: rules[code], left: Math.max(1, rules[code] - since) };
   }
+  out.SEC = secReport(mine, chance);
   return out;
 }
 
@@ -487,8 +514,9 @@ async function exchangePity(state, force) {
       body: JSON.stringify({ player: state.id, events: mine.events.filter((e) => waiting.has(e.id)) })
     });
     if (!res.ok) throw new Error(`relay_${res.status}`);
-    const { events } = await res.json();
+    const { events, sec } = await res.json();
     mine.events = mergeEvents(mine.events, Array.isArray(events) ? events : []);
+    mine.sec = Number.isFinite(sec?.since) ? { since: sec.since, known: !!sec.known } : null;
     mine.unsynced = mine.unsynced.filter((id) => !waiting.has(id));
     mine.syncedAt = Date.now();
     mine.syncError = null;
@@ -503,7 +531,7 @@ export async function pity(fresh = false) {
   const state = await pityState();
   const on = (await getSettings()).syncPity;
   if (on) await exchangePity(state, fresh);
-  return pityReport(state.mine, state.rules, on);
+  return pityReport(state.mine, state.rules, on, await secChance());
 }
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
@@ -517,11 +545,13 @@ export async function recordOpening(boosters) {
     top: Math.max(0, ...rarities.map((r) => RANK[r] ?? 0))
   }));
   mine.events = mergeEvents(mine.events, added);
+  // The relay's SEC count goes on with the new openings until the next exchange.
+  if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
   mine.unsynced = [...new Set([...mine.unsynced, ...added.map((e) => e.id)])].slice(-PITY_EVENTS);
   const on = (await getSettings()).syncPity;
   if (on) await exchangePity(state, true);
   else await savePity(state);
-  return pityReport(mine, rules, on);
+  return pityReport(mine, rules, on, await secChance());
 }
 
 // Keeps the numbers of the shop's text ("une SSR tous les 60 boosters et une UR tous les 190").
@@ -606,6 +636,26 @@ async function exchangeFavorites(local) {
     }
   } catch {}
   return local.list;
+}
+
+// The drawings of every kind of booster published by the author (the relay keeps them a minute in the browsers).
+export async function globalPacks() {
+  try {
+    const res = await fetch(`${RELAY}/packs`);
+    if (!res.ok) throw new Error(`relay_${res.status}`);
+    return (await res.json())?.packs ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// The kinds of boosters the shop sells ({ kind, name, art, types }), for the author's scan.
+export async function packKinds() {
+  const shop = await cached('shop', 60e3, () => game('/shop'));
+  return (shop?.specials ?? []).map((s) => {
+    const types = Array.isArray(s.types) ? s.types : [];
+    return { kind: s.id, name: s.name ?? null, art: s.art ?? s.kindArt ?? s.image ?? (types[0] ? `/game/boosters/${types[0]}.webp` : null), types };
+  });
 }
 
 // The favourite series, the same on every device when syncing is on.
@@ -869,6 +919,20 @@ export async function searchCards(query) {
   return (cards ?? []).map((c) => ({ id: c.id, name: c.name, variant: c.variant ?? null, image: c.image, rarity: c.rarity, series: c.series?.title ?? null, owned: c.owned ?? 0 }));
 }
 
+// The cheapest offers of a card on the market, the cheapest first (5 at most), and how many there are.
+export async function cardListings(id) {
+  const card = await cached(`card:${id}`, 5 * 60e3, () => game(`/cards/${encodeURIComponent(id)}`));
+  const { listings } = await cached(`listings:${id}`, 30e3, () => game(`/market/listings?${new URLSearchParams({ sort: 'price', q: card.name })}`));
+  const offers = (listings ?? [])
+    .filter((l) => (l.card?.id ?? l.cardId) === id && typeof l.price === 'number')
+    .map((l) => {
+      const seller = l.seller ?? l.player ?? null;
+      return { id: l.id ?? null, price: l.price, serial: l.serial ?? l.copy?.serial ?? null, player: seller ? { id: seller.id, name: seller.name } : null };
+    })
+    .sort((a, b) => a.price - b.price);
+  return { offers: offers.slice(0, 5), count: offers.length, maxCopies: card.maxCopies ?? null };
+}
+
 // Everyone Aquaman can see with a card: holders (limited cards), sellers, friends, and recent pulls.
 export async function cardOwners(id) {
   const card = await game(`/cards/${encodeURIComponent(id)}`);
@@ -1124,6 +1188,12 @@ export async function answer(msg) {
         return await setPityRules(msg.rules);
       case 'favorites':
         return await favoritesReport(!!msg.fresh);
+      case 'packs-global':
+        return { packs: await globalPacks() };
+      case 'pack-kinds':
+        return { kinds: await packKinds() };
+      case 'packs-publish':
+        return await asAuthor('POST', '/admin/packs', { packs: msg.packs ?? {} });
       case 'favorite':
         return { favorites: await setFavorite(msg.id, !!msg.on) };
       case 'series-status':
@@ -1137,6 +1207,9 @@ export async function answer(msg) {
         return await syncWants(!!msg.fresh);
       case 'card-search':
         return { cards: await searchCards(msg.query) };
+      case 'card-listings':
+        if (msg.fresh) forget(`listings:${msg.id}`, 'showcase:');
+        return await cardListings(msg.id);
       case 'card-owners':
         return await cardOwners(msg.id);
       case 'known-players':

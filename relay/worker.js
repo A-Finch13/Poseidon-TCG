@@ -14,12 +14,15 @@
 // device keeps its own private key; the relay keeps the public keys), or carrying the secret ADMIN_TOKEN, which is
 // only used to approve the first device.
 // The cards a player waits to search (beyond the game's 100) are shared between their devices, like the favourites.
+// The author publishes the drawings of every kind of booster (scanned on the game's home page): given to every
+// Aquaman (GET /packs), which then draws nothing itself.
 // The SSR, UR and SEC cards of the players seen in the "beaux tirages" are kept too (read by the Aquaman that saw them,
 // in the player's public collection, every 12 hours at most): "Qui a cette carte ?" lists them.
 // Bindings: DB (D1 database, schema.sql), PULLS_WRITER (Durable Object, the queue of the imports), GAME_COOKIE and
 // ADMIN_TOKEN (secrets).
 
 const KEEP = 500; // openings sent back, the most recent: more than the longest pity
+const SEC_RANK = 6; // the rank of the SEC in the openings' "top"
 const MAX_IN = 200; // openings accepted in one request
 const MAX_BODY = 64 * 1024;
 const YEAR = 365 * 86400e3;
@@ -38,6 +41,10 @@ const MAX_HOLDINGS = 2000; // cards of one player
 const HOLDINGS_BODY = 256 * 1024;
 const RESCAN = 12 * 3600e3; // a player's collection is read again after this
 const MAX_STALE_ASKED = 40;
+const KIND = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_PILE_HTML = 150 * 1024; // one drawing of a booster's pile
+const MAX_PACK_DESIGNS = 150; // the author's drawings: every kind of booster, each with 1, 2 and 3+ boosters
+const PACKS_BODY = 8 * 1024 * 1024;
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -59,6 +66,7 @@ export default {
       if (req.method === 'POST' && pathname === '/pity') return json(await pity(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/wants') return json(await wants(env, await readBody(req)));
+      if (req.method === 'GET' && pathname === '/packs') return shared(await packDesigns(env));
       if (req.method === 'POST' && pathname === '/holdings') return json(await saveHoldings(env, await readBody(req, HOLDINGS_BODY)));
       if (req.method === 'GET' && pathname === '/holdings') return json(await findHoldings(env, url.searchParams));
       if (req.method === 'GET' && pathname === '/holdings/stale') return json(await staleScans(env, url.searchParams));
@@ -94,15 +102,24 @@ function valid(e) {
   return e && typeof e.id === 'string' && BOOSTER.test(e.id) && Number.isFinite(e.at) && e.at > now - YEAR && e.at < now + 86400e3 && Number.isInteger(e.top) && e.top >= 0 && e.top <= 6;
 }
 
-// Adds the player's new openings, then sends back all of their recent ones.
+// Adds the player's new openings, then sends back all of their recent ones, and the boosters opened since their
+// last SEC over the whole year kept (sec: { since, known }; the SEC has no guarantee, it is often further back).
 async function pity(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
   const events = (Array.isArray(body.events) ? body.events : []).slice(0, MAX_IN).filter(valid);
   if (events.length)
     await env.DB.batch(events.map((e) => env.DB.prepare('INSERT OR IGNORE INTO pity (player, id, at, top) VALUES (?1, ?2, ?3, ?4)').bind(player, e.id, Math.round(e.at), e.top)));
-  const { results } = await env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at DESC LIMIT ?2').bind(player, KEEP).all();
-  return { events: results.reverse() };
+  const [{ results }, sec] = await Promise.all([
+    env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at DESC LIMIT ?2').bind(player, KEEP).all(),
+    env.DB.prepare(
+      'SELECT (SELECT MAX(at) FROM pity WHERE player = ?1 AND top >= ?2) AS last, ' +
+        '(SELECT COUNT(*) FROM pity WHERE player = ?1 AND at > COALESCE((SELECT MAX(at) FROM pity WHERE player = ?1 AND top >= ?2), -1)) AS since'
+    )
+      .bind(player, SEC_RANK)
+      .first()
+  ]);
+  return { events: results.reverse(), sec: { since: sec?.since ?? 0, known: sec?.last != null } };
 }
 
 // Keeps the most recent list of favourite series of the player (by the time of its change), and sends it back.
@@ -119,6 +136,28 @@ async function favorites(env, body) {
     return { list, at: Math.round(at) };
   }
   return saved ? { list: JSON.parse(saved.list), at: saved.at } : { list: null, at: 0 };
+}
+
+// The drawings of every kind of booster published by the author: { kind: { v, pile, buttons, many, name, art, at } }.
+async function packDesigns(env) {
+  const { results } = await env.DB.prepare('SELECT kind, data, at FROM pack_designs ORDER BY kind LIMIT ?1').bind(MAX_PACK_DESIGNS).all();
+  return { packs: Object.fromEntries(results.map((r) => [r.kind, { ...JSON.parse(r.data), at: r.at }])) };
+}
+
+// The author's scan: the drawings of the kinds given replace those kept.
+async function publishPacks(env, body) {
+  const html = (v) => (typeof v === 'string' && v.length <= MAX_PILE_HTML ? v : null);
+  const text = (v) => (typeof v === 'string' ? v.slice(0, 200) : null);
+  const now = Date.now();
+  const writes = [];
+  for (const [kind, v] of Object.entries(body?.packs && typeof body.packs === 'object' ? body.packs : {}).slice(0, MAX_PACK_DESIGNS)) {
+    const data = { v: Number.isInteger(v?.v) ? v.v : 0, pile: html(v?.pile), buttons: html(v?.buttons), many: html(v?.many), name: text(v?.name), art: text(v?.art) };
+    // kind: the kind of booster and the shape of its pile ("…--n1", "…--n2", "…--n3" for 3 and more)
+    if (!/^[A-Za-z0-9_-]{1,72}$/.test(kind) || !data.pile || !data.buttons) continue;
+    writes.push(env.DB.prepare('INSERT INTO pack_designs (kind, data, at) VALUES (?1, ?2, ?3) ON CONFLICT (kind) DO UPDATE SET data = ?2, at = ?3').bind(kind, JSON.stringify(data), now));
+  }
+  if (writes.length) await env.DB.batch(writes);
+  return { ok: true, published: writes.length };
 }
 
 // Keeps the most recent lists of searched cards of the player (by the time of their change), and sends them back.
@@ -466,8 +505,8 @@ async function requestDevice(env, body) {
 // The /admin/ addresses: asking for approval is open; everything else needs the author (approved device or ADMIN_TOKEN).
 async function admin(req, env, url) {
   const body = req.method === 'GET' ? '' : await req.text();
-  if (body.length > MAX_BODY) return json({ error: 'too_large' }, 400);
   const path = url.pathname;
+  if (body.length > (path === '/admin/packs' ? PACKS_BODY : MAX_BODY)) return json({ error: 'too_large' }, 400);
   if (req.method === 'POST' && path === '/admin/devices/request') return json(await requestDevice(env, JSON.parse(body || '{}')));
   if (req.method === 'GET' && path === '/admin/devices/state') {
     const id = url.searchParams.get('id') ?? '';
@@ -485,6 +524,7 @@ async function admin(req, env, url) {
     await env.DB.prepare("UPDATE devices SET state = 'approved' WHERE id = ?1 AND state = 'pending'").bind(data.id).run();
     return json({ ok: true });
   }
+  if (req.method === 'POST' && path === '/admin/packs') return json(await publishPacks(env, data));
   if (req.method === 'POST' && path === '/admin/devices/revoke' && DEVICE.test(String(data.id ?? ''))) {
     await env.DB.prepare('DELETE FROM devices WHERE id = ?1').bind(data.id).run();
     return json({ ok: true });
