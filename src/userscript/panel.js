@@ -5,6 +5,7 @@
     ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
     ['syncFavorites', 'Partager mes séries favorites entre mes appareils'],
     ['syncWants', 'Partager les cartes en attente de recherche entre mes appareils'],
+    ['syncMarket', 'Partager les cartes achetées masquées et les doublons en attente de vente entre mes appareils'],
     ['sharePulls', 'Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)']
   ];
   const ICON_GEAR =
@@ -14,7 +15,7 @@
   async function openSettings() {
     document.querySelector('.aqm-settings')?.remove();
     const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, syncWants: true, sharePulls: true, ...settings };
+    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, syncWants: true, syncMarket: true, sharePulls: true, ...settings };
     const close = () => {
       back.remove();
       document.removeEventListener('keydown', onKey, true);

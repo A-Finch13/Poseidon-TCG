@@ -66,6 +66,7 @@ export default {
       if (req.method === 'POST' && pathname === '/pity') return json(await pity(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/wants') return json(await wants(env, await readBody(req)));
+      if (req.method === 'POST' && pathname === '/lists') return json(await playerList(env, await readBody(req)));
       if (req.method === 'GET' && pathname === '/packs') return shared(await packDesigns(env));
       if (req.method === 'POST' && pathname === '/holdings') return json(await saveHoldings(env, await readBody(req, HOLDINGS_BODY)));
       if (req.method === 'GET' && pathname === '/holdings') return json(await findHoldings(env, url.searchParams));
@@ -176,6 +177,42 @@ async function wants(env, body) {
     return { waiting, sent, at: Math.round(at) };
   }
   return saved ? { waiting: JSON.parse(saved.waiting), sent: JSON.parse(saved.sent), at: saved.at } : { waiting: null, sent: null, at: 0 };
+}
+
+// ---------- other lists of a player, the same on all their devices ----------
+
+// Each list, and what one item of it may be: anything else is dropped.
+const LISTS = {
+  // the cards bought on the market: "rarity|name" (or a name alone), in lower case
+  bought: { max: 3000, item: (v) => (typeof v === 'string' && v.length <= 160 && !/[<>]/.test(v) ? v : null) },
+  // the copies waiting for a place on the market: { cardId, copyId, price, name }
+  sales: {
+    max: 50,
+    item: (v) =>
+      CARD.test(String(v?.cardId ?? '')) && CARD.test(String(v?.copyId ?? '')) && Number.isInteger(v.price) && v.price > 0 && v.price < 1e9
+        ? { cardId: v.cardId, copyId: v.copyId, price: v.price, name: typeof v.name === 'string' ? v.name.slice(0, 120) : 'Une carte' }
+        : null
+  }
+};
+
+// The relay keeps the most recent version of each list (at: time of its last change): it takes the one sent if it is
+// more recent, and sends back the one it keeps. A list sent without data only reads it.
+async function playerList(env, body) {
+  const player = String(body?.player ?? '');
+  const kind = Object.hasOwn(LISTS, String(body?.name)) ? String(body.name) : null;
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  if (!kind) throw new Error('bad_list');
+  const { max, item } = LISTS[kind];
+  const data = Array.isArray(body.data) ? body.data.slice(0, max).map(item).filter(Boolean) : null;
+  const at = Number(body.at);
+  const saved = await env.DB.prepare('SELECT data, at FROM lists WHERE player = ?1 AND name = ?2').bind(player, kind).first();
+  if (data && Number.isFinite(at) && at > 0 && at < Date.now() + 86400e3 && (!saved || at > saved.at)) {
+    await env.DB.prepare('INSERT INTO lists (player, name, data, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (player, name) DO UPDATE SET data = ?3, at = ?4')
+      .bind(player, kind, JSON.stringify(data), Math.round(at))
+      .run();
+    return { data, at: Math.round(at) };
+  }
+  return saved ? { data: JSON.parse(saved.data), at: saved.at } : { data: null, at: 0 };
 }
 
 // ---------- the rare cards of the players seen in the "beaux tirages" ----------

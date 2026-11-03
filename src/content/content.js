@@ -464,8 +464,20 @@
     const before = await readList(SALES_WAITING);
     const fresh = items.filter((x, i) => !before.some((y) => y.copyId === x.copyId) && items.findIndex((y) => y.copyId === x.copyId) === i);
     const all = front ? [...fresh, ...before] : [...before, ...fresh];
-    await chrome.storage.local.set({ [SALES_WAITING]: all.slice(0, SALES_MAX), ...(front || !before.length ? { [SALES_AT]: Date.now() } : {}) });
+    await saveSalesWaiting({ [SALES_WAITING]: all.slice(0, SALES_MAX), ...(front || !before.length ? { [SALES_AT]: Date.now() } : {}) });
     return Math.max(0, all.length - SALES_MAX);
+  }
+
+  // Saves a change of the waiting copies, stamped with its time, and sends it to the player's other devices a moment
+  // later (the most recent list of any device wins).
+  let marketPush = 0;
+  async function saveSalesWaiting(items) {
+    await chrome.storage.local.set({ ...items, sellWaitingAt: Date.now() });
+    pushMarket();
+  }
+  function pushMarket() {
+    clearTimeout(marketPush);
+    marketPush = setTimeout(() => send({ type: 'market-sync', fresh: true }), 1500);
   }
 
   // The game's window had a sale refused: a full market keeps the copy waiting in Aquaman. The game stops its "Mettre N
@@ -495,7 +507,7 @@
     if (!waiting.length || q?.items.length) return;
     const { [SALES_AT]: at = 0 } = await chrome.storage.local.get(SALES_AT);
     if (Date.now() - at < wait) return;
-    await chrome.storage.local.set({ [SALES_WAITING]: [], [SALES_AT]: Date.now() });
+    await saveSalesWaiting({ [SALES_WAITING]: [], [SALES_AT]: Date.now() });
     await writeSales({ items: waiting, total: waiting.length, done: 0, skipped: [], owner: null, beat: 0, until: 0, tries: 0, finishedAt: 0 });
     runSales();
   }
@@ -636,6 +648,7 @@
     try {
       chrome.storage.local.set({ [BOUGHT_KEY]: [...boughtNames] });
     } catch {}
+    pushMarket(); // to the player's other devices
     hideBoughtCards();
   }
   const BUY_BUTTON = /^(acheter|confirmer|trop cher)$/i;
@@ -804,7 +817,7 @@
                 class: 'aqm-queue-btn',
                 onclick: async () => {
                   if (!confirm(`Retirer les ${nCopies(waiting.length)} de la file d’attente d’Aquaman ? Ceux déjà en vente y restent.`)) return;
-                  await chrome.storage.local.remove(SALES_WAITING);
+                  await saveSalesWaiting({ [SALES_WAITING]: [] });
                 }
               }, 'Vider la file')
             : null),
@@ -843,6 +856,11 @@
       renderSalesBox();
       runSales();
     }
+    // The cards bought on another device (synced): their sales are hidden here too.
+    if (changes[BOUGHT_KEY]) {
+      for (const key of changes[BOUGHT_KEY].newValue ?? []) boughtNames.add(key);
+      hideBoughtCards();
+    }
   }
 
   let wantsPulledAt = 0;
@@ -864,6 +882,7 @@
     if (Date.now() - wantsPulledAt > 60e3) {
       wantsPulledAt = Date.now();
       send({ type: 'wants-sync' }); // the other devices' changes
+      send({ type: 'market-sync' }); // (the cards bought on the market, the copies waiting for a place)
     }
   }, 5000);
 

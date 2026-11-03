@@ -15,6 +15,7 @@ export const DEFAULTS = {
   syncPity: true,
   syncFavorites: true,
   syncWants: true,
+  syncMarket: true,
   sharePulls: true
 };
 
@@ -752,6 +753,73 @@ export async function syncWants(fresh = false) {
   }
 }
 
+// ---------- the market's lists, shared between the player's devices ----------
+// marketBought: the cards bought on the market, their other sales hidden: joined from every device.
+// sellWaiting: the copies waiting for a place on the market: the most recent list of any device wins (content.js
+// stamps sellWaitingAt at each change), as the cards waiting for the search list.
+// *For: the account each list belongs to (a device that never synced adds its own to those of the relay).
+
+const MARKET_PULL = 60e3; // the other devices' lists are read once a minute at most
+let marketSyncedAt = 0;
+
+async function postList(body) {
+  const res = await fetch(`${RELAY}/lists`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`relay_${res.status}`);
+  return res.json();
+}
+
+export async function syncMarket(fresh = false) {
+  if (!(await getSettings()).syncMarket) return { off: true };
+  if (!fresh && Date.now() - marketSyncedAt < MARKET_PULL) return { skipped: true };
+  marketSyncedAt = Date.now();
+  try {
+    const player = await myId();
+    const bought = await syncBought(player);
+    const sales = await syncSales(player);
+    return { changed: bought || sales };
+  } catch (e) {
+    marketSyncedAt = 0;
+    return { error: e?.message || 'relay' };
+  }
+}
+
+// The cards bought on any device: the lists are joined, and the relay keeps the whole.
+async function syncBought(player) {
+  const { marketBought = [], marketBoughtFor } = await chrome.storage.local.get(['marketBought', 'marketBoughtFor']);
+  const mine = marketBoughtFor === undefined || marketBoughtFor === player; // (another account's list stays out)
+  const remote = await postList({ player, name: 'bought' });
+  const theirs = Array.isArray(remote?.data) ? remote.data : [];
+  const all = [...new Set([...theirs, ...(mine ? marketBought : [])])];
+  if (all.length !== theirs.length) await postList({ player, name: 'bought', data: all, at: Math.max(Date.now(), (Number(remote?.at) || 0) + 1) });
+  // (a card bought here meanwhile stays: it joins the relay's at the next sync)
+  const now = (await chrome.storage.local.get('marketBought')).marketBought ?? [];
+  const kept = [...new Set([...all, ...(mine ? now : [])])];
+  const changed = kept.length !== now.length || !mine;
+  if (changed || marketBoughtFor !== player) await chrome.storage.local.set({ marketBought: kept, marketBoughtFor: player });
+  return changed;
+}
+
+// The copies waiting for a place on the market: the most recent list wins.
+async function syncSales(player) {
+  const { sellWaiting = [], sellWaitingAt = 0, sellWaitingFor } = await chrome.storage.local.get(['sellWaiting', 'sellWaitingAt', 'sellWaitingFor']);
+  const mine = sellWaitingFor === player;
+  const at = mine ? Number(sellWaitingAt) || 0 : 0;
+  let remote = await postList({ player, name: 'sales', data: mine ? sellWaiting : [], at });
+  const theirs = Array.isArray(remote?.data) ? remote : { data: [], at: 0 };
+  if (!mine && sellWaitingFor === undefined && sellWaiting.length) {
+    // First sync of this device: its copies join those of the other devices.
+    const join = [...theirs.data, ...sellWaiting.filter((x) => !theirs.data.some((y) => y.copyId === x.copyId))].slice(0, 50);
+    remote = await postList({ player, name: 'sales', data: join, at: Math.max(Date.now(), (Number(theirs.at) || 0) + 1) });
+  } else if (Number(theirs.at) <= at) {
+    if (!mine) await chrome.storage.local.set({ sellWaitingFor: player });
+    return false;
+  } else remote = theirs;
+  // A change made here meanwhile wins: it goes to the relay at the next sync.
+  if (((await chrome.storage.local.get('sellWaitingAt')).sellWaitingAt ?? 0) !== sellWaitingAt) return false;
+  await chrome.storage.local.set({ sellWaiting: remote.data ?? [], sellWaitingAt: Number(remote.at) || Date.now(), sellWaitingFor: player });
+  return true;
+}
+
 // ---------- the game's "beaux tirages": kept here, and shared in a public history on the relay ----------
 
 const FEED_KEEP = 30 * 86400e3;
@@ -1205,6 +1273,8 @@ export async function answer(msg) {
         return await wantRoom(msg.waiting ?? [], msg.sent ?? []);
       case 'wants-sync':
         return await syncWants(!!msg.fresh);
+      case 'market-sync':
+        return await syncMarket(!!msg.fresh);
       case 'card-search':
         return { cards: await searchCards(msg.query) };
       case 'card-listings':

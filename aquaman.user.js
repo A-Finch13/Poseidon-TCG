@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.3.0
+// @version      1.3.1
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -165,6 +165,7 @@ const DEFAULTS = {
   syncPity: true,
   syncFavorites: true,
   syncWants: true,
+  syncMarket: true,
   sharePulls: true
 };
 
@@ -902,6 +903,73 @@ async function syncWants(fresh = false) {
   }
 }
 
+// ---------- the market's lists, shared between the player's devices ----------
+// marketBought: the cards bought on the market, their other sales hidden: joined from every device.
+// sellWaiting: the copies waiting for a place on the market: the most recent list of any device wins (content.js
+// stamps sellWaitingAt at each change), as the cards waiting for the search list.
+// *For: the account each list belongs to (a device that never synced adds its own to those of the relay).
+
+const MARKET_PULL = 60e3; // the other devices' lists are read once a minute at most
+let marketSyncedAt = 0;
+
+async function postList(body) {
+  const res = await fetch(`${RELAY}/lists`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`relay_${res.status}`);
+  return res.json();
+}
+
+async function syncMarket(fresh = false) {
+  if (!(await getSettings()).syncMarket) return { off: true };
+  if (!fresh && Date.now() - marketSyncedAt < MARKET_PULL) return { skipped: true };
+  marketSyncedAt = Date.now();
+  try {
+    const player = await myId();
+    const bought = await syncBought(player);
+    const sales = await syncSales(player);
+    return { changed: bought || sales };
+  } catch (e) {
+    marketSyncedAt = 0;
+    return { error: e?.message || 'relay' };
+  }
+}
+
+// The cards bought on any device: the lists are joined, and the relay keeps the whole.
+async function syncBought(player) {
+  const { marketBought = [], marketBoughtFor } = await chrome.storage.local.get(['marketBought', 'marketBoughtFor']);
+  const mine = marketBoughtFor === undefined || marketBoughtFor === player; // (another account's list stays out)
+  const remote = await postList({ player, name: 'bought' });
+  const theirs = Array.isArray(remote?.data) ? remote.data : [];
+  const all = [...new Set([...theirs, ...(mine ? marketBought : [])])];
+  if (all.length !== theirs.length) await postList({ player, name: 'bought', data: all, at: Math.max(Date.now(), (Number(remote?.at) || 0) + 1) });
+  // (a card bought here meanwhile stays: it joins the relay's at the next sync)
+  const now = (await chrome.storage.local.get('marketBought')).marketBought ?? [];
+  const kept = [...new Set([...all, ...(mine ? now : [])])];
+  const changed = kept.length !== now.length || !mine;
+  if (changed || marketBoughtFor !== player) await chrome.storage.local.set({ marketBought: kept, marketBoughtFor: player });
+  return changed;
+}
+
+// The copies waiting for a place on the market: the most recent list wins.
+async function syncSales(player) {
+  const { sellWaiting = [], sellWaitingAt = 0, sellWaitingFor } = await chrome.storage.local.get(['sellWaiting', 'sellWaitingAt', 'sellWaitingFor']);
+  const mine = sellWaitingFor === player;
+  const at = mine ? Number(sellWaitingAt) || 0 : 0;
+  let remote = await postList({ player, name: 'sales', data: mine ? sellWaiting : [], at });
+  const theirs = Array.isArray(remote?.data) ? remote : { data: [], at: 0 };
+  if (!mine && sellWaitingFor === undefined && sellWaiting.length) {
+    // First sync of this device: its copies join those of the other devices.
+    const join = [...theirs.data, ...sellWaiting.filter((x) => !theirs.data.some((y) => y.copyId === x.copyId))].slice(0, 50);
+    remote = await postList({ player, name: 'sales', data: join, at: Math.max(Date.now(), (Number(theirs.at) || 0) + 1) });
+  } else if (Number(theirs.at) <= at) {
+    if (!mine) await chrome.storage.local.set({ sellWaitingFor: player });
+    return false;
+  } else remote = theirs;
+  // A change made here meanwhile wins: it goes to the relay at the next sync.
+  if (((await chrome.storage.local.get('sellWaitingAt')).sellWaitingAt ?? 0) !== sellWaitingAt) return false;
+  await chrome.storage.local.set({ sellWaiting: remote.data ?? [], sellWaitingAt: Number(remote.at) || Date.now(), sellWaitingFor: player });
+  return true;
+}
+
 // ---------- the game's "beaux tirages": kept here, and shared in a public history on the relay ----------
 
 const FEED_KEEP = 30 * 86400e3;
@@ -1355,6 +1423,8 @@ async function answer(msg) {
         return await wantRoom(msg.waiting ?? [], msg.sent ?? []);
       case 'wants-sync':
         return await syncWants(!!msg.fresh);
+      case 'market-sync':
+        return await syncMarket(!!msg.fresh);
       case 'card-search':
         return { cards: await searchCards(msg.query) };
       case 'card-listings':
@@ -4254,6 +4324,14 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.3.1',
+    items: [
+      ['Marché : les cartes achetées dont les autres annonces sont masquées sont les mêmes sur tous tes appareils (PC, téléphone, extension ou script).'],
+      ['Vendre mes doublons : la file des doublons en attente de vente est la même sur tous tes appareils ; celui qui a une page du site ouverte les met en vente dès qu’une place se libère.'],
+      ['Réglages : « Partager les cartes achetées masquées et les doublons en attente de vente entre mes appareils », activé par défaut.']
+    ]
+  },
+  {
     version: '1.3.0',
     items: [
       ['Vendre mes doublons (fenêtre du jeu) : quand le marché est plein, le doublon refusé et ceux encore cochés après lui attendent dans Aquaman (50 au plus), sans recliquer, et sont mis en vente tout seuls, au prix choisi, dès qu’une de tes ventes se conclut. La file s’affiche dans la fenêtre, avec « Vider la file » et « Réessayer maintenant ».'],
@@ -4780,8 +4858,20 @@ const CHANGES = [
     const before = await readList(SALES_WAITING);
     const fresh = items.filter((x, i) => !before.some((y) => y.copyId === x.copyId) && items.findIndex((y) => y.copyId === x.copyId) === i);
     const all = front ? [...fresh, ...before] : [...before, ...fresh];
-    await chrome.storage.local.set({ [SALES_WAITING]: all.slice(0, SALES_MAX), ...(front || !before.length ? { [SALES_AT]: Date.now() } : {}) });
+    await saveSalesWaiting({ [SALES_WAITING]: all.slice(0, SALES_MAX), ...(front || !before.length ? { [SALES_AT]: Date.now() } : {}) });
     return Math.max(0, all.length - SALES_MAX);
+  }
+
+  // Saves a change of the waiting copies, stamped with its time, and sends it to the player's other devices a moment
+  // later (the most recent list of any device wins).
+  let marketPush = 0;
+  async function saveSalesWaiting(items) {
+    await chrome.storage.local.set({ ...items, sellWaitingAt: Date.now() });
+    pushMarket();
+  }
+  function pushMarket() {
+    clearTimeout(marketPush);
+    marketPush = setTimeout(() => send({ type: 'market-sync', fresh: true }), 1500);
   }
 
   // The game's window had a sale refused: a full market keeps the copy waiting in Aquaman. The game stops its "Mettre N
@@ -4811,7 +4901,7 @@ const CHANGES = [
     if (!waiting.length || q?.items.length) return;
     const { [SALES_AT]: at = 0 } = await chrome.storage.local.get(SALES_AT);
     if (Date.now() - at < wait) return;
-    await chrome.storage.local.set({ [SALES_WAITING]: [], [SALES_AT]: Date.now() });
+    await saveSalesWaiting({ [SALES_WAITING]: [], [SALES_AT]: Date.now() });
     await writeSales({ items: waiting, total: waiting.length, done: 0, skipped: [], owner: null, beat: 0, until: 0, tries: 0, finishedAt: 0 });
     runSales();
   }
@@ -4952,6 +5042,7 @@ const CHANGES = [
     try {
       chrome.storage.local.set({ [BOUGHT_KEY]: [...boughtNames] });
     } catch {}
+    pushMarket(); // to the player's other devices
     hideBoughtCards();
   }
   const BUY_BUTTON = /^(acheter|confirmer|trop cher)$/i;
@@ -5120,7 +5211,7 @@ const CHANGES = [
                 class: 'aqm-queue-btn',
                 onclick: async () => {
                   if (!confirm(`Retirer les ${nCopies(waiting.length)} de la file d’attente d’Aquaman ? Ceux déjà en vente y restent.`)) return;
-                  await chrome.storage.local.remove(SALES_WAITING);
+                  await saveSalesWaiting({ [SALES_WAITING]: [] });
                 }
               }, 'Vider la file')
             : null),
@@ -5159,6 +5250,11 @@ const CHANGES = [
       renderSalesBox();
       runSales();
     }
+    // The cards bought on another device (synced): their sales are hidden here too.
+    if (changes[BOUGHT_KEY]) {
+      for (const key of changes[BOUGHT_KEY].newValue ?? []) boughtNames.add(key);
+      hideBoughtCards();
+    }
   }
 
   let wantsPulledAt = 0;
@@ -5180,6 +5276,7 @@ const CHANGES = [
     if (Date.now() - wantsPulledAt > 60e3) {
       wantsPulledAt = Date.now();
       send({ type: 'wants-sync' }); // the other devices' changes
+      send({ type: 'market-sync' }); // (the cards bought on the market, the copies waiting for a place)
     }
   }, 5000);
 
@@ -8892,6 +8989,7 @@ const CHANGES = [
     ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
     ['syncFavorites', 'Partager mes séries favorites entre mes appareils'],
     ['syncWants', 'Partager les cartes en attente de recherche entre mes appareils'],
+    ['syncMarket', 'Partager les cartes achetées masquées et les doublons en attente de vente entre mes appareils'],
     ['sharePulls', 'Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)']
   ];
   const ICON_GEAR =
@@ -8901,7 +8999,7 @@ const CHANGES = [
   async function openSettings() {
     document.querySelector('.aqm-settings')?.remove();
     const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, syncWants: true, sharePulls: true, ...settings };
+    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, syncWants: true, syncMarket: true, sharePulls: true, ...settings };
     const close = () => {
       back.remove();
       document.removeEventListener('keydown', onKey, true);

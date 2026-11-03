@@ -86,6 +86,16 @@ CREATE TABLE IF NOT EXISTS wants (
   at INTEGER NOT NULL
 );
 
+-- Other lists of each player kept the same on all their devices (relay/worker.js, POST /lists): the cards bought on
+-- the market whose other sales are hidden ("bought"), the copies waiting for a place on the market ("sales").
+CREATE TABLE IF NOT EXISTS lists (
+  player TEXT NOT NULL,
+  name TEXT NOT NULL,
+  data TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (player, name)
+);
+
 -- The SSR, UR and SEC cards of the players seen in the "beaux tirages", read in their public collections
 -- (relay/worker.js): who has which card, for "Qui a cette carte ?".
 CREATE TABLE IF NOT EXISTS holdings (
