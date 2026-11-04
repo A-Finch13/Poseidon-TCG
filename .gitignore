@@ -1,3 +1,4 @@
 dist/
 relay/.wrangler/
-graphify-out/.claude/settings.local.json
+graphify-out/
+.claude/settings.local.json
