@@ -60,7 +60,26 @@ Deux versions, avec les mêmes fonctions :
 
 Chrome sur téléphone n'accepte ni les extensions ni les scripts : utilise Firefox (Android) ou Safari (iPhone).
 
-Le script se met à jour tout seul : Tampermonkey et Userscripts vérifient régulièrement s'il y a une nouvelle version.
+Pour les mises à jour, voir [Mettre à jour sur téléphone](#mettre-à-jour-sur-téléphone) plus bas.
+
+### Mettre à jour sur téléphone
+
+Quand une nouvelle version sort, un cadre **« 🔱 Aquaman X est disponible »** apparaît en haut des pages du jeu :
+
+1. Touche **Installer** : le nouveau script s'ouvre dans un onglet.
+2. Installe-le :
+   - **Android** (Firefox + Tampermonkey) : Tampermonkey affiche la nouvelle version → **Mettre à jour** (ou **Installer**).
+   - **iPhone / iPad** (Safari + Userscripts) : touche l'icône **Userscripts** à gauche de la barre d'adresse → **Mettre à jour** (ou **Installer**).
+3. Reviens sur l'onglet du jeu et **recharge la page**. La fenêtre **Nouveautés** s'ouvre et résume ce qui a changé.
+
+« Plus tard » cache le cadre jusqu'à la fermeture de l'onglet.
+
+Sans attendre le cadre, tu peux aussi :
+
+- **Android** : sur une page du jeu, menu ⋮ → **Modules complémentaires** → **Tampermonkey** → **Rechercher des mises à jour des scripts** ; Tampermonkey vérifie aussi tout seul chaque jour ;
+- **iPhone / iPad** comme **Android** : rouvre simplement **[aquaman.user.js](https://github.com/A-Finch13/Poseidon-TCG/releases/latest/download/aquaman.user.js)** (lien de la dernière version) et installe-le par-dessus l'ancien, comme à l'installation.
+
+Tes réglages, favoris et historique sont conservés : ils ne sont pas dans le script. Pour vérifier ta version : **Plus** → **Nouveautés**, la première version de la liste est la tienne.
 
 ### Brave, Chrome, Edge, Opera, Vivaldi
 
