@@ -27,10 +27,11 @@ export const SETTINGS = [
     title: 'Collection',
     icon: '🗂️',
     items: [
-      ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites et tri « Les plus avancées »'],
+      ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites, tri « Les plus avancées » et bouton « Masquer séries <= 5 persos »'],
       ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
       ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
-      ['missingSales', 'Bouton « En vente »', 'Sur les cartes manquantes vendues au marché, avec les 5 moins chères']
+      ['missingSales', 'Pastille « En vente »', 'Sur les cartes manquantes vendues au marché'],
+      ['cardWho', 'Bouton « Qui a cette carte ? »', 'Sur la page des cartes SSR, UR et SEC : les joueurs qui l’ont']
     ]
   },
   {
@@ -39,6 +40,7 @@ export const SETTINGS = [
     items: [
       ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
       ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
+      ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter »'],
       ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
     ]
   },
@@ -46,7 +48,7 @@ export const SETTINGS = [
     title: 'Échanges et vitrine',
     icon: '🔁',
     items: [
-      ['tradeMarks', 'Échanges', 'Cartes agrandies et pastille « déjà possédée »'],
+      ['tradeMarks', 'Échanges', 'Pastille « déjà possédée » sur les cartes des échanges, dans le jeu et en MP'],
       ['showcaseDrag', 'Ma vitrine', 'Glisser-déposer pour ranger tes cartes'],
       ['recycleHelp', 'Recycler des cartes', 'Rien de coché au départ, bouton « Tout cocher »']
     ]
@@ -1425,6 +1427,8 @@ export async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
+      case 'card-images':
+        return { keys: (await loadCatalog())?.map((c) => imageKey(c.image)).filter(Boolean) ?? null };
       case 'friends':
         return await friends();
       case 'player':
@@ -1473,6 +1477,8 @@ export async function answer(msg) {
         return await cardListings(msg.id);
       case 'card-sale':
         return await cardSale(msg.id ?? null, msg.image ?? null, msg.name ?? null, msg.series ?? null);
+      case 'card-rarity':
+        return { rarity: (await cached(`rarity:${msg.id}`, 60 * 60e3, () => game(`/cards/${encodeURIComponent(msg.id)}`)))?.rarity ?? null };
       case 'card-owners':
         return await cardOwners(msg.id);
       case 'known-players':
@@ -1538,7 +1544,9 @@ export async function checkUpdate() {
       url: rel.html_url ?? `https://github.com/${REPO}/releases/latest`,
       zip: asset('aquaman-chromium.zip'),
       xpi: asset('aquaman-firefox.xpi'),
-      script: asset('aquaman.user.js')
+      // The text of the script, not GitHub's download: Tampermonkey and Userscripts only offer to install a script
+      // shown as text, the release asset is saved as a file instead.
+      script: rel.tag_name ? `https://raw.githubusercontent.com/${REPO}/${rel.tag_name}/aquaman.user.js` : asset('aquaman.user.js')
     };
     await chrome.storage.local.set({ update });
     return update;

@@ -502,11 +502,27 @@ html.aqm-lock {
   }
 }
 
+/* ---------- Page d'une carte : « Qui a cette carte ? » ---------- */
+
+.aqm-card-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.aqm-card-who-icon,
+.aqm-card-who-icon svg {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.aqm-card-who-row {
+  margin-top: 12px;
+}
+
 /* ---------- Échanges ---------- */
 
-.aqm-trade-tile {
-  zoom: 1.3;
-}
 .aqm-dot {
   position: absolute;
   top: 3px;
@@ -768,9 +784,6 @@ html.aqm-lock {
   }
   .aqm-pull-thumb {
     zoom: 1.4;
-  }
-  .aqm-trade-tile {
-    zoom: 1.2;
   }
   .aqm-tour-actions {
     flex-wrap: wrap;
@@ -2580,6 +2593,7 @@ html.aqm-grabbing * {
   margin-right: 8px !important;
   vertical-align: middle;
 }
+/* Only a sign: a click goes through to the game's card. */
 .aqm-sale {
   display: inline-block;
   flex: none;
@@ -2595,14 +2609,7 @@ html.aqm-grabbing * {
   white-space: nowrap;
   text-transform: uppercase;
   vertical-align: middle;
-  cursor: pointer;
-}
-.aqm-sale:hover,
-.aqm-sale:focus-visible {
-  border-color: #3b82f6;
-  background: rgba(37, 99, 235, 0.4);
-  color: #fff;
-  outline: none;
+  pointer-events: none;
 }
 [data-aqm-pill-off] {
   opacity: 0 !important;

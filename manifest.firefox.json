@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Aquaman",
   "short_name": "Aquaman",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Compagnon pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.",
   "author": "A-Finch13",
   "homepage_url": "https://github.com/A-Finch13/Poseidon-TCG",

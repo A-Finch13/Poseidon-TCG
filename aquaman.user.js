@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.2
+// @version      1.4.3
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.2';
+const VERSION = '1.4.3';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -177,10 +177,11 @@ const SETTINGS = [
     title: 'Collection',
     icon: '🗂️',
     items: [
-      ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites et tri « Les plus avancées »'],
+      ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites, tri « Les plus avancées » et bouton « Masquer séries <= 5 persos »'],
       ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
       ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
-      ['missingSales', 'Bouton « En vente »', 'Sur les cartes manquantes vendues au marché, avec les 5 moins chères']
+      ['missingSales', 'Pastille « En vente »', 'Sur les cartes manquantes vendues au marché'],
+      ['cardWho', 'Bouton « Qui a cette carte ? »', 'Sur la page des cartes SSR, UR et SEC : les joueurs qui l’ont']
     ]
   },
   {
@@ -189,6 +190,7 @@ const SETTINGS = [
     items: [
       ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
       ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
+      ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter »'],
       ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
     ]
   },
@@ -196,7 +198,7 @@ const SETTINGS = [
     title: 'Échanges et vitrine',
     icon: '🔁',
     items: [
-      ['tradeMarks', 'Échanges', 'Cartes agrandies et pastille « déjà possédée »'],
+      ['tradeMarks', 'Échanges', 'Pastille « déjà possédée » sur les cartes des échanges, dans le jeu et en MP'],
       ['showcaseDrag', 'Ma vitrine', 'Glisser-déposer pour ranger tes cartes'],
       ['recycleHelp', 'Recycler des cartes', 'Rien de coché au départ, bouton « Tout cocher »']
     ]
@@ -1575,6 +1577,8 @@ async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
+      case 'card-images':
+        return { keys: (await loadCatalog())?.map((c) => imageKey(c.image)).filter(Boolean) ?? null };
       case 'friends':
         return await friends();
       case 'player':
@@ -1623,6 +1627,8 @@ async function answer(msg) {
         return await cardListings(msg.id);
       case 'card-sale':
         return await cardSale(msg.id ?? null, msg.image ?? null, msg.name ?? null, msg.series ?? null);
+      case 'card-rarity':
+        return { rarity: (await cached(`rarity:${msg.id}`, 60 * 60e3, () => game(`/cards/${encodeURIComponent(msg.id)}`)))?.rarity ?? null };
       case 'card-owners':
         return await cardOwners(msg.id);
       case 'known-players':
@@ -1688,7 +1694,9 @@ async function checkUpdate() {
       url: rel.html_url ?? `https://github.com/${REPO}/releases/latest`,
       zip: asset('aquaman-chromium.zip'),
       xpi: asset('aquaman-firefox.xpi'),
-      script: asset('aquaman.user.js')
+      // The text of the script, not GitHub's download: Tampermonkey and Userscripts only offer to install a script
+      // shown as text, the release asset is saved as a file instead.
+      script: rel.tag_name ? `https://raw.githubusercontent.com/${REPO}/${rel.tag_name}/aquaman.user.js` : asset('aquaman.user.js')
     };
     await chrome.storage.local.set({ update });
     return update;
@@ -2715,11 +2723,27 @@ html.aqm-lock {
   }
 }
 
+/* ---------- Page d'une carte : « Qui a cette carte ? » ---------- */
+
+.aqm-card-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.aqm-card-who-icon,
+.aqm-card-who-icon svg {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.aqm-card-who-row {
+  margin-top: 12px;
+}
+
 /* ---------- Échanges ---------- */
 
-.aqm-trade-tile {
-  zoom: 1.3;
-}
 .aqm-dot {
   position: absolute;
   top: 3px;
@@ -2981,9 +3005,6 @@ html.aqm-lock {
   }
   .aqm-pull-thumb {
     zoom: 1.4;
-  }
-  .aqm-trade-tile {
-    zoom: 1.2;
   }
   .aqm-tour-actions {
     flex-wrap: wrap;
@@ -4793,6 +4814,7 @@ html.aqm-grabbing * {
   margin-right: 8px !important;
   vertical-align: middle;
 }
+/* Only a sign: a click goes through to the game's card. */
 .aqm-sale {
   display: inline-block;
   flex: none;
@@ -4808,14 +4830,7 @@ html.aqm-grabbing * {
   white-space: nowrap;
   text-transform: uppercase;
   vertical-align: middle;
-  cursor: pointer;
-}
-.aqm-sale:hover,
-.aqm-sale:focus-visible {
-  border-color: #3b82f6;
-  background: rgba(37, 99, 235, 0.4);
-  color: #fff;
-  outline: none;
+  pointer-events: none;
 }
 [data-aqm-pill-off] {
   opacity: 0 !important;
@@ -5049,7 +5064,7 @@ const TOUR = [
   {
     id: 'echanges',
     title: 'Les échanges',
-    text: 'Dans chaque proposition, les cartes sont plus grandes, avec une pastille verte si tu as déjà la carte (×2, ×3… si tu en as plusieurs) et rouge si tu ne l’as pas.',
+    text: 'Dans chaque proposition, dans le jeu comme en MP, chaque carte porte une pastille verte si tu as déjà la carte (×2, ×3… si tu en as plusieurs) et rouge si tu ne l’as pas.',
     page: '/jeu/echanges',
     target: '.aqm-trade-tile, a[data-tour="nav-/jeu/echanges"]'
   },
@@ -5082,6 +5097,18 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.4.3',
+    items: [
+      ['Échanges : la pastille verte ou rouge apparaît sur toutes les pages d’échange, et sur les propositions envoyées en MP.', 'echanges'],
+      ['Échanges : les cartes gardent la taille du jeu.'],
+      ['Page d’une carte SSR, UR ou SEC : un bouton « Qui a cette carte ? » sous « Mes exemplaires » montre les joueurs qui l’ont.'],
+      ['Collection : « Masquer séries <= 5 persos », à côté de « Les plus avancées », cache les séries de 5 personnages ou moins.'],
+      ['Collection : « En vente » à côté de « Manquante » indique seulement que la carte est vendue au marché : la pastille ne s’ouvre plus.'],
+      ['Page d’une carte : les 5 annonces les moins chères du marché, sous la cote, avec « Acheter ».'],
+      ['Téléphone : le bouton « Installer » du cadre de mise à jour ouvre le script dans une page que Tampermonkey et Userscripts savent installer (avant, le fichier était seulement téléchargé).']
+    ]
+  },
   {
     version: '1.4.2',
     items: [['Correction : avec « Tout ouvrir », le pack de l’animation prend l’image de la catégorie ouverte (Légendaire, Action, Magie…), et non celle de la catégorie ouverte juste avant.']]
@@ -6977,7 +7004,8 @@ const CHANGES = [
       )
     );
 
-  async function openWhoHas() {
+  // With a card id (its page's button), the window opens on that card.
+  async function openWhoHas(cardId) {
     const body = openOverlay('Qui a cette carte ?', 'Cherche n’importe quel personnage : les joueurs qui ont sa carte, qui la vendent et qui l’ont tirée récemment.');
     const search = h('input', { type: 'search', class: 'aqm-search', placeholder: 'Nom d’un personnage ou d’une série…', 'aria-label': 'Personnage ou série', autocomplete: 'off' });
     const view = h('div', { class: 'aqm-who' });
@@ -7141,7 +7169,47 @@ const CHANGES = [
       clearTimeout(timer);
       timer = setTimeout(showSearch, 300);
     });
-    showSearch();
+    if (typeof cardId === 'string') showCard(cardId);
+    else showSearch();
+  }
+
+  // ---------- card page: "Qui a cette carte ?" under "Mes exemplaires" ----------
+
+  const cardRarity = new Map(); // card id -> its rarity, or a promise while the game is asked
+
+  function markCardWho() {
+    const id = decodeURIComponent(location.pathname.match(/^\/jeu\/carte\/([^/]+)/)?.[1] ?? '');
+    if (!id) return;
+    const rarity = cardRarity.get(id);
+    if (rarity === undefined) {
+      cardRarity.set(
+        id,
+        ask({ type: 'card-rarity', id })
+          .then((r) => cardRarity.set(id, r.rarity ?? ''))
+          .catch(() => cardRarity.delete(id))
+          .finally(schedule)
+      );
+      return;
+    }
+    if (typeof rarity !== 'string' || RANKED.indexOf(rarity) < RANKED.indexOf('SSR')) return;
+    const label = elementsWithText(document.body, /^\s*mes exemplaires\s*$/i)[0];
+    if (!label) return;
+    // The panel under the title: its row of buttons ("Voir au marché", "Je la cherche"), or the panel itself.
+    let section = label.parentElement;
+    while (section && section !== document.body && section.textContent.trim().length <= label.textContent.trim().length + 5) section = section.parentElement;
+    if (!section || section === document.body) return;
+    const old = section.querySelector('.aqm-card-who');
+    if (old?.dataset.card === id) return;
+    old?.remove();
+    const game = [...section.querySelectorAll('button, a')].find((b) => !b.closest('.aqm-root') && /^(voir au march[ée]|je la cherche|je ne la cherche plus)/i.test(b.textContent.trim()));
+    const btn = h('button', { type: 'button', class: `aqm-root aqm-card-who${game ? '' : ' aqm-album-btn'}`, 'data-card': id }, h('span', { class: 'aqm-card-who-icon', html: ICON_SEARCH }), 'Qui a cette carte ?');
+    // The look of the game's own dark button, when there is one beside it.
+    const twin = [...section.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root')).pop();
+    if (game && twin) btn.className = `${twin.className} aqm-root aqm-card-who`;
+    btn.addEventListener('click', () => openWhoHas(id));
+    if (game) game.parentElement.append(btn);
+    else section.append(h('div', { class: 'aqm-root aqm-card-who-row' }, btn));
+    btn.dataset.card = id;
   }
 
   // ---------- the players who use Aquaman (the author only) ----------
@@ -7419,7 +7487,18 @@ const CHANGES = [
               strip.scrollTo?.({ left: 0, behavior: 'smooth' });
             },
             title: 'Les séries où il te manque le moins de cartes en premier'
-          }, 'Les plus avancées')
+          }, 'Les plus avancées'),
+          h('button', {
+            type: 'button',
+            class: 'aqm-chip aqm-sort-progress aqm-small-series',
+            'aria-pressed': 'false',
+            onclick: () => {
+              setSmallOnly(!smallOnly);
+              sortByProgress(strip);
+              strip.scrollTo?.({ left: 0, behavior: 'smooth' });
+            },
+            title: `Masquer les séries de ${SMALL_SERIES} personnages ou moins`
+          }, `Masquer séries <= ${SMALL_SERIES} persos`)
         )
       );
     sortByProgress(strip);
@@ -7468,6 +7547,22 @@ const CHANGES = [
       return false;
     }
   })();
+  // "Masquer séries <= 5 persos": the series of at most SMALL_SERIES cards are hidden (kept for the tab too).
+  const SMALL_SERIES = 5;
+  const SMALL_ONLY_KEY = 'aqm-small-series';
+  let smallOnly = (() => {
+    try {
+      return sessionStorage.getItem(SMALL_ONLY_KEY) === '1';
+    } catch {
+      return false;
+    }
+  })();
+  function setSmallOnly(on) {
+    smallOnly = on;
+    try {
+      on ? sessionStorage.setItem(SMALL_ONLY_KEY, '1') : sessionStorage.removeItem(SMALL_ONLY_KEY);
+    } catch {}
+  }
   function setByProgress(on) {
     byProgress = on;
     try {
@@ -7548,7 +7643,7 @@ const CHANGES = [
       const m = el.textContent.match(/(\d[\d  ]*)\s*\/\s*(\d[\d  ]*)/); // (a title's own figures are apart)
       if (!m) return null;
       const [owned, total] = [m[1], m[2]].map((x) => Number(x.replace(/\D/g, '')));
-      return total ? { missing: Math.max(0, total - owned), rate: owned / total } : null;
+      return total ? { missing: Math.max(0, total - owned), rate: owned / total, total } : null;
     };
     const rows = items.map((el, i) => ({ el, i, c: count(el), all: /toutes les s[ée]ries/i.test(el.textContent) }));
     let completed = false;
@@ -7566,9 +7661,18 @@ const CHANGES = [
         sessionStorage.setItem('aqm-missing-seen', seen);
       } catch {}
     }
-    const chip = strip.previousElementSibling?.querySelector('.aqm-sort-progress');
+    const chip = strip.previousElementSibling?.querySelector('.aqm-sort-progress:not(.aqm-small-series)');
     chip?.classList.toggle('is-on', byProgress);
     chip?.setAttribute('aria-pressed', String(byProgress));
+    const small = strip.previousElementSibling?.querySelector('.aqm-small-series');
+    small?.classList.toggle('is-on', smallOnly);
+    small?.setAttribute('aria-pressed', String(smallOnly));
+    // Hidden: the small series. "Toutes les séries", the series shown and those without a count stay.
+    for (const { el, c, all } of rows) {
+      const hide = smallOnly && !all && c && c.total <= SMALL_SERIES && el.getAttribute('aria-checked') !== 'true' && !el.querySelector('[aria-checked="true"]');
+      const display = hide ? 'none' : '';
+      if (el.style.display !== display) el.style.display = display;
+    }
     const ranked = rows
       .sort(
         (a, b) =>
@@ -7674,7 +7778,27 @@ const CHANGES = [
     setTimeout(markRecycleDialog, 50);
   }
 
-  // ---------- a card's 5 cheapest offers on the market (the "En vente" window of a missing card) ----------
+  // ---------- a card's page: its 5 cheapest offers on the market ----------
+  // Under the game's "Cote" panel: the offers from the cheapest to the dearest, each with its seller and number.
+
+  let listingsFor = null; // the card whose offers are shown (or being read)
+  function markCardListings() {
+    const id = location.pathname.match(/^\/jeu\/carte\/([^/?#]+)/)?.[1];
+    const box = document.querySelector('.aqm-listings');
+    if (!id) return void box?.remove();
+    const cote = [...document.querySelectorAll('p, span, h2, h3, div')].find((el) => !el.closest('.aqm-root') && !el.childElementCount && /^cote$/i.test(el.textContent.trim()));
+    // The panel of the "Cote": the highest box around its title that holds no other panel's title.
+    let panel = cote;
+    while (panel?.parentElement && !/mes exemplaires/i.test(panel.parentElement.textContent)) panel = panel.parentElement;
+    if (!panel || panel === cote) return;
+    if (box?.dataset.card === id && box.previousElementSibling === panel) return;
+    if (listingsFor === id && box) return;
+    box?.remove();
+    listingsFor = id;
+    const fresh = h('section', { class: 'aqm-root aqm-listings', 'data-card': id }, h('p', { class: 'aqm-label' }, 'En vente au marché'), h('p', { class: 'aqm-muted' }, 'Lecture des offres…'));
+    panel.after(fresh);
+    showListings(fresh, decodeURIComponent(id), false);
+  }
 
   // The offers in their box, from the cheapest to the dearest, each with its seller, its number and a button to buy
   // it (not the player's own); read again after a purchase.
@@ -7934,25 +8058,10 @@ const CHANGES = [
     }
     const r = await sale.read.catch(() => null);
     if (!r?.count || !label.isConnected || label.nextElementSibling?.classList.contains('aqm-sale')) return;
-    const open = (e) => {
-      if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
-      e.preventDefault();
-      e.stopPropagation();
-      openSale(r);
-    };
-    // (a span: the tile may be a link or a button of the game)
-    label.after(
-      h('span', { class: 'aqm-root aqm-sale', role: 'button', tabindex: '0', title: `${r.count} offre${r.count > 1 ? 's' : ''} au marché`, onclick: open, onkeydown: open }, 'En vente')
-    );
+    // Only a sign: a click goes through to the game's card.
+    const offers = `En vente : ${r.count} offre${r.count > 1 ? 's' : ''} au marché`;
+    label.after(h('span', { class: 'aqm-root aqm-sale', title: offers }, 'En vente'));
     label.setAttribute('data-aqm-sale', 'on');
-  }
-
-  // The 5 cheapest offers of a missing card, in Aquaman's window.
-  function openSale(r) {
-    const body = openOverlay(r.name ?? 'Carte', 'Les 5 annonces les moins chères du marché.');
-    const box = h('section', { class: 'aqm-listings' }, h('p', { class: 'aqm-muted' }, 'Lecture des offres…'));
-    body.append(box, h('p', { class: 'aqm-note' }, h('a', { href: `/jeu/carte/${encodeURIComponent(r.id)}` }, 'Voir la page de la carte')));
-    showListings(box, r.id, false);
   }
 
   // ---------- collection: favourite and search buttons in the "Album de la série" panel ----------
@@ -8251,10 +8360,21 @@ const CHANGES = [
     render();
   }
 
-  // ---------- trades: bigger cards and an owned / missing dot ----------
+  // ---------- trades: an owned / missing dot ----------
 
   let owned = null; // { at, byImage }
   let tradesBusy = false;
+  let cardImages = null; // { at, keys: Set | null }: image keys of the game catalogue, to tell cards from avatars
+
+  // Pages that show exchanges: the game's own ones and the private messages, where a proposal is sent as an attachment.
+  const TRADE_PAGES = /^\/(jeu\/echanges|messages)(\/|$)/;
+
+  async function catalogImages() {
+    if (cardImages && Date.now() - cardImages.at < 30 * 60e3) return cardImages.keys;
+    const res = await ask({ type: 'card-images' });
+    cardImages = { at: Date.now(), keys: res.keys ? new Set(res.keys) : null };
+    return cardImages.keys;
+  }
 
   // Copies owned by image key, kept 30 seconds.
   async function ownedByImage() {
@@ -8270,34 +8390,43 @@ const CHANGES = [
   async function markTrades() {
     if (tradesBusy) return;
     const labels = elementsWithText(document.body, /^\s*tu (re[çc]ois|donnes)\s*:?\s*$/i);
-    if (!labels.length) return;
+    const everyCard = TRADE_PAGES.test(location.pathname);
+    if (!labels.length && !everyCard) return;
     tradesBusy = true;
     try {
-      const byImage = await ownedByImage();
+      const [byImage, known] = await Promise.all([ownedByImage(), everyCard ? catalogImages().catch(() => null) : null]);
       if (stopped) return;
       const todo = [];
+      const seen = new Set();
+      const add = (img, box, gives) => {
+        seen.add(img);
+        const src = img.currentSrc || img.src;
+        const frame = img.parentElement;
+        if (!frame || !isCardImage(src) || img.closest('.aqm-root')) return;
+        const key = imageKey(src);
+        const n = byImage[key] ?? 0;
+        // Outside a "Tu reçois / Tu donnes" block, only a picture of the catalogue (or an owned card) is a card: not an avatar.
+        if (!box && !n && !known?.has(key)) return;
+        const done = `${key}|${n}|${gives}`;
+        if (tradeDone.get(img) === done && frame.querySelector(':scope > .aqm-dot')) return;
+        todo.push({ img, frame, box, n, gives, done });
+      };
       for (const label of labels) {
         if (!label.isConnected) continue;
         const gives = /donnes/i.test(label.textContent);
         let box = label.parentElement;
         while (box && box !== document.body && !box.querySelector('img')) box = box.parentElement;
         if (!box || box === document.body) continue;
-        for (const img of box.querySelectorAll('img')) {
-          const src = img.currentSrc || img.src;
-          const frame = img.parentElement;
-          if (!frame || !isCardImage(src) || img.closest('.aqm-root')) continue;
-          const n = byImage[imageKey(src)] ?? 0;
-          const done = `${imageKey(src)}|${n}|${gives}`;
-          if (tradeDone.get(img) === done && frame.querySelector(':scope > .aqm-dot')) continue;
-          todo.push({ img, frame, box, n, gives, done });
-        }
+        for (const img of box.querySelectorAll('img')) add(img, box, gives);
       }
+      // A proposal in the messages, or a page of exchanges laid out without those words: every card gets its dot.
+      if (everyCard) for (const img of document.body.querySelectorAll('img')) if (!seen.has(img)) add(img, null, null);
       // The styles are all read first, then the page is changed: a read after each change made the browser lay the
-      // whole exchange out again once per card (the bigger cards change the layout), which froze the page.
+      // whole exchange out again once per card, which froze the page.
       for (const t of todo) t.anchor = t.frame.style.position !== 'relative' && getComputedStyle(t.frame).position === 'static';
       for (const { img, frame, box, n, gives, done, anchor } of todo) {
         let tile = frame;
-        while (tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll('img').length === 1) tile = tile.parentElement;
+        while (box && tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll('img').length === 1) tile = tile.parentElement;
         tile.classList.add('aqm-trade-tile');
         if (anchor) {
           frame.style.position = 'relative';
@@ -8310,6 +8439,10 @@ const CHANGES = [
         setText(dot, n > 1 ? `×${n}` : '');
         const title = !n
           ? 'Tu n’as pas cette carte'
+          : gives === null
+            ? n > 1
+              ? `Tu l’as (${n} exemplaires)`
+              : 'Tu l’as'
           : gives
             ? n > 1
               ? `Tu en as ${n} : il t’en restera ${n - 1}`
@@ -10047,6 +10180,8 @@ const CHANGES = [
     [markAlbum, 'albumButtons'],
     [markMissingTab, 'missingTab'],
     [markMissingSales, 'missingSales'],
+    [markCardWho, 'cardWho'],
+    [markCardListings, 'cardListings'],
     [markSellDialog, 'sellTools'],
     [markUnlistButton, 'sellTools'],
     [hideBoughtCards, 'hideBought'],
@@ -10060,15 +10195,18 @@ const CHANGES = [
   function run() {
     if (stopped) return;
     if (!alive()) return shutdown();
-    if (!location.pathname.startsWith('/jeu')) return;
+    const inGame = location.pathname.startsWith('/jeu');
+    // Out of the game, only the exchanges sent in the private messages are marked.
+    if (!inGame && !TRADE_PAGES.test(location.pathname)) return;
     if (location.pathname !== visitPath) {
       visitPath = location.pathname;
       pageVisit++;
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
+      if (!inGame && step !== markTrades && step !== checkAccess) continue;
       try {
         step();
       } catch (e) {
@@ -10128,7 +10266,7 @@ const CHANGES = [
   // The script also looks for a new version every 10 minutes (the script managers only look once a day), and offers
   // it in a box at the bottom of the screen; the extension tells it with its notification and its window.
   const UPDATE_EVERY = 10 * 60e3;
-  const SCRIPT_URL = 'https://github.com/A-Finch13/Poseidon-TCG/releases/latest/download/aquaman.user.js';
+  const SCRIPT_URL = 'https://raw.githubusercontent.com/A-Finch13/Poseidon-TCG/main/aquaman.user.js';
   let updateAt = 0;
   function lookForUpdate() {
     if (owner !== 'userscript' || Date.now() - updateAt < UPDATE_EVERY) return;
@@ -10144,7 +10282,7 @@ const CHANGES = [
       'div',
       { class: 'aqm-root aqm-update', role: 'status' },
       h('div', { class: 'aqm-queue-head' }, h('strong', {}, `🔱 Aquaman ${update.version} est disponible`)),
-      h('p', {}, `Tu as la version ${version}. Clique sur « Installer » : ton gestionnaire de scripts propose la mise à jour, puis recharge la page.`),
+      h('p', {}, `Tu as la version ${version}. Touche « Installer », puis : Android → « Mettre à jour » dans Tampermonkey ; iPhone → « AA » (ou 🧩) dans la barre d’adresse → Userscripts → « Installer ». Recharge ensuite cette page.`),
       h(
         'div',
         { class: 'aqm-update-actions' },

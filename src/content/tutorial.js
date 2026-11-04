@@ -66,7 +66,7 @@ const TOUR = [
   {
     id: 'echanges',
     title: 'Les échanges',
-    text: 'Dans chaque proposition, les cartes sont plus grandes, avec une pastille verte si tu as déjà la carte (×2, ×3… si tu en as plusieurs) et rouge si tu ne l’as pas.',
+    text: 'Dans chaque proposition, dans le jeu comme en MP, chaque carte porte une pastille verte si tu as déjà la carte (×2, ×3… si tu en as plusieurs) et rouge si tu ne l’as pas.',
     page: '/jeu/echanges',
     target: '.aqm-trade-tile, a[data-tour="nav-/jeu/echanges"]'
   },
@@ -99,6 +99,18 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.4.3',
+    items: [
+      ['Échanges : la pastille verte ou rouge apparaît sur toutes les pages d’échange, et sur les propositions envoyées en MP.', 'echanges'],
+      ['Échanges : les cartes gardent la taille du jeu.'],
+      ['Page d’une carte SSR, UR ou SEC : un bouton « Qui a cette carte ? » sous « Mes exemplaires » montre les joueurs qui l’ont.'],
+      ['Collection : « Masquer séries <= 5 persos », à côté de « Les plus avancées », cache les séries de 5 personnages ou moins.'],
+      ['Collection : « En vente » à côté de « Manquante » indique seulement que la carte est vendue au marché : la pastille ne s’ouvre plus.'],
+      ['Page d’une carte : les 5 annonces les moins chères du marché, sous la cote, avec « Acheter ».'],
+      ['Téléphone : le bouton « Installer » du cadre de mise à jour ouvre le script dans une page que Tampermonkey et Userscripts savent installer (avant, le fichier était seulement téléchargé).']
+    ]
+  },
   {
     version: '1.4.2',
     items: [['Correction : avec « Tout ouvrir », le pack de l’animation prend l’image de la catégorie ouverte (Légendaire, Action, Magie…), et non celle de la catégorie ouverte juste avant.']]
