@@ -460,7 +460,9 @@ async function hello(env, body) {
       ).bind(player, kind, version, now)
     );
   await env.DB.batch(statements);
-  return { ok: true };
+  // The author may have taken Aquaman back from this player: their Aquaman stops. (false while the column is missing)
+  const row = await env.DB.prepare('SELECT revoked FROM users WHERE player = ?1').bind(player).first().catch(() => null);
+  return { ok: true, revoked: !!row?.revoked };
 }
 
 // True when the request carries the author's code (compared in constant time).
@@ -477,7 +479,7 @@ function isAuthor(req, env) {
 // before the installs table only have their last kind).
 async function users(env) {
   const [{ results }, { results: installs }] = await Promise.all([
-    env.DB.prepare('SELECT player, name, kind, version, first_seen, last_seen FROM users ORDER BY last_seen DESC LIMIT 5000').all(),
+    env.DB.prepare('SELECT * FROM users ORDER BY last_seen DESC LIMIT 5000').all(),
     env.DB.prepare('SELECT player, kind, version, last_seen FROM installs ORDER BY last_seen DESC').all()
   ]);
   const byPlayer = new Map();
@@ -493,6 +495,7 @@ async function users(env) {
       version: r.version,
       firstSeen: r.first_seen,
       lastSeen: r.last_seen,
+      revoked: !!r.revoked,
       installs: byPlayer.get(r.player) ?? (r.kind ? [{ kind: r.kind, version: r.version, lastSeen: r.last_seen }] : [])
     }))
   };
@@ -562,6 +565,11 @@ async function admin(req, env, url) {
     return json({ ok: true });
   }
   if (req.method === 'POST' && path === '/admin/packs') return json(await publishPacks(env, data));
+  // A player's Aquaman taken back (revoked: true) or given back: it stops at its next hello (10 minutes at most).
+  if (req.method === 'POST' && path === '/admin/users/revoke' && PLAYER.test(String(data.id ?? ''))) {
+    await env.DB.prepare('UPDATE users SET revoked = ?2 WHERE player = ?1').bind(data.id, data.revoked ? Date.now() : null).run();
+    return json({ ok: true });
+  }
   if (req.method === 'POST' && path === '/admin/devices/revoke' && DEVICE.test(String(data.id ?? ''))) {
     await env.DB.prepare('DELETE FROM devices WHERE id = ?1').bind(data.id).run();
     return json({ ok: true });

@@ -654,19 +654,30 @@
   const BUY_BUTTON = /^(acheter|confirmer|trop cher)$/i;
   // The sales shown by the market: each is the highest box around its "Acheter" holding no other sale, with its texts
   // in lower case (the card's name, its series, its rarity as the game writes it: "N" and "Commune").
+  // (the boxes are counted in one pass, the texts read only for the tiles that need them)
   function marketTiles() {
     const buys = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root') && BUY_BUTTON.test(b.textContent.trim()));
+    const held = new Map();
+    for (const b of buys) for (let el = b.parentElement; el && el !== document.body; el = el.parentElement) held.set(el, (held.get(el) ?? 0) + 1);
     return buys.map((b) => {
       let tile = b;
-      while (tile.parentElement && tile.parentElement !== document.body && buys.filter((x) => tile.parentElement.contains(x)).length === 1) tile = tile.parentElement;
-      return { tile, texts: new Set([...tile.querySelectorAll('*')].filter((el) => !el.childElementCount).map((el) => el.textContent.trim().toLowerCase())) };
+      while (tile.parentElement && tile.parentElement !== document.body && held.get(tile.parentElement) === 1) tile = tile.parentElement;
+      let texts = null;
+      return {
+        tile,
+        get texts() {
+          return (texts ??= new Set([...tile.querySelectorAll('*')].filter((el) => !el.childElementCount).map((el) => el.textContent.trim().toLowerCase())));
+        }
+      };
     });
   }
 
   function hideBoughtCards() {
     if (!boughtNames.size || !location.pathname.startsWith('/jeu')) return;
-    for (const { tile, texts } of marketTiles()) {
+    for (const t of marketTiles()) {
+      const { tile } = t;
       if (tile.hasAttribute('data-aqm-bought')) continue;
+      const { texts } = t;
       const rarity = RANKED.find((code) => texts.has(code.toLowerCase()) || texts.has(RARITY_NAMES[code].toLowerCase()))?.toLowerCase();
       const hidden = [...texts].some((t) => boughtNames.has(t) || (rarity && boughtNames.has(`${rarity}|${t}`)));
       if (hidden) tile.setAttribute('data-aqm-bought', '');
@@ -2031,11 +2042,26 @@
                   )
                 )
               ),
-              online(u) ? h('span', { class: 'aqm-tag aqm-online' }, 'En ligne') : h('span'),
-              h('span', { class: 'aqm-user-seen', title: `Vu la première fois le ${new Date(u.firstSeen).toLocaleDateString('fr-FR')}` }, timeAgo(u.lastSeen))
+              u.revoked ? h('span', { class: 'aqm-tag aqm-revoked' }, 'Révoqué') : online(u) ? h('span', { class: 'aqm-tag aqm-online' }, 'En ligne') : h('span'),
+              h('span', { class: 'aqm-user-seen', title: `Vu la première fois le ${new Date(u.firstSeen).toLocaleDateString('fr-FR')}` }, timeAgo(u.lastSeen)),
+              u.id === AUTHOR_ID ? null : revokeButton(u)
             )
           )
         );
+      };
+      // Takes Aquaman back from a player (it stops on their side within 10 minutes), or gives it back.
+      const revokeButton = (u) => {
+        const btn = h('button', { type: 'button', class: 'aqm-album-btn aqm-user-revoke' }, u.revoked ? 'Rétablir' : 'Révoquer');
+        btn.addEventListener('click', async () => {
+          const name = u.name || u.id;
+          if (!u.revoked && !confirm(`Révoquer Aquaman pour ${name} ? Il s’arrêtera chez ce joueur dans les 10 minutes, jusqu’à ce que tu le rétablisses.`)) return;
+          btn.disabled = true;
+          const res = await ask({ type: 'admin-revoke-player', id: u.id, revoked: !u.revoked }).catch((e) => ({ error: e.message }));
+          if (res?.needDevice) return load();
+          if (res?.ok) u.revoked = !u.revoked;
+          render();
+        });
+        return btn;
       };
       search.addEventListener('input', render);
       view.replaceChildren(
@@ -2141,9 +2167,8 @@
     keepStripPlace(strip);
     for (const img of strip.querySelectorAll('img[src*="/api/covers/"]')) {
       const tile = img.closest('button, a, [role="radio"]') ?? img.parentElement;
-      if (!tile) continue;
+      if (!tile || tile.querySelector(':scope > .aqm-star')) continue;
       anchorBadges(tile);
-      if (tile.querySelector(':scope > .aqm-star')) continue;
       const slug = decodeURIComponent(img.getAttribute('src').match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? '');
       const id = seriesBySlug.get(slug);
       if (!id) continue;
@@ -2194,6 +2219,7 @@
   // The strip drawn by the game (again, after a change of page) is scrolled back to where the player left it, then
   // its place is kept as it scrolls.
   const placedStrips = new WeakSet();
+  let placedVisit = -1; // the visit of the collection whose strip was put back in place
   function keepStripPlace(strip) {
     if (placedStrips.has(strip)) return;
     placedStrips.add(strip);
@@ -2208,7 +2234,10 @@
     // The game scrolls to the selected series in its own order (once, or smoothly, a moment after it draws the strip):
     // for 1.5 s the strip is put back each frame, until the player scrolls it. Without a place kept, the selected
     // series is shown where the sorting put it.
-    let placing = true;
+    // Only once a visit of the page: the strip the game draws again when another series is chosen is left to the
+    // game's own scroll (put back each frame, it jerked between the two).
+    let placing = placedVisit !== pageVisit;
+    placedVisit = pageVisit;
     const until = Date.now() + 1500;
     const stop = () => (placing = false);
     for (const type of ['wheel', 'pointerdown', 'touchstart', 'keydown']) strip.addEventListener(type, stop, { passive: true, once: true });
@@ -2226,7 +2255,7 @@
       }
       requestAnimationFrame(place);
     };
-    requestAnimationFrame(place);
+    if (placing) requestAnimationFrame(place);
     let timer = 0;
     strip.addEventListener(
       'scroll',
@@ -2253,6 +2282,7 @@
       }
     })()
   );
+  let missingSaved = '';
   function sortByProgress(strip) {
     const items = [...strip.children].filter((el) => !el.classList.contains('aqm-root'));
     const count = (el) => {
@@ -2270,9 +2300,13 @@
       missingSeen.set(key, c.missing);
     }
     if (completed) setByProgress(true);
-    try {
-      sessionStorage.setItem('aqm-missing-seen', JSON.stringify(Object.fromEntries(missingSeen)));
-    } catch {}
+    const seen = JSON.stringify(Object.fromEntries(missingSeen));
+    if (seen !== missingSaved) {
+      missingSaved = seen;
+      try {
+        sessionStorage.setItem('aqm-missing-seen', seen);
+      } catch {}
+    }
     const chip = strip.previousElementSibling?.querySelector('.aqm-sort-progress');
     chip?.classList.toggle('is-on', byProgress);
     chip?.setAttribute('aria-pressed', String(byProgress));
@@ -2286,7 +2320,10 @@
           (b.c?.rate ?? 0) - (a.c?.rate ?? 0) ||
           a.i - b.i
       );
-    ranked.forEach(({ el }, n) => (el.style.order = byProgress ? String(n) : ''));
+    ranked.forEach(({ el }, n) => {
+      const order = byProgress ? String(n) : '';
+      if (el.style.order !== order) el.style.order = order;
+    });
     if (completed) strip.scrollTo?.({ left: 0, behavior: 'smooth' });
   }
 
@@ -2378,29 +2415,10 @@
     setTimeout(markRecycleDialog, 50);
   }
 
-  // ---------- a card's page: its 5 cheapest offers on the market ----------
-  // Under the game's "Cote" panel: the offers from the cheapest to the dearest, each with its seller and number.
+  // ---------- a card's 5 cheapest offers on the market (the "En vente" window of a missing card) ----------
 
-  let listingsFor = null; // the card whose offers are shown (or being read)
-  function markCardListings() {
-    const id = location.pathname.match(/^\/jeu\/carte\/([^/?#]+)/)?.[1];
-    const box = document.querySelector('.aqm-listings');
-    if (!id) return void box?.remove();
-    const cote = [...document.querySelectorAll('p, span, h2, h3, div')].find((el) => !el.closest('.aqm-root') && !el.childElementCount && /^cote$/i.test(el.textContent.trim()));
-    // The panel of the "Cote": the highest box around its title that holds no other panel's title.
-    let panel = cote;
-    while (panel?.parentElement && !/mes exemplaires/i.test(panel.parentElement.textContent)) panel = panel.parentElement;
-    if (!panel || panel === cote) return;
-    if (box?.dataset.card === id && box.previousElementSibling === panel) return;
-    if (listingsFor === id && box) return;
-    box?.remove();
-    listingsFor = id;
-    const fresh = h('section', { class: 'aqm-root aqm-listings', 'data-card': id }, h('p', { class: 'aqm-label' }, 'En vente au marché'), h('p', { class: 'aqm-muted' }, 'Lecture des offres…'));
-    panel.after(fresh);
-    showListings(fresh, decodeURIComponent(id), false);
-  }
-
-  // The offers in their box, each with a button to buy it (not the player's own); again after a purchase.
+  // The offers in their box, from the cheapest to the dearest, each with its seller, its number and a button to buy
+  // it (not the player's own); read again after a purchase.
   function showListings(fresh, cardId, again) {
     ask({ type: 'card-listings', id: cardId, fresh: again })
       .then((r) => {
@@ -2447,6 +2465,12 @@
         send({ type: 'collection-stale' });
         // The game's Perles and the card's copies ("Mes exemplaires"), read again; the page is loaded again if the
         // copies still show the same after 2 s.
+        // Bought from the "En vente" window of the collection: the page is loaded again, the card shows as owned.
+        // (the "Manquantes" filter, if on, is turned on again once the page is back)
+        if (!location.pathname.startsWith('/jeu/carte/')) {
+          if (missingOnly()) session(MISSING_AGAIN, '1');
+          return void setTimeout(() => location.reload(), 900);
+        }
         const before = myCopiesText();
         window.postMessage({ aquamanCmd: 'reload-game' }, location.origin);
         setTimeout(() => {
@@ -2468,8 +2492,10 @@
   // ---------- collection: a "Manquantes" tab beside "Mes cartes / Mes doublons / Album complet" ----------
   // It shows the full album with only the cards marked "Manquante" by the game; the choice is kept for the tab.
 
-  // Off at every visit (never kept: on "Mes cartes" it would hide every card), and only with "Album complet".
+  // Off at every visit (never kept: on "Mes cartes" it would hide every card), and only with "Album complet"; but
+  // turned on again after the page was loaded again for a card bought from its "En vente" window (MISSING_AGAIN).
   const VIEW_TABS = /^(mes cartes|mes doublons|album complet)$/i;
+  const MISSING_AGAIN = 'aqm-missing-again';
   let missingOn = false;
   let missingAt = 0; // when it was turned on: the game takes a moment to show "Album complet"
   const missingOnly = () => missingOn;
@@ -2520,6 +2546,10 @@
       });
       full.after(tab);
     }
+    if (session(MISSING_AGAIN)) {
+      session(MISSING_AGAIN, null);
+      if (!missingOnly()) return void tab.click();
+    }
     // The game shows its selected tab with a pill inside it (a box set over the tab): while the filter is on, the pill
     // of "Album complet" is hidden and "Manquantes" gets one like it.
     const pill = [...full.querySelectorAll('*')].find((el) => getComputedStyle(el).position === 'absolute');
@@ -2565,18 +2595,105 @@
     // whose whole text says it.
     const LABEL = /^(manquante|[×x]\s*\d+)$/i;
     const says = (el) => LABEL.test(el.textContent.replace(/\s+/g, ' ').trim());
-    const labels = [...(document.querySelector('main') ?? document.body).querySelectorAll('*')].filter(
-      (el) => el.childElementCount < 4 && !el.closest('.aqm-root') && says(el) && ![...el.children].some(says)
-    );
-    // How many labels each box holds, to find each card's tile: the highest box around its label holding no other.
+    const page = document.querySelector('main') ?? document.body;
+    const labels = [...page.querySelectorAll('*')].filter((el) => el.childElementCount < 4 && !el.closest('.aqm-root') && says(el) && ![...el.children].some(says));
+    // How many labels each box holds, to find each card's tile: the highest box around its label holding no other,
+    // inside the page. A label alone (a series of one card shown) is held alone by every box up to the page: its tile
+    // is then the box around its picture, with the boxes wrapping only it.
     const held = new Map();
     for (const label of labels) for (let el = label; el; el = el.parentElement) held.set(el, (held.get(el) ?? 0) + 1);
+    document.querySelectorAll('[data-aqm-owned-card]').forEach((el) => el.removeAttribute('data-aqm-owned-card'));
     for (const label of labels) {
       let tile = label;
-      while (tile.parentElement && held.get(tile.parentElement) === 1) tile = tile.parentElement;
-      tile.toggleAttribute('data-aqm-owned-card', !/^manquante$/i.test(label.textContent.trim()));
-      if (tile === label) label.removeAttribute('data-aqm-owned-card'); // a label alone, not a card
+      for (let up = tile.parentElement; up && up !== page && held.get(up) === 1; up = tile.parentElement) {
+        if (labels.length === 1 && tile.querySelector('img') && up.childElementCount > 1) break;
+        tile = up;
+      }
+      // (a label alone, not a card: no picture)
+      tile.toggleAttribute('data-aqm-owned-card', tile !== label && !!tile.querySelector('img') && !/^manquante$/i.test(label.textContent.trim()));
     }
+  }
+
+  // ---------- collection: "En vente" beside each missing card that someone sells ----------
+  // The market is read for the missing cards near the screen only, two at a time; a card's answer is kept 2 minutes.
+
+  const saleOf = new Map(); // card picture -> { at, read: Promise<{ id, name, count } | null> }
+  let saleWatch = null;
+  function markMissingSales() {
+    if (!location.pathname.startsWith('/jeu/collection')) return;
+    saleWatch ??= new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          saleWatch.unobserve(e.target);
+          showSale(e.target);
+        }
+      },
+      { rootMargin: '300px' }
+    );
+    for (const el of elementsWithText(document.body, /^\s*manquante\s*$/i)) {
+      if (el.childElementCount || el.hasAttribute('data-aqm-sale') || !/^manquante$/i.test(el.textContent.trim())) continue;
+      el.setAttribute('data-aqm-sale', '');
+      saleWatch.observe(el);
+    }
+  }
+
+  let salesReading = 0;
+  const salesWaiting = [];
+  function readSale(ask) {
+    return new Promise((resolve, reject) => {
+      salesWaiting.push(() => ask().then(resolve, reject));
+      nextSale();
+    });
+  }
+  function nextSale() {
+    while (salesReading < 2 && salesWaiting.length) {
+      salesReading++;
+      salesWaiting
+        .shift()()
+        .finally(() => {
+          salesReading--;
+          nextSale();
+        });
+    }
+  }
+
+  async function showSale(label) {
+    // The card's tile: the closest box around the label with its picture.
+    let tile = label.parentElement;
+    for (let up = 0; tile && up < 6 && !tile.querySelector('img'); up++) tile = tile.parentElement;
+    const img = tile?.querySelector('img');
+    const image = imageKey(img?.currentSrc || img?.getAttribute('src'));
+    if (!image) return;
+    const link = tile.querySelector('a[href*="/jeu/carte/"]') ?? tile.closest('a[href*="/jeu/carte/"]');
+    const id = link?.getAttribute('href').match(/\/jeu\/carte\/([^/?#]+)/)?.[1];
+    let sale = saleOf.get(image);
+    if (!sale || Date.now() - sale.at > 120e3) {
+      const series = new URLSearchParams(location.search).get('serie');
+      sale = { at: Date.now(), read: readSale(() => ask({ type: 'card-sale', id: id ? decodeURIComponent(id) : null, image, name: img.alt?.trim() || null, series })) };
+      saleOf.set(image, sale);
+    }
+    const r = await sale.read.catch(() => null);
+    if (!r?.count || !label.isConnected || label.nextElementSibling?.classList.contains('aqm-sale')) return;
+    const open = (e) => {
+      if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      openSale(r);
+    };
+    // (a span: the tile may be a link or a button of the game)
+    label.after(
+      h('span', { class: 'aqm-root aqm-sale', role: 'button', tabindex: '0', title: `${r.count} offre${r.count > 1 ? 's' : ''} au marché`, onclick: open, onkeydown: open }, 'En vente')
+    );
+    label.setAttribute('data-aqm-sale', 'on');
+  }
+
+  // The 5 cheapest offers of a missing card, in Aquaman's window.
+  function openSale(r) {
+    const body = openOverlay(r.name ?? 'Carte', 'Les 5 annonces les moins chères du marché.');
+    const box = h('section', { class: 'aqm-listings' }, h('p', { class: 'aqm-muted' }, 'Lecture des offres…'));
+    body.append(box, h('p', { class: 'aqm-note' }, h('a', { href: `/jeu/carte/${encodeURIComponent(r.id)}` }, 'Voir la page de la carte')));
+    showListings(box, r.id, false);
   }
 
   // ---------- collection: favourite and search buttons in the "Album de la série" panel ----------
@@ -2887,6 +3004,9 @@
     return owned.byImage;
   }
 
+  // What each card of an exchange shows already ("picture|copies|gives"): only the new or changed ones are done again.
+  const tradeDone = new WeakMap();
+
   async function markTrades() {
     if (tradesBusy) return;
     const labels = elementsWithText(document.body, /^\s*tu (re[çc]ois|donnes)\s*:?\s*$/i);
@@ -2895,35 +3015,49 @@
     try {
       const byImage = await ownedByImage();
       if (stopped) return;
+      const todo = [];
       for (const label of labels) {
+        if (!label.isConnected) continue;
         const gives = /donnes/i.test(label.textContent);
         let box = label.parentElement;
         while (box && box !== document.body && !box.querySelector('img')) box = box.parentElement;
         if (!box || box === document.body) continue;
         for (const img of box.querySelectorAll('img')) {
           const src = img.currentSrc || img.src;
-          if (!isCardImage(src) || img.closest('.aqm-root')) continue;
-          const n = byImage[imageKey(src)] ?? 0;
           const frame = img.parentElement;
-          let tile = frame;
-          while (tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll('img').length === 1) tile = tile.parentElement;
-          tile.classList.add('aqm-trade-tile');
-          anchorBadges(frame);
-          let dot = frame.querySelector(':scope > .aqm-dot');
-          if (!dot) dot = frame.appendChild(h('span', { class: 'aqm-root aqm-dot' }));
-          setClass(dot, `aqm-root aqm-dot ${n ? 'is-yes' : 'is-no'}${n > 1 ? ' has-count' : ''}`);
-          setText(dot, n > 1 ? `×${n}` : '');
-          const title = !n
-            ? 'Tu n’as pas cette carte'
-            : gives
-              ? n > 1
-                ? `Tu en as ${n} : il t’en restera ${n - 1}`
-                : 'Ton seul exemplaire'
-              : n > 1
-                ? `Tu l’as déjà (${n} exemplaires)`
-                : 'Tu l’as déjà';
-          if (dot.title !== title) dot.title = title;
+          if (!frame || !isCardImage(src) || img.closest('.aqm-root')) continue;
+          const n = byImage[imageKey(src)] ?? 0;
+          const done = `${imageKey(src)}|${n}|${gives}`;
+          if (tradeDone.get(img) === done && frame.querySelector(':scope > .aqm-dot')) continue;
+          todo.push({ img, frame, box, n, gives, done });
         }
+      }
+      // The styles are all read first, then the page is changed: a read after each change made the browser lay the
+      // whole exchange out again once per card (the bigger cards change the layout), which froze the page.
+      for (const t of todo) t.anchor = t.frame.style.position !== 'relative' && getComputedStyle(t.frame).position === 'static';
+      for (const { img, frame, box, n, gives, done, anchor } of todo) {
+        let tile = frame;
+        while (tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll('img').length === 1) tile = tile.parentElement;
+        tile.classList.add('aqm-trade-tile');
+        if (anchor) {
+          frame.style.position = 'relative';
+          frame.dataset.aqmAnchor = '1';
+        }
+        tradeDone.set(img, done);
+        let dot = frame.querySelector(':scope > .aqm-dot');
+        if (!dot) dot = frame.appendChild(h('span', { class: 'aqm-root aqm-dot' }));
+        setClass(dot, `aqm-root aqm-dot ${n ? 'is-yes' : 'is-no'}${n > 1 ? ' has-count' : ''}`);
+        setText(dot, n > 1 ? `×${n}` : '');
+        const title = !n
+          ? 'Tu n’as pas cette carte'
+          : gives
+            ? n > 1
+              ? `Tu en as ${n} : il t’en restera ${n - 1}`
+              : 'Ton seul exemplaire'
+            : n > 1
+              ? `Tu l’as déjà (${n} exemplaires)`
+              : 'Tu l’as déjà';
+        if (dot.title !== title) dot.title = title;
       }
     } catch (e) {
       console.warn('[Aquaman] échanges :', e);
@@ -3964,7 +4098,43 @@
       }
     };
     for (let t = 0; t < 40 && title?.isConnected && !new RegExp(`^\\D*${all()}\\b`).test(title.textContent.trim()); t++) await pause(60);
+    if (title) applyTitleCount(title, true); // shown at once with the count of the kind in front
     title?.removeAttribute('data-aqm-veiled');
+  }
+
+  // The title "N à ouvrir" counts the boosters of the kind in front of the wheel (the game counts them all). Kept when
+  // the game writes its count again; left to the game while it draws a kind or opens one, and before React took the
+  // page over (a text changed before would not match what React expects).
+  let titleCount = null; // the count shown, null: the game's
+  let titleWatch = null; // { title, observer }
+  const homeTitle = () => [...document.querySelectorAll('h1, h2, h3')].find((t) => !t.closest('.aqm-root') && /à ouvrir/i.test(t.textContent));
+  function showTitleCount(n) {
+    titleCount = n;
+    if (n == null) {
+      titleWatch?.observer.disconnect();
+      titleWatch = null;
+      return;
+    }
+    const title = homeTitle();
+    if (!title) return;
+    if (titleWatch?.title !== title) {
+      titleWatch?.observer.disconnect();
+      const observer = new MutationObserver(() => applyTitleCount(title));
+      observer.observe(title, { childList: true, subtree: true, characterData: true });
+      titleWatch = { title, observer };
+    }
+    applyTitleCount(title);
+  }
+  function applyTitleCount(title, now = false) {
+    if (titleCount == null || stopped || (!now && (drawing || opening)) || !(settled || document.documentElement.hasAttribute('data-aqm-hydrated'))) return;
+    // The first text that starts with the count ("8", or "8 à ouvrir" in one piece).
+    const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      if (!/^\s*\d+/.test(t.nodeValue)) continue;
+      const want = t.nodeValue.replace(/^(\s*)\d+/, `$1${titleCount}`);
+      if (t.nodeValue !== want) t.nodeValue = want;
+      return;
+    }
   }
 
   async function openFromCopy(key, index) {
@@ -4019,6 +4189,7 @@
     const parts = findHomeParts();
     let strip = document.querySelector('.aqm-piles');
     const off = () => {
+      showTitleCount(null);
       strip?.remove();
       document.querySelectorAll('[data-aqm-hidden]').forEach((el) => el.removeAttribute('data-aqm-hidden'));
     };
@@ -4043,7 +4214,7 @@
       strip = h('div', { class: 'aqm-root aqm-piles' });
       parts.pile.after(strip);
     }
-    if (strip.dataset.sig === sig) return;
+    if (strip.dataset.sig === sig) return void showTitleCount(titleCount);
     strip.dataset.sig = sig;
     renderWheel(strip, piles.shots);
   }
@@ -4075,7 +4246,8 @@
         const front = ((at % n) + n) % n;
         if (i !== front) turn(i - front);
       };
-      return h('div', { class: 'aqm-pile', onclick: pick }, h('p', { class: 'aqm-pile-name' }, shot.name), art);
+      // (no name above it: the pack shows its kind)
+      return h('div', { class: 'aqm-pile', title: shot.name, onclick: pick }, art);
     });
     const track = h('div', { class: 'aqm-wheel-track' }, items);
     const arrow = (dir, label) => h('button', { type: 'button', class: `aqm-wheel-arrow is-${dir < 0 ? 'prev' : 'next'}`, 'aria-label': label, onclick: () => turn(dir) }, dir < 0 ? '‹' : '›');
@@ -4103,6 +4275,7 @@
         el.classList.toggle('is-away', Math.abs(d) > 1 || (!!d && !fits));
       });
       wheelKey = ordered[front].key;
+      showTitleCount(ordered[front].count);
       if (controls.firstChild !== buttonsOf[front]) controls.replaceChildren(buttonsOf[front]);
       // Two kinds: no arrow toward nothing.
       prev.hidden = n < 3 && at === 0;
@@ -4122,10 +4295,12 @@
       if (touchX != null && Math.abs(dx) > 40) turn(dx < 0 ? 1 : -1);
       touchX = null;
     });
+    strip.classList.add('is-still');
     place();
     requestAnimationFrame(() => {
       width = 0;
       place();
+      requestAnimationFrame(() => strip.classList.remove('is-still'));
     });
   }
 
@@ -4148,30 +4323,41 @@
     strip.style.left = `${Math.round(left - strip.getBoundingClientRect().left)}px`;
   }
   let fitTimer = 0;
+  let fitWidth = innerWidth;
   addEventListener('resize', () => {
     clearTimeout(fitTimer);
     fitTimer = setTimeout(() => {
       const strip = document.querySelector('.aqm-piles');
-      if (stopped || !strip) return;
+      // (on a phone, the address bar that shows or hides while scrolling changes the height only)
+      if (stopped || !strip || innerWidth === fitWidth) return;
+      fitWidth = innerWidth;
       delete strip.dataset.sig; // drawn again at the new width
       markBoosterKinds();
     }, 150);
   });
 
-  // The booster in front leans toward the pointer and rises, like the game's own.
+  // As in the game (measured on a recording of it): the booster on top of the pile floats up and down (16 px, 4.7 s
+  // a round), and turns toward the pointer around its pose (rotateY(-20deg) rotateX(7deg)), about 9° each way from
+  // left to right; the boosters fanned behind it don't move, nothing grows.
   function tiltOnHover(el) {
+    // The booster on top: the one outside the fanned layers (aria-hidden).
+    const pose = [...el.querySelectorAll('[class*="__packPose"]')].find((p) => !p.closest('[aria-hidden="true"]'));
+    if (!pose) return;
+    const scene = pose.closest('[class*="__packScene"]');
+    scene?.parentElement?.setAttribute('data-aqm-float', '');
+    const base = pose.style.transform || 'rotateY(-20deg) rotateX(7deg)';
+    const ry = Number(base.match(/rotateY\((-?[\d.]+)deg\)/)?.[1] ?? -20);
+    const rx = Number(base.match(/rotateX\((-?[\d.]+)deg\)/)?.[1] ?? 7);
     el.addEventListener('pointermove', (e) => {
       const r = el.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width - 0.5;
-      const y = (e.clientY - r.top) / r.height - 0.5;
-      el.style.setProperty('--aqm-tilt-x', `${(-y * 12).toFixed(2)}deg`);
-      el.style.setProperty('--aqm-tilt-y', `${(x * 14).toFixed(2)}deg`);
-      el.classList.add('is-hover');
+      const x = Math.max(-0.5, Math.min(0.5, (e.clientX - r.left) / r.width - 0.5));
+      const y = Math.max(-0.5, Math.min(0.5, (e.clientY - r.top) / r.height - 0.5));
+      pose.classList.add('aqm-pose-follow');
+      pose.style.transform = `rotateY(${(ry + x * 18).toFixed(2)}deg) rotateX(${(rx - y * 10).toFixed(2)}deg)`;
     });
     el.addEventListener('pointerleave', () => {
-      el.classList.remove('is-hover');
-      el.style.removeProperty('--aqm-tilt-x');
-      el.style.removeProperty('--aqm-tilt-y');
+      pose.classList.remove('aqm-pose-follow');
+      pose.style.transform = base;
     });
   }
 
@@ -4412,8 +4598,13 @@
     if (stopped) return;
     if (!alive()) return shutdown();
     if (!location.pathname.startsWith('/jeu')) return;
+    if (location.pathname !== visitPath) {
+      visitPath = location.pathname;
+      pageVisit++;
+    }
+    const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, lookForUpdate, startOnce]) {
       try {
         step();
       } catch (e) {
@@ -4421,6 +4612,7 @@
       }
     }
     runText = undefined;
+    runCost = performance.now() - began;
   }
 
   // The script has no background worker: while a page of the game is open, the "beaux tirages" are read every minute.
@@ -4438,7 +4630,22 @@
   function sayHello() {
     if (Date.now() - helloAt < HELLO_EVERY) return;
     helloAt = Date.now();
-    send({ type: 'hello', kind: owner });
+    send({ type: 'hello', kind: owner }).then((res) => res?.revoked && !stopped && revoke());
+  }
+
+  // The author took Aquaman back from this player: everything it added goes, and a word says why (once a visit).
+  function revoke() {
+    shutdown();
+    if (session('aqm-revoked-told')) return;
+    session('aqm-revoked-told', '1');
+    const box = h(
+      'div',
+      { class: 'aqm-root aqm-update', role: 'status' },
+      h('div', { class: 'aqm-queue-head' }, h('strong', {}, '🔱 Aquaman est désactivé')),
+      h('p', {}, 'L’auteur d’Aquaman a désactivé son utilisation pour ton compte.'),
+      h('div', { class: 'aqm-update-actions' }, h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => box.remove() }, 'OK'))
+    );
+    document.body.append(box);
   }
   const helloTimer = setInterval(() => !stopped && settled && document.visibilityState === 'visible' && sayHello(), 60e3);
 
@@ -4472,15 +4679,35 @@
     document.body.append(box);
   }
 
+  // A page that changes all the time (an exchange, its list of cards) would have Aquaman run over and over: the longer
+  // its last run took, the longer it waits (8 times as long, 0.15 to 1.5 s), so the game keeps most of the time.
+  // The run waits for a moment when the browser has nothing to draw (1 s more at most), and for the tab to be shown
+  // again when it is hidden.
   let queued = false;
+  let runCost = 0;
+  // A visit of a page: a new one each time the path changes (another series keeps the path).
+  let pageVisit = 0;
+  let visitPath = '';
+  let missedRun = false;
   function schedule() {
     if (queued || stopped) return;
+    if (document.hidden) return void (missedRun = true);
     queued = true;
     setTimeout(() => {
-      queued = false;
-      run();
-    }, 150);
+      const go = () => {
+        queued = false;
+        if (document.hidden) return void (missedRun = true);
+        run();
+      };
+      if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 1000 });
+      else go();
+    }, Math.min(1500, Math.max(150, runCost * 8)));
   }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !missedRun) return;
+    missedRun = false;
+    schedule();
+  });
 
   const observer = new MutationObserver((records) => records.some((r) => !quietChange(r)) && schedule());
   const listeners = [

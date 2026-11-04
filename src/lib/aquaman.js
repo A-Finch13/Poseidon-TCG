@@ -998,7 +998,21 @@ export async function cardListings(id) {
       return { id: l.id ?? null, price: l.price, serial: l.serial ?? l.copy?.serial ?? null, player: seller ? { id: seller.id, name: seller.name } : null };
     })
     .sort((a, b) => a.price - b.price);
-  return { offers: offers.slice(0, 5), count: offers.length, maxCopies: card.maxCopies ?? null };
+  return { offers: offers.slice(0, 5), count: offers.length, maxCopies: card.maxCopies ?? null, name: card.name ?? null };
+}
+
+// A missing card of the collection, known by its id or else by its picture (image: its file name), found among the
+// cards of its series or by its name: how many offers the market has of it.
+export async function cardSale(id, image, name, series) {
+  const same = (c) => String(c.image ?? '').split(/[?#]/)[0].split('/').pop() === image;
+  if (!id && image && series) id = (await seriesCards(series).catch(() => [])).find(same)?.id ?? null;
+  if (!id && image && name && name.length >= 2) {
+    const { cards } = await cached(`card-search:${fold(name)}`, 5 * 60e3, () => game(`/cards?q=${encodeURIComponent(name)}&limit=12`));
+    id = (cards ?? []).find(same)?.id ?? null;
+  }
+  if (!id) return null;
+  const r = await cardListings(id);
+  return { id, name: r.name, count: r.count };
 }
 
 // Everyone Aquaman can see with a card: holders (limited cards), sellers, friends, and recent pulls.
@@ -1112,10 +1126,12 @@ export async function ownersAmong(cardId, players) {
 const HELLO_EVERY = 9.5 * 60e3; // content.js says hello every 10 minutes while a page of the game is open
 
 // Tells the relay, every 10 minutes at most, that this player uses Aquaman (kind: "extension" or "userscript").
+// revoked: the author took Aquaman back from this player; asked again at each start until given back.
 export async function sayHello(kind) {
   const id = await myId();
-  const { helloAt = 0, helloKind, helloFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor']);
-  if (Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true };
+  const { helloAt = 0, helloKind, helloFor, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'revokedFor']);
+  const revoked = revokedFor === id;
+  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true, revoked };
   let name = null;
   try {
     name = (await showcase(id)).player?.name ?? null;
@@ -1125,8 +1141,12 @@ export async function sayHello(kind) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version })
   });
-  if (res.ok) await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
-  return { ok: res.ok };
+  if (!res.ok) return { ok: false, revoked };
+  const now = !!(await res.json().catch(() => null))?.revoked;
+  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
+  if (now) await chrome.storage.local.set({ revokedFor: id });
+  else if (revoked) await chrome.storage.local.remove('revokedFor');
+  return { ok: true, revoked: now };
 }
 
 // ---------- the author's devices: a key per device, approved once ----------
@@ -1280,6 +1300,8 @@ export async function answer(msg) {
       case 'card-listings':
         if (msg.fresh) forget(`listings:${msg.id}`, 'showcase:');
         return await cardListings(msg.id);
+      case 'card-sale':
+        return await cardSale(msg.id ?? null, msg.image ?? null, msg.name ?? null, msg.series ?? null);
       case 'card-owners':
         return await cardOwners(msg.id);
       case 'known-players':
@@ -1300,6 +1322,8 @@ export async function answer(msg) {
         return await asAuthor('POST', '/admin/devices/approve', { id: msg.id });
       case 'admin-revoke':
         return await asAuthor('POST', '/admin/devices/revoke', { id: msg.id });
+      case 'admin-revoke-player':
+        return await asAuthor('POST', '/admin/users/revoke', { id: msg.id, revoked: !!msg.revoked });
       case 'who-pulled':
         return await whoPulled(msg.query, msg.rarity);
       case 'feed-poll':

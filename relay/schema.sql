@@ -53,8 +53,10 @@ CREATE TABLE IF NOT EXISTS users (
   kind TEXT,
   version TEXT,
   first_seen INTEGER NOT NULL,
-  last_seen INTEGER NOT NULL
+  last_seen INTEGER NOT NULL,
+  revoked INTEGER -- when the author took Aquaman back from the player (null: allowed)
 );
+-- On a database made before it: ALTER TABLE users ADD COLUMN revoked INTEGER;
 
 -- The author's devices (relay/worker.js): public key of each device, waiting for approval or approved.
 CREATE TABLE IF NOT EXISTS devices (

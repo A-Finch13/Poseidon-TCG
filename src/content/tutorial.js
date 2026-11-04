@@ -100,6 +100,18 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.3.2',
+    items: [
+      ['Collection : un bouton « En vente » à côté de chaque carte manquante que quelqu’un vend ; il ouvre les 5 annonces les moins chères du marché, avec « Acheter ». Elles ne sont plus ajoutées sur la page de la carte.'],
+      ['Accueil : « N à ouvrir » compte les boosters de la catégorie affichée, et son nom n’est plus écrit au-dessus du pack (il est déjà dessus).'],
+      ['Accueil : le booster du dessus bouge comme dans le jeu (il flotte et se tourne vers la souris), et sa lueur n’est plus coupée.'],
+      ['Correction : la page Collection ne devient plus blanche quand on clique sur « Manquantes » dans une série.'],
+      ['Échanges : la page ne gèle plus et ne plante plus quand Aquaman marque les cartes que tu as déjà.'],
+      ['Téléphone : les boosters de l’accueil gardent leur forme (ils étaient écrasés) et ne glissent plus les uns derrière les autres quand on fait défiler la page ; les boutons « Ouvrir » et « Tout ouvrir » sont l’un sous l’autre, comme dans le jeu.'],
+      ['Plus fluide : Aquaman travaille quand le navigateur est libre, se met en pause quand l’onglet est caché, et le marché comme la collection lui demandent moins de travail.']
+    ]
+  },
+  {
     version: '1.3.1',
     items: [
       ['Marché : les cartes achetées dont les autres annonces sont masquées sont les mêmes sur tous tes appareils (PC, téléphone, extension ou script).'],

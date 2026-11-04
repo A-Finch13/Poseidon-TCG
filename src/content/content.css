@@ -1946,8 +1946,12 @@ html.aqm-grabbing * {
   align-self: auto;
   max-width: none;
   width: 100%;
-  padding: 0 0 8px;
+  /* (room above for the count badge and the pack that rises under the pointer) */
+  padding: 28px 0 8px;
   overflow: hidden;
+  /* Cut on the sides only (the piles beside): the glow of a pack goes over the title and below. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 .aqm-wheel {
   position: relative;
@@ -1987,21 +1991,28 @@ html.aqm-grabbing * {
 .aqm-pile:not(.is-front) .aqm-pile-art {
   pointer-events: none;
 }
-.aqm-pile-name {
-  margin: 0;
-  color: #93c5fd;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+/* The booster on top, as in the game: it floats, and turns toward the pointer (tiltOnHover). */
+.aqm-pile-art [class*='__packPose'] {
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.aqm-pile-art {
-  transition: transform 0.25s ease-out, filter 0.25s;
+.aqm-pile-art .aqm-pose-follow {
+  transition: transform 0.15s ease-out;
 }
-.aqm-pile-art.is-hover {
-  transform: perspective(900px) rotateX(var(--aqm-tilt-x, 0deg)) rotateY(var(--aqm-tilt-y, 0deg)) translateY(-8px) scale(1.03);
-  filter: drop-shadow(0 18px 30px rgba(37, 99, 235, 0.35));
-  transition: transform 0.08s linear, filter 0.25s;
+.aqm-pile.is-front [data-aqm-float] {
+  animation: aqm-pack-float 2.35s ease-in-out infinite alternate;
+}
+@keyframes aqm-pack-float {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(0, -16px, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aqm-pile.is-front [data-aqm-float] {
+    animation: none;
+  }
 }
 .aqm-wheel-arrow {
   position: absolute;
@@ -2048,9 +2059,14 @@ html.aqm-grabbing * {
   border-radius: 999px;
   background: #3b82f6;
 }
+/* Drawn again (a new width): the piles go to their places at once, without sliding there. */
+.aqm-piles.is-still .aqm-pile {
+  transition: none;
+}
 @media (max-width: 640px) {
-  .aqm-pile {
-    zoom: 0.72;
+  /* The game's buttons one under the other, as the game shows them on a phone. */
+  .aqm-wheel-controls > * {
+    flex-direction: column;
   }
   .aqm-wheel-arrow {
     width: 36px;
@@ -2133,6 +2149,36 @@ html.aqm-grabbing * {
 [data-aqm-owned-card] {
   display: none !important;
 }
+/* "Manquante" and Aquaman's "En vente" on one line. */
+[data-aqm-sale='on'] {
+  display: inline-block !important;
+  margin-right: 8px !important;
+  vertical-align: middle;
+}
+.aqm-sale {
+  display: inline-block;
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid rgba(59, 130, 246, 0.6);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.22);
+  color: #93c5fd;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1.6;
+  white-space: nowrap;
+  text-transform: uppercase;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.aqm-sale:hover,
+.aqm-sale:focus-visible {
+  border-color: #3b82f6;
+  background: rgba(37, 99, 235, 0.4);
+  color: #fff;
+  outline: none;
+}
 [data-aqm-pill-off] {
   opacity: 0 !important;
 }
@@ -2181,6 +2227,15 @@ html.aqm-grabbing * {
   border-radius: 14px;
   background: var(--aqm-card);
   font-size: 13px;
+}
+.aqm-user .aqm-user-revoke {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.aqm-tag.aqm-revoked {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
 }
 .aqm-user .aqm-avatar {
   width: 32px;
