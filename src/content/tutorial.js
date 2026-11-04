@@ -100,6 +100,10 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.2',
+    items: [['Correction : avec « Tout ouvrir », le pack de l’animation prend l’image de la catégorie ouverte (Légendaire, Action, Magie…), et non celle de la catégorie ouverte juste avant.']]
+  },
+  {
     version: '1.4.1',
     items: [
       ['Réglages : Plus › Réglages permet d’activer ou de couper chaque fonction d’Aquaman (boosters par catégorie, lueur, garantie, « Manquantes », « En vente », échanges…). La même liste sur PC et téléphone, dans l’extension comme dans le script, et dans la fenêtre de l’extension.'],
