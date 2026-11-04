@@ -100,6 +100,15 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.0',
+    items: [
+      ['Garantie anti-malchance : un bouton « Historique » ouvre ton tracker. Il montre à quelle fréquence tu tires des SSR, UR et SEC comparé à la chance du jeu, tes 300 derniers boosters d’un coup d’œil, et combien de boosters il t’a fallu pour chacune.'],
+      ['Correction : une UR ne remet plus le compteur de la garantie SSR à zéro, comme dans le jeu.'],
+      ['Accueil : la lueur derrière le booster prend la couleur de son pack (doré, cyan, rouge…).'],
+      ['Qui a cette carte ? : un même numéro n’apparaît plus chez deux joueurs ; celui vu le plus récemment l’emporte.']
+    ]
+  },
+  {
     version: '1.3.2',
     items: [
       ['Collection : un bouton « En vente » à côté de chaque carte manquante que quelqu’un vend ; il ouvre les 5 annonces les moins chères du marché, avec « Acheter ». Elles ne sont plus ajoutées sur la page de la carte.'],

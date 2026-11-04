@@ -262,12 +262,23 @@
   // Rarities of the cards of one booster's answer ({ pulls: [{ card: { rarity } }] }).
   const raritiesOf = (pulls) => pulls.map((p) => p?.card?.rarity ?? p?.rarity).filter((r) => RARITIES.includes(r));
 
-  // The boosters of an opening answer: one booster, or several (open-many).
-  function openedBoosters(body) {
-    if (Array.isArray(body?.pulls)) return [raritiesOf(body.pulls)];
+  // The boosters of an opening answer: one booster, or several (open-many), each as the pulls of its cards.
+  function openedPulls(body) {
+    if (Array.isArray(body?.pulls)) return [body.pulls];
     const list = body?.boosters ?? body?.results ?? body?.opened ?? (Array.isArray(body) ? body : null);
-    if (Array.isArray(list)) return list.filter((b) => Array.isArray(b?.pulls)).map((b) => raritiesOf(b.pulls));
+    if (Array.isArray(list)) return list.filter((b) => Array.isArray(b?.pulls)).map((b) => b.pulls);
     return [];
+  }
+  // The best card of a booster ({ id, name, image, rarity }), for the history of the pity.
+  function bestCard(pulls) {
+    let best = null;
+    for (const p of pulls) {
+      const card = p?.card ?? p;
+      const rarity = card?.rarity ?? p?.rarity;
+      if (RARITIES.includes(rarity) && (!best || RARITIES.indexOf(rarity) > RARITIES.indexOf(best.rarity)))
+        best = { id: card.id ?? null, name: card.name ?? null, image: card.image ?? null, rarity };
+    }
+    return best;
   }
 
   // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through.
@@ -377,8 +388,8 @@
               .clone()
               .json()
               .then((body) => {
-                const boosters = openedBoosters(body).filter((b) => b.length);
-                if (boosters.length) post({ type: 'opened', boosters });
+                const opened = openedPulls(body).filter((pulls) => raritiesOf(pulls).length);
+                if (opened.length) post({ type: 'opened', boosters: opened.map(raritiesOf), best: opened.map(bestCard) });
               })
               .catch(() => {});
           post({ type: 'collection-stale' });

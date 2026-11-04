@@ -930,6 +930,290 @@ html.aqm-grabbing * {
   text-align: center;
   color: var(--aqm-dim);
 }
+.aqm-pity-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+/* Historique des tirages (window of the pity's "Historique"): the tracker, the last boosters, the cards got */
+.aqm-history {
+  display: grid;
+  gap: 14px;
+}
+.aqm-history-count {
+  margin: 0;
+  font-size: 12px;
+  color: var(--aqm-dim);
+}
+.aqm-rates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.aqm-rate {
+  --aqm-rate: 148, 163, 184;
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid rgba(var(--aqm-rate), 0.22);
+  border-radius: 18px;
+  background: radial-gradient(120% 90% at 0% 0%, rgba(var(--aqm-rate), 0.14), transparent 60%), var(--aqm-card);
+  overflow: hidden;
+}
+.aqm-rate.is-SSR {
+  --aqm-rate: 253, 224, 71;
+}
+.aqm-rate.is-UR {
+  --aqm-rate: 244, 114, 182;
+}
+.aqm-rate.is-SEC {
+  --aqm-rate: 196, 181, 253;
+}
+.aqm-rate-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 900;
+  font-style: italic;
+}
+.aqm-rate-value {
+  margin: 10px 0 0;
+  font-size: 26px;
+  font-weight: 900;
+  line-height: 1;
+}
+.aqm-rate-value small {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--aqm-dim);
+}
+.aqm-rate-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--aqm-dim);
+}
+.aqm-rate-foot {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--aqm-line);
+  font-size: 11px;
+  color: var(--aqm-dim);
+}
+.aqm-luck {
+  font-size: 10px;
+  font-style: normal;
+}
+.aqm-luck.is-good {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+.aqm-luck.is-bad {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+}
+.aqm-history-box {
+  padding: 14px 16px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.aqm-history-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.aqm-history-row .aqm-label {
+  margin: 0;
+}
+.aqm-tracker-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8px, 1fr));
+  gap: 3px;
+}
+.aqm-cell {
+  display: inline-block;
+  height: 16px;
+  min-width: 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  vertical-align: middle;
+}
+.aqm-cell.is-SSR {
+  background: #fde047;
+  box-shadow: 0 0 8px rgba(253, 224, 71, 0.45);
+}
+.aqm-cell.is-UR {
+  background: #f472b6;
+  box-shadow: 0 0 8px rgba(244, 114, 182, 0.55);
+}
+.aqm-cell.is-SEC {
+  background: linear-gradient(180deg, #c4b5fd, #67e8f9);
+  box-shadow: 0 0 10px rgba(196, 181, 253, 0.9);
+}
+.aqm-tracker-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--aqm-dim);
+}
+.aqm-tracker-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.aqm-tracker-legend .aqm-cell {
+  width: 8px;
+  height: 12px;
+}
+.aqm-history-tabs {
+  display: flex;
+  gap: 4px;
+  width: fit-content;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.aqm-history-tabbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--aqm-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aqm-history-tabbtn.is-on {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--aqm-text);
+}
+.aqm-history-tabcount {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  text-align: center;
+}
+.aqm-history-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+.aqm-history-stat {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--aqm-card);
+}
+.aqm-history-stat small {
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--aqm-dim);
+}
+.aqm-history-stat strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+}
+.aqm-history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 12px;
+  max-height: 440px;
+  padding: 2px 6px 2px 2px;
+  overflow-y: auto;
+}
+/* A card got: its picture alone, sharp (no frame, no movement), and the boosters it took under it. */
+.aqm-history-tile {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+.aqm-history-tile > img,
+.aqm-history-blank {
+  display: block;
+  width: 100%;
+  aspect-ratio: 5 / 7;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.aqm-history-tile:hover > img {
+  filter: brightness(1.12);
+}
+.aqm-history-blank {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 22px;
+  font-weight: 900;
+  font-style: italic;
+}
+.aqm-history-after {
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 900;
+  text-align: center;
+}
+.aqm-history-empty {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--aqm-dim);
+}
+@media (max-width: 640px) {
+  .aqm-rates {
+    grid-template-columns: 1fr;
+  }
+  .aqm-history-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .aqm-history-grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  }
+}
+
+/* Scroll bars of Aquaman's windows and lists: thin, dark, rounded. */
+.aqm-root,
+.aqm-root * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.aqm-root::-webkit-scrollbar,
+.aqm-root *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.aqm-root::-webkit-scrollbar-track,
+.aqm-root *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.aqm-root::-webkit-scrollbar-thumb,
+.aqm-root *::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18) padding-box;
+}
+.aqm-root::-webkit-scrollbar-thumb:hover,
+.aqm-root *::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32) padding-box;
+}
+.aqm-root::-webkit-scrollbar-button,
+.aqm-root *::-webkit-scrollbar-button {
+  display: none;
+}
 @media (max-width: 640px) {
   .aqm-pity-lines {
     grid-template-columns: 1fr;
@@ -1953,11 +2237,31 @@ html.aqm-grabbing * {
   overflow-x: clip;
   overflow-y: visible;
 }
+/* The glow behind the booster in front, in the colour of its pack (paintGlow); it fades from one colour to the next. */
+@property --aqm-glow {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgb(37 99 235 / 0.38);
+}
 .aqm-wheel {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  isolation: isolate;
+  transition: --aqm-glow 0.6s ease;
+}
+.aqm-wheel::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: -1;
+  width: min(560px, 100%);
+  aspect-ratio: 1;
+  background: radial-gradient(closest-side, var(--aqm-glow, rgb(37 99 235 / 0.38)), transparent);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 .aqm-wheel-track {
   display: grid;

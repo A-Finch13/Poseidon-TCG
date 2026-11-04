@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.3.2
+// @version      1.4.0
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.3.2';
+const VERSION = '1.4.0';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -612,6 +612,21 @@ function secChance() {
   }).catch(() => null);
 }
 
+// Chance that the best card of one everyday booster is a SSR, an UR or a SEC, from the game's odds, without the
+// guarantees ({ SSR, UR, SEC }); null if unknown.
+function rarityChances() {
+  return cached('rarity-chances', 30 * 60e3, async () => {
+    const rarities = await game('/rarities').then((r) => r.rarities ?? []);
+    if (!rarities.length) return null;
+    const slots = slotOdds(rarities, new Set(rarities.map((r) => r.code)), RANK.R);
+    // (a card of this rank or better in the booster)
+    const atLeast = (rank) => 1 - slots.reduce((miss, slot) => miss * (1 - Object.entries(slot).reduce((p, [c, v]) => p + ((RANK[c] ?? 0) >= rank ? v : 0), 0)), 1);
+    const out = {};
+    for (const code of ['SSR', 'UR', 'SEC']) out[code] = atLeast(RANK[code]) - atLeast(RANK[code] + 1);
+    return out;
+  }).catch(() => null);
+}
+
 // The SEC, which the game doesn't guarantee: boosters since the last one (the relay's count when it has one, as it
 // goes further back), and the chance of one per booster (chance).
 function secReport(mine, chance) {
@@ -627,14 +642,16 @@ function secReport(mine, chance) {
   return { since: sec.since, known: !!sec.known, chance };
 }
 
-// What's left before each guarantee; "known" once a card of that rarity was seen, else an upper bound.
+// What's left before each guarantee; "known" once a card of that rarity was seen, else an upper bound. Each counter
+// starts again only with a card of its own rarity: an UR doesn't reset the SSR one (the history shows SSR coming 60
+// boosters after the previous SSR across an UR).
 function pityReport(mine, rules, sync, chance = null) {
   const { events } = mine;
   const out = { opened: events.length, sync: sync ? (mine.syncError ? 'error' : mine.syncedAt ? 'ok' : 'waiting') : 'off', syncedAt: mine.syncedAt || null };
   for (const code of Object.keys(PITY)) {
     let last = -1;
     for (let i = events.length - 1; i >= 0; i--)
-      if (events[i].top >= RANK[code]) {
+      if (events[i].top === RANK[code]) {
         last = i;
         break;
       }
@@ -649,7 +666,8 @@ function pityReport(mine, rules, sync, chance = null) {
 // Merges two lists of openings: each booster once, oldest first, the last PITY_EVENTS.
 function mergeEvents(a, b) {
   const byId = new Map();
-  for (const e of [...a, ...b]) if (e?.id && !byId.has(e.id)) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0 });
+  for (const e of [...a, ...b])
+    if (e?.id && !byId.has(e.id)) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...(e.card ? { card: e.card } : {}) });
   return [...byId.values()].sort((x, y) => x.at - y.at).slice(-PITY_EVENTS);
 }
 
@@ -685,16 +703,76 @@ async function pity(fresh = false) {
   return pityReport(state.mine, state.rules, on, await secChance());
 }
 
+// The player's history: for SSR, UR and SEC, each one got with the boosters opened for it since the previous one of
+// that rarity, over all the openings the relay keeps (a year) and this device's.
+// first: the count started with Aquaman, the real one may be higher. current: boosters opened since the last one.
+async function pityHistory() {
+  const state = await pityState();
+  let events = state.mine.events;
+  let pulls = [];
+  if ((await getSettings()).syncPity)
+    try {
+      const all = await cached(`pity-all:${state.id}`, 60e3, async () => {
+        const res = await fetch(`${RELAY}/pity/all`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ player: state.id }) });
+        if (!res.ok) throw new Error(`relay_${res.status}`);
+        return res.json();
+      });
+      pulls = all.pulls ?? [];
+      const byId = new Map();
+      for (const e of [...(all.events ?? []), ...events]) {
+        if (!e?.id) continue;
+        const known = byId.get(e.id);
+        if (!known) byId.set(e.id, { at: Number(e.at) || 0, top: Number(e.top) || 0, card: e.card ?? null });
+        else if (!known.card && e.card) known.card = e.card;
+      }
+      events = [...byId.values()].sort((a, b) => a.at - b.at);
+    } catch {}
+  // The card of each SSR, UR and SEC: the one kept when it was opened, else the player's pull of that rarity in the
+  // game's "beaux tirages" (relay) within 10 minutes of it, each pull given once.
+  const used = new Set();
+  const cardOf = (e, code) => {
+    if (e.card) return e.card;
+    let best = null;
+    for (const [i, p] of pulls.entries()) {
+      if (used.has(i) || p.rarity !== code) continue;
+      const gap = Math.abs(p.at - e.at);
+      if (gap < 10 * 60e3 && (!best || gap < best.gap)) best = { i, gap, p };
+    }
+    if (!best) return null;
+    used.add(best.i);
+    return { id: best.p.id, name: best.p.name, image: best.p.image, rarity: code };
+  };
+  const codeOf = (top) => Object.keys(RANK).find((k) => RANK[k] === top);
+  for (const e of events) if (e.top >= RANK.SSR) e.card = cardOf(e, codeOf(e.top));
+  // (the tracker: the best rarity of the last 300 boosters, oldest first, and the game's odds)
+  const out = { opened: events.length, since: events[0]?.at ?? null, recent: events.slice(-300).map((e) => e.top), chances: await rarityChances() };
+  // (each rarity on its own: an UR is not counted among the SSR)
+  for (const code of ['SSR', 'UR', 'SEC']) {
+    const hits = [];
+    let count = 0;
+    for (const e of events) {
+      count++;
+      if (e.top !== RANK[code]) continue;
+      hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, after: count, first: !hits.length });
+      count = 0;
+    }
+    out[code] = { hits: hits.reverse(), current: count };
+  }
+  return out;
+}
+
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
-async function recordOpening(boosters) {
+// best: the best card of each booster, kept with the SSR, UR and SEC for the history.
+async function recordOpening(boosters, best = []) {
   const state = await pityState();
   const { mine, rules } = state;
   const now = Date.now();
-  const added = boosters.map((rarities, i) => ({
-    id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-    at: now + i,
-    top: Math.max(0, ...rarities.map((r) => RANK[r] ?? 0))
-  }));
+  const added = boosters.map((rarities, i) => {
+    const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
+    const c = best[i];
+    const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
+    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}) };
+  });
   mine.events = mergeEvents(mine.events, added);
   // The relay's SEC count goes on with the new openings until the next exchange.
   if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
@@ -1202,7 +1280,18 @@ async function cardOwners(id) {
   // The players whose collection was read after one of their beaux tirages, other than the player and their friends.
   const known = await relayHoldings(id);
   const mateIds = new Set(mates.map((m) => m.player.id));
-  const seen = (known?.owners ?? []).filter((o) => o.player?.id && !mateIds.has(o.player.id));
+  // A numbered copy has one owner: the one seen now (a friend's collection, an offer of the market) wins over the
+  // relay's readings, which may be hours old (the copy changed hands since), and the most recent reading over the
+  // older ones. A player left without any of their copies is not shown.
+  const taken = new Set([...mates.flatMap((m) => m.serials), ...market.map((m) => m.serial)].filter((n) => n != null));
+  const seen = [];
+  for (const o of [...(known?.owners ?? [])].sort((a, b) => (b.seenAt ?? 0) - (a.seenAt ?? 0))) {
+    if (!o.player?.id || mateIds.has(o.player.id)) continue;
+    const serials = (o.serials ?? []).filter((n) => !taken.has(n));
+    const count = (o.count ?? 1) - ((o.serials ?? []).length - serials.length);
+    serials.forEach((n) => taken.add(n));
+    if (count > 0) seen.push({ ...o, serials, count });
+  }
 
   const remote = await relayPulls({ card: id, limit: 200 });
   if (remote?.pulls) await recordFeed(remote.pulls, true);
@@ -1297,6 +1386,25 @@ async function sayHello(kind) {
   if (now) await chrome.storage.local.set({ revokedFor: id });
   else if (revoked) await chrome.storage.local.remove('revokedFor');
   return { ok: true, revoked: now };
+}
+
+// Whether the author took Aquaman back from this player, asked to the relay once a minute at most; when the relay
+// doesn't answer, the last answer known.
+async function access() {
+  const id = await myId();
+  return cached(`access:${id}`, 50e3, async () => {
+    const { revokedFor } = await chrome.storage.local.get('revokedFor');
+    try {
+      const res = await fetch(`${RELAY}/access?player=${encodeURIComponent(id)}`);
+      if (!res.ok) return { revoked: revokedFor === id };
+      const revoked = !!(await res.json()).revoked;
+      if (revoked) await chrome.storage.local.set({ revokedFor: id });
+      else if (revokedFor === id) await chrome.storage.local.remove('revokedFor');
+      return { revoked };
+    } catch {
+      return { revoked: revokedFor === id };
+    }
+  });
 }
 
 // ---------- the author's devices: a key per device, approved once ----------
@@ -1418,10 +1526,14 @@ async function answer(msg) {
         return await playerSummary(msg.id);
       case 'boosters':
         return await boosterReport(msg.query, msg.rarity, msg.field);
+      case 'access':
+        return await access();
+      case 'pity-history':
+        return await pityHistory();
       case 'pity':
         return await pity(!!msg.fresh);
       case 'opened':
-        return await recordOpening(msg.boosters ?? []);
+        return await recordOpening(msg.boosters ?? [], msg.best ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
       case 'favorites':
@@ -1826,12 +1938,23 @@ async function handle(msg) {
   // Rarities of the cards of one booster's answer ({ pulls: [{ card: { rarity } }] }).
   const raritiesOf = (pulls) => pulls.map((p) => p?.card?.rarity ?? p?.rarity).filter((r) => RARITIES.includes(r));
 
-  // The boosters of an opening answer: one booster, or several (open-many).
-  function openedBoosters(body) {
-    if (Array.isArray(body?.pulls)) return [raritiesOf(body.pulls)];
+  // The boosters of an opening answer: one booster, or several (open-many), each as the pulls of its cards.
+  function openedPulls(body) {
+    if (Array.isArray(body?.pulls)) return [body.pulls];
     const list = body?.boosters ?? body?.results ?? body?.opened ?? (Array.isArray(body) ? body : null);
-    if (Array.isArray(list)) return list.filter((b) => Array.isArray(b?.pulls)).map((b) => raritiesOf(b.pulls));
+    if (Array.isArray(list)) return list.filter((b) => Array.isArray(b?.pulls)).map((b) => b.pulls);
     return [];
+  }
+  // The best card of a booster ({ id, name, image, rarity }), for the history of the pity.
+  function bestCard(pulls) {
+    let best = null;
+    for (const p of pulls) {
+      const card = p?.card ?? p;
+      const rarity = card?.rarity ?? p?.rarity;
+      if (RARITIES.includes(rarity) && (!best || RARITIES.indexOf(rarity) > RARITIES.indexOf(best.rarity)))
+        best = { id: card.id ?? null, name: card.name ?? null, image: card.image ?? null, rarity };
+    }
+    return best;
   }
 
   // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through.
@@ -1941,8 +2064,8 @@ async function handle(msg) {
               .clone()
               .json()
               .then((body) => {
-                const boosters = openedBoosters(body).filter((b) => b.length);
-                if (boosters.length) post({ type: 'opened', boosters });
+                const opened = openedPulls(body).filter((pulls) => raritiesOf(pulls).length);
+                if (opened.length) post({ type: 'opened', boosters: opened.map(raritiesOf), best: opened.map(bestCard) });
               })
               .catch(() => {});
           post({ type: 'collection-stale' });
@@ -2887,6 +3010,290 @@ html.aqm-grabbing * {
   font-size: 11px;
   text-align: center;
   color: var(--aqm-dim);
+}
+.aqm-pity-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+/* Historique des tirages (window of the pity's "Historique"): the tracker, the last boosters, the cards got */
+.aqm-history {
+  display: grid;
+  gap: 14px;
+}
+.aqm-history-count {
+  margin: 0;
+  font-size: 12px;
+  color: var(--aqm-dim);
+}
+.aqm-rates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.aqm-rate {
+  --aqm-rate: 148, 163, 184;
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid rgba(var(--aqm-rate), 0.22);
+  border-radius: 18px;
+  background: radial-gradient(120% 90% at 0% 0%, rgba(var(--aqm-rate), 0.14), transparent 60%), var(--aqm-card);
+  overflow: hidden;
+}
+.aqm-rate.is-SSR {
+  --aqm-rate: 253, 224, 71;
+}
+.aqm-rate.is-UR {
+  --aqm-rate: 244, 114, 182;
+}
+.aqm-rate.is-SEC {
+  --aqm-rate: 196, 181, 253;
+}
+.aqm-rate-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 900;
+  font-style: italic;
+}
+.aqm-rate-value {
+  margin: 10px 0 0;
+  font-size: 26px;
+  font-weight: 900;
+  line-height: 1;
+}
+.aqm-rate-value small {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--aqm-dim);
+}
+.aqm-rate-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--aqm-dim);
+}
+.aqm-rate-foot {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--aqm-line);
+  font-size: 11px;
+  color: var(--aqm-dim);
+}
+.aqm-luck {
+  font-size: 10px;
+  font-style: normal;
+}
+.aqm-luck.is-good {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+.aqm-luck.is-bad {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+}
+.aqm-history-box {
+  padding: 14px 16px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.aqm-history-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.aqm-history-row .aqm-label {
+  margin: 0;
+}
+.aqm-tracker-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8px, 1fr));
+  gap: 3px;
+}
+.aqm-cell {
+  display: inline-block;
+  height: 16px;
+  min-width: 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  vertical-align: middle;
+}
+.aqm-cell.is-SSR {
+  background: #fde047;
+  box-shadow: 0 0 8px rgba(253, 224, 71, 0.45);
+}
+.aqm-cell.is-UR {
+  background: #f472b6;
+  box-shadow: 0 0 8px rgba(244, 114, 182, 0.55);
+}
+.aqm-cell.is-SEC {
+  background: linear-gradient(180deg, #c4b5fd, #67e8f9);
+  box-shadow: 0 0 10px rgba(196, 181, 253, 0.9);
+}
+.aqm-tracker-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--aqm-dim);
+}
+.aqm-tracker-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.aqm-tracker-legend .aqm-cell {
+  width: 8px;
+  height: 12px;
+}
+.aqm-history-tabs {
+  display: flex;
+  gap: 4px;
+  width: fit-content;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.aqm-history-tabbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--aqm-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aqm-history-tabbtn.is-on {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--aqm-text);
+}
+.aqm-history-tabcount {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  text-align: center;
+}
+.aqm-history-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+.aqm-history-stat {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--aqm-card);
+}
+.aqm-history-stat small {
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--aqm-dim);
+}
+.aqm-history-stat strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+}
+.aqm-history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 12px;
+  max-height: 440px;
+  padding: 2px 6px 2px 2px;
+  overflow-y: auto;
+}
+/* A card got: its picture alone, sharp (no frame, no movement), and the boosters it took under it. */
+.aqm-history-tile {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+.aqm-history-tile > img,
+.aqm-history-blank {
+  display: block;
+  width: 100%;
+  aspect-ratio: 5 / 7;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.aqm-history-tile:hover > img {
+  filter: brightness(1.12);
+}
+.aqm-history-blank {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 22px;
+  font-weight: 900;
+  font-style: italic;
+}
+.aqm-history-after {
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 900;
+  text-align: center;
+}
+.aqm-history-empty {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--aqm-dim);
+}
+@media (max-width: 640px) {
+  .aqm-rates {
+    grid-template-columns: 1fr;
+  }
+  .aqm-history-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .aqm-history-grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  }
+}
+
+/* Scroll bars of Aquaman's windows and lists: thin, dark, rounded. */
+.aqm-root,
+.aqm-root * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.aqm-root::-webkit-scrollbar,
+.aqm-root *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.aqm-root::-webkit-scrollbar-track,
+.aqm-root *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.aqm-root::-webkit-scrollbar-thumb,
+.aqm-root *::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18) padding-box;
+}
+.aqm-root::-webkit-scrollbar-thumb:hover,
+.aqm-root *::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32) padding-box;
+}
+.aqm-root::-webkit-scrollbar-button,
+.aqm-root *::-webkit-scrollbar-button {
+  display: none;
 }
 @media (max-width: 640px) {
   .aqm-pity-lines {
@@ -3911,11 +4318,31 @@ html.aqm-grabbing * {
   overflow-x: clip;
   overflow-y: visible;
 }
+/* The glow behind the booster in front, in the colour of its pack (paintGlow); it fades from one colour to the next. */
+@property --aqm-glow {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgb(37 99 235 / 0.38);
+}
 .aqm-wheel {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  isolation: isolate;
+  transition: --aqm-glow 0.6s ease;
+}
+.aqm-wheel::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: -1;
+  width: min(560px, 100%);
+  aspect-ratio: 1;
+  background: radial-gradient(closest-side, var(--aqm-glow, rgb(37 99 235 / 0.38)), transparent);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 .aqm-wheel-track {
   display: grid;
@@ -4402,6 +4829,15 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.4.0',
+    items: [
+      ['Garantie anti-malchance : un bouton « Historique » ouvre ton tracker. Il montre à quelle fréquence tu tires des SSR, UR et SEC comparé à la chance du jeu, tes 300 derniers boosters d’un coup d’œil, et combien de boosters il t’a fallu pour chacune.'],
+      ['Correction : une UR ne remet plus le compteur de la garantie SSR à zéro, comme dans le jeu.'],
+      ['Accueil : la lueur derrière le booster prend la couleur de son pack (doré, cyan, rouge…).'],
+      ['Qui a cette carte ? : un même numéro n’apparaît plus chez deux joueurs ; celui vu le plus récemment l’emporte.']
+    ]
+  },
   {
     version: '1.3.2',
     items: [
@@ -5402,7 +5838,7 @@ const CHANGES = [
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
-      send({ type: 'opened', boosters: e.data.boosters }).then((report) => {
+      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
           pityAt = Date.now();
@@ -6534,12 +6970,12 @@ const CHANGES = [
           )
         );
       };
-      // Takes Aquaman back from a player (it stops on their side within 10 minutes), or gives it back.
+      // Takes Aquaman back from a player (it stops on their side within a minute), or gives it back.
       const revokeButton = (u) => {
         const btn = h('button', { type: 'button', class: 'aqm-album-btn aqm-user-revoke' }, u.revoked ? 'Rétablir' : 'Révoquer');
         btn.addEventListener('click', async () => {
           const name = u.name || u.id;
-          if (!u.revoked && !confirm(`Révoquer Aquaman pour ${name} ? Il s’arrêtera chez ce joueur dans les 10 minutes, jusqu’à ce que tu le rétablisses.`)) return;
+          if (!u.revoked && !confirm(`Révoquer Aquaman pour ${name} ? Il s’arrêtera chez ce joueur dans la minute, jusqu’à ce que tu le rétablisses.`)) return;
           btn.disabled = true;
           const res = await ask({ type: 'admin-revoke-player', id: u.id, revoked: !u.revoked }).catch((e) => ({ error: e.message }));
           if (res?.needDevice) return load();
@@ -7961,7 +8397,7 @@ const CHANGES = [
       const when = left <= 1 ? 'au prochain booster' : `dans ${fmt(left)} boosters`;
       return h(
         'div',
-        { class: 'aqm-pity-line', title: p.known ? `${fmt(p.since)} booster${p.since > 1 ? 's' : ''} ouvert${p.since > 1 ? 's' : ''} depuis ta dernière ${code} ou mieux.` : `Aquaman n’a pas encore vu de ${code} sortir : il compte depuis son installation, donc la garantie peut arriver plus tôt.` },
+        { class: 'aqm-pity-line', title: p.known ? `${fmt(p.since)} booster${p.since > 1 ? 's' : ''} ouvert${p.since > 1 ? 's' : ''} depuis ta dernière ${code}.` : `Aquaman n’a pas encore vu de ${code} sortir : il compte depuis son installation, donc la garantie peut arriver plus tôt.` },
         h('p', {}, rarityCode(code), ' garantie ', h('strong', {}, when), p.known ? '' : ' au plus'),
         h('span', { class: 'aqm-bar' }, h('span', { style: `width:${Math.min(100, (100 * p.since) / p.every).toFixed(1)}%` })),
         h('small', {}, p.known ? `${fmt(p.since)} / ${fmt(p.every)} depuis ta dernière ${code}` : `${fmt(p.since)} / ${fmt(p.every)} sans ${code} depuis qu’Aquaman compte`)
@@ -7995,7 +8431,130 @@ const CHANGES = [
           error: 'Compté par Aquaman sur ce navigateur : le partage avec tes autres appareils ne répond pas pour le moment.',
           off: 'Compté par Aquaman à chaque booster ouvert sur ce navigateur (partage entre appareils désactivé).'
         }[pityReport.sync] ?? 'Compté par Aquaman à chaque booster ouvert.'
-      )
+      ),
+      h('div', { class: 'aqm-pity-more' }, h('button', { type: 'button', class: 'aqm-album-btn', onclick: openPityHistory }, '📜 Historique'))
+    );
+  }
+
+  // The tracker of the SSR, UR and SEC (each rarity on its own): how often each drops against
+  // the game's odds, the last boosters opened at a glance, and for each rarity the cards got with the boosters each
+  // one took, the most recent first.
+  async function openPityHistory() {
+    const body = openOverlay('Historique des tirages', 'À quelle fréquence tu tires des SSR, UR et SEC, et combien de boosters il t’a fallu pour chacune.');
+    body.parentElement.classList.add('aqm-panel-wide');
+    const view = h('div', { class: 'aqm-history' }, h('p', { class: 'aqm-note' }, 'Lecture de tes ouvertures…'));
+    body.append(view);
+    let r;
+    try {
+      r = await ask({ type: 'pity-history' });
+    } catch (e) {
+      view.replaceChildren(h('p', { class: 'aqm-note' }, e.message));
+      return;
+    }
+    const CODES = ['SSR', 'UR', 'SEC'];
+    const day = (at) => new Date(at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+    const boosters = (n) => `${fmt(n)} booster${n > 1 ? 's' : ''}`;
+    const decimal = (x) => x.toFixed(1).replace('.', ',');
+    const weeks = r.since ? Math.max(1 / 7, (Date.now() - r.since) / (7 * 86400e3)) : null;
+
+    // One card per rarity: how often it drops, the game's odds (without the guarantee) and the luck.
+    const rate = (code) => {
+      const n = r[code].hits.length;
+      const every = n ? r.opened / n : null;
+      const expected = r.chances?.[code] > 0 ? 1 / r.chances[code] : null;
+      const ratio = every && expected ? expected / every : null;
+      const luck = ratio == null ? null : ratio >= 1.15 ? ['is-good', `${decimal(ratio)}× plus souvent`] : ratio <= 0.87 ? ['is-bad', `${decimal(1 / ratio)}× moins souvent`] : ['', 'Dans la moyenne'];
+      const perWeek = weeks && n ? n / weeks : 0;
+      return h(
+        'div',
+        { class: `aqm-rate is-${code}` },
+        h('div', { class: 'aqm-rate-top' }, rarityCode(code), luck ? h('span', { class: `aqm-tag aqm-luck ${luck[0]}` }, luck[1]) : null),
+        h('p', { class: 'aqm-rate-value' }, every ? ['1 ', h('small', {}, 'tous les'), ` ${fmt(every)}`] : '—'),
+        h('p', { class: 'aqm-rate-sub' }, every ? 'boosters, chez toi' : `aucune en ${boosters(r.opened)}`),
+        h(
+          'p',
+          { class: 'aqm-rate-foot', title: 'La chance du jeu pour un booster classique, sans la garantie anti-malchance.' },
+          expected ? `Jeu : 1 tous les ~${fmt(expected)}` : 'Jeu : chance inconnue',
+          perWeek ? ` · ≈ ${perWeek < 10 ? decimal(perWeek) : fmt(perWeek)}/sem.` : ''
+        )
+      );
+    };
+
+    // The last boosters, one square each, coloured by their best card.
+    const strip = r.recent?.length
+      ? h(
+          'div',
+          { class: 'aqm-history-box' },
+          h('div', { class: 'aqm-history-row' }, h('p', { class: 'aqm-label' }, `Tes ${boosters(r.recent.length)} les plus récents`), h('small', { class: 'aqm-muted' }, 'du plus ancien au plus récent')),
+          h(
+            'div',
+            { class: 'aqm-tracker-strip' },
+            r.recent.map((top) => {
+              const code = top >= 6 ? 'SEC' : top >= 5 ? 'UR' : top >= 4 ? 'SSR' : null;
+              return h('span', { class: `aqm-cell${code ? ` is-${code}` : ''}`, title: code ?? 'Ni SSR, ni UR, ni SEC' });
+            })
+          ),
+          h('p', { class: 'aqm-tracker-legend' }, [null, ...CODES].map((code) => h('span', {}, h('span', { class: `aqm-cell${code ? ` is-${code}` : ''}` }), code ?? 'Autre')))
+        )
+      : null;
+
+    // The cards got for one rarity, as tiles: the picture, how many boosters it took, the day.
+    const tiles = (code) => {
+      const { hits, current } = r[code];
+      const full = hits.filter((x) => !x.first).map((x) => x.after);
+      const stat = (label, value) => h('div', { class: 'aqm-history-stat' }, h('small', {}, label), h('strong', {}, value));
+      return [
+        h(
+          'div',
+          { class: 'aqm-history-stats' },
+          stat('Obtenues', fmt(hits.length)),
+          stat('En moyenne', full.length ? boosters(full.reduce((a, b) => a + b, 0) / full.length) : '—'),
+          stat('Plus rapide', full.length ? boosters(Math.min(...full)) : '—'),
+          stat('Plus long', full.length ? boosters(Math.max(...full)) : '—'),
+          stat('Depuis la dernière', boosters(current))
+        ),
+        hits.length
+          ? h(
+              'div',
+              { class: 'aqm-history-grid' },
+              hits.map((x) => {
+                // Only the card's picture and the boosters it took (its name and day in the tooltip).
+                const link = x.card?.id ? { href: `/jeu/carte/${encodeURIComponent(x.card.id)}` } : {};
+                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
+                return h(
+                  x.card?.id ? 'a' : 'div',
+                  { class: 'aqm-history-tile', ...link, title: tip },
+                  x.card?.image ? h('img', { src: cardImageUrl(x.card.image), alt: x.card.name ?? '', loading: 'lazy', decoding: 'async' }) : h('div', { class: 'aqm-history-blank' }, rarityCode(x.top)),
+                  h('p', { class: 'aqm-history-after' }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after))
+                );
+              })
+            )
+          : h('p', { class: 'aqm-history-empty' }, `Aucune ${code} parmi tes ${boosters(r.opened)} comptés.`)
+      ];
+    };
+
+    // A tab per rarity, the first one with cards open.
+    const panel = h('div', { class: 'aqm-history-panel' });
+    const tabs = h('div', { class: 'aqm-history-tabs', role: 'tablist' });
+    const show = (code) => {
+      tabs.replaceChildren(
+        ...CODES.map((c) =>
+          h(
+            'button',
+            { type: 'button', role: 'tab', class: `aqm-history-tabbtn${c === code ? ' is-on' : ''}`, 'aria-selected': String(c === code), onclick: () => show(c) },
+            rarityCode(c),
+            h('span', { class: 'aqm-history-tabcount' }, fmt(r[c].hits.length))
+          )
+        )
+      );
+      panel.replaceChildren(...tiles(code));
+    };
+    show(CODES.find((code) => r[code].hits.length) ?? 'SSR');
+    view.replaceChildren(
+      h('p', { class: 'aqm-history-count' }, r.since ? `${boosters(r.opened)} comptés depuis le ${new Date(r.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'Aucun booster compté pour le moment.'),
+      h('div', { class: 'aqm-rates' }, CODES.map(rate)),
+      strip,
+      h('div', { class: 'aqm-history-box' }, tabs, panel)
     );
   }
 
@@ -8739,7 +9298,8 @@ const CHANGES = [
     const dots = h('div', { class: 'aqm-wheel-dots' });
     const prev = arrow(-1, 'Catégorie précédente');
     const next = arrow(1, 'Catégorie suivante');
-    strip.replaceChildren(h('div', { class: 'aqm-wheel' }, prev, track, next), controls, dots);
+    const wheel = h('div', { class: 'aqm-wheel' }, prev, track, next);
+    strip.replaceChildren(wheel, controls, dots);
 
     let width = 0;
     function place() {
@@ -8761,6 +9321,7 @@ const CHANGES = [
       });
       wheelKey = ordered[front].key;
       showTitleCount(ordered[front].count);
+      paintGlow(wheel, ordered[front]);
       if (controls.firstChild !== buttonsOf[front]) controls.replaceChildren(buttonsOf[front]);
       // Two kinds: no arrow toward nothing.
       prev.hidden = n < 3 && at === 0;
@@ -8787,6 +9348,57 @@ const CHANGES = [
       place();
       requestAnimationFrame(() => strip.classList.remove('is-still'));
     });
+  }
+
+  // The glow behind the booster in front takes the colour of its pack: the main colour of its picture (the most vivid
+  // pixels count the most), the game's blue for the classic boosters. Read once per picture.
+  const GLOW_BLUE = [37, 99, 235];
+  const glowOf = new Map(); // picture -> Promise<[r, g, b] | null>
+  function packColour(art) {
+    if (!art) return Promise.resolve(null);
+    if (!glowOf.has(art))
+      glowOf.set(
+        art,
+        new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = canvas.height = 24;
+              const g = canvas.getContext('2d', { willReadFrequently: true });
+              g.drawImage(img, 0, 0, 24, 24);
+              const d = g.getImageData(0, 0, 24, 24).data;
+              let r = 0;
+              let gr = 0;
+              let b = 0;
+              let w = 0;
+              for (let i = 0; i < d.length; i += 4) {
+                const max = Math.max(d[i], d[i + 1], d[i + 2]);
+                const sat = max ? (max - Math.min(d[i], d[i + 1], d[i + 2])) / max : 0;
+                const weight = (d[i + 3] / 255) * sat * sat * (max / 255);
+                r += d[i] * weight;
+                gr += d[i + 1] * weight;
+                b += d[i + 2] * weight;
+                w += weight;
+              }
+              if (w < 0.5) return resolve(null);
+              // (as bright as the game's blue glow, whatever the picture)
+              const c = [r / w, gr / w, b / w];
+              const k = 235 / Math.max(...c);
+              resolve(c.map((x) => Math.round(x * k)));
+            } catch {
+              resolve(null); // a picture of another site: its pixels can't be read
+            }
+          };
+          img.onerror = () => resolve(null);
+          img.src = art;
+        })
+      );
+    return glowOf.get(art);
+  }
+  async function paintGlow(wheel, shot) {
+    const c = (await packColour(shot.art)) ?? GLOW_BLUE;
+    if (wheelKey === shot.key) wheel.style.setProperty('--aqm-glow', `rgb(${c.join(' ')} / 0.38)`);
   }
 
   // The strip takes the whole inner width of the home's field (the rounded box around the boosters), whatever the
@@ -9089,7 +9701,7 @@ const CHANGES = [
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       try {
         step();
       } catch (e) {
@@ -9132,7 +9744,19 @@ const CHANGES = [
     );
     document.body.append(box);
   }
-  const helloTimer = setInterval(() => !stopped && settled && document.visibilityState === 'visible' && sayHello(), 60e3);
+  const helloTimer = setInterval(() => {
+    if (stopped || !settled || document.visibilityState !== 'visible') return;
+    sayHello();
+    checkAccess();
+  }, 60e3);
+
+  // Whether the author took Aquaman back from this player: asked once a minute while a page of the game is shown.
+  let accessAt = 0;
+  function checkAccess() {
+    if (Date.now() - accessAt < 55e3) return;
+    accessAt = Date.now();
+    send({ type: 'access' }).then((res) => res?.revoked && !stopped && revoke());
+  }
 
   // The script also looks for a new version every 10 minutes (the script managers only look once a day), and offers
   // it in a box at the bottom of the screen; the extension tells it with its notification and its window.

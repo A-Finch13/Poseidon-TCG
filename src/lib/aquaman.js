@@ -462,6 +462,21 @@ function secChance() {
   }).catch(() => null);
 }
 
+// Chance that the best card of one everyday booster is a SSR, an UR or a SEC, from the game's odds, without the
+// guarantees ({ SSR, UR, SEC }); null if unknown.
+function rarityChances() {
+  return cached('rarity-chances', 30 * 60e3, async () => {
+    const rarities = await game('/rarities').then((r) => r.rarities ?? []);
+    if (!rarities.length) return null;
+    const slots = slotOdds(rarities, new Set(rarities.map((r) => r.code)), RANK.R);
+    // (a card of this rank or better in the booster)
+    const atLeast = (rank) => 1 - slots.reduce((miss, slot) => miss * (1 - Object.entries(slot).reduce((p, [c, v]) => p + ((RANK[c] ?? 0) >= rank ? v : 0), 0)), 1);
+    const out = {};
+    for (const code of ['SSR', 'UR', 'SEC']) out[code] = atLeast(RANK[code]) - atLeast(RANK[code] + 1);
+    return out;
+  }).catch(() => null);
+}
+
 // The SEC, which the game doesn't guarantee: boosters since the last one (the relay's count when it has one, as it
 // goes further back), and the chance of one per booster (chance).
 function secReport(mine, chance) {
@@ -477,14 +492,16 @@ function secReport(mine, chance) {
   return { since: sec.since, known: !!sec.known, chance };
 }
 
-// What's left before each guarantee; "known" once a card of that rarity was seen, else an upper bound.
+// What's left before each guarantee; "known" once a card of that rarity was seen, else an upper bound. Each counter
+// starts again only with a card of its own rarity: an UR doesn't reset the SSR one (the history shows SSR coming 60
+// boosters after the previous SSR across an UR).
 function pityReport(mine, rules, sync, chance = null) {
   const { events } = mine;
   const out = { opened: events.length, sync: sync ? (mine.syncError ? 'error' : mine.syncedAt ? 'ok' : 'waiting') : 'off', syncedAt: mine.syncedAt || null };
   for (const code of Object.keys(PITY)) {
     let last = -1;
     for (let i = events.length - 1; i >= 0; i--)
-      if (events[i].top >= RANK[code]) {
+      if (events[i].top === RANK[code]) {
         last = i;
         break;
       }
@@ -499,7 +516,8 @@ function pityReport(mine, rules, sync, chance = null) {
 // Merges two lists of openings: each booster once, oldest first, the last PITY_EVENTS.
 function mergeEvents(a, b) {
   const byId = new Map();
-  for (const e of [...a, ...b]) if (e?.id && !byId.has(e.id)) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0 });
+  for (const e of [...a, ...b])
+    if (e?.id && !byId.has(e.id)) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...(e.card ? { card: e.card } : {}) });
   return [...byId.values()].sort((x, y) => x.at - y.at).slice(-PITY_EVENTS);
 }
 
@@ -535,16 +553,76 @@ export async function pity(fresh = false) {
   return pityReport(state.mine, state.rules, on, await secChance());
 }
 
+// The player's history: for SSR, UR and SEC, each one got with the boosters opened for it since the previous one of
+// that rarity, over all the openings the relay keeps (a year) and this device's.
+// first: the count started with Aquaman, the real one may be higher. current: boosters opened since the last one.
+export async function pityHistory() {
+  const state = await pityState();
+  let events = state.mine.events;
+  let pulls = [];
+  if ((await getSettings()).syncPity)
+    try {
+      const all = await cached(`pity-all:${state.id}`, 60e3, async () => {
+        const res = await fetch(`${RELAY}/pity/all`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ player: state.id }) });
+        if (!res.ok) throw new Error(`relay_${res.status}`);
+        return res.json();
+      });
+      pulls = all.pulls ?? [];
+      const byId = new Map();
+      for (const e of [...(all.events ?? []), ...events]) {
+        if (!e?.id) continue;
+        const known = byId.get(e.id);
+        if (!known) byId.set(e.id, { at: Number(e.at) || 0, top: Number(e.top) || 0, card: e.card ?? null });
+        else if (!known.card && e.card) known.card = e.card;
+      }
+      events = [...byId.values()].sort((a, b) => a.at - b.at);
+    } catch {}
+  // The card of each SSR, UR and SEC: the one kept when it was opened, else the player's pull of that rarity in the
+  // game's "beaux tirages" (relay) within 10 minutes of it, each pull given once.
+  const used = new Set();
+  const cardOf = (e, code) => {
+    if (e.card) return e.card;
+    let best = null;
+    for (const [i, p] of pulls.entries()) {
+      if (used.has(i) || p.rarity !== code) continue;
+      const gap = Math.abs(p.at - e.at);
+      if (gap < 10 * 60e3 && (!best || gap < best.gap)) best = { i, gap, p };
+    }
+    if (!best) return null;
+    used.add(best.i);
+    return { id: best.p.id, name: best.p.name, image: best.p.image, rarity: code };
+  };
+  const codeOf = (top) => Object.keys(RANK).find((k) => RANK[k] === top);
+  for (const e of events) if (e.top >= RANK.SSR) e.card = cardOf(e, codeOf(e.top));
+  // (the tracker: the best rarity of the last 300 boosters, oldest first, and the game's odds)
+  const out = { opened: events.length, since: events[0]?.at ?? null, recent: events.slice(-300).map((e) => e.top), chances: await rarityChances() };
+  // (each rarity on its own: an UR is not counted among the SSR)
+  for (const code of ['SSR', 'UR', 'SEC']) {
+    const hits = [];
+    let count = 0;
+    for (const e of events) {
+      count++;
+      if (e.top !== RANK[code]) continue;
+      hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, after: count, first: !hits.length });
+      count = 0;
+    }
+    out[code] = { hits: hits.reverse(), current: count };
+  }
+  return out;
+}
+
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
-export async function recordOpening(boosters) {
+// best: the best card of each booster, kept with the SSR, UR and SEC for the history.
+export async function recordOpening(boosters, best = []) {
   const state = await pityState();
   const { mine, rules } = state;
   const now = Date.now();
-  const added = boosters.map((rarities, i) => ({
-    id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-    at: now + i,
-    top: Math.max(0, ...rarities.map((r) => RANK[r] ?? 0))
-  }));
+  const added = boosters.map((rarities, i) => {
+    const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
+    const c = best[i];
+    const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
+    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}) };
+  });
   mine.events = mergeEvents(mine.events, added);
   // The relay's SEC count goes on with the new openings until the next exchange.
   if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
@@ -1052,7 +1130,18 @@ export async function cardOwners(id) {
   // The players whose collection was read after one of their beaux tirages, other than the player and their friends.
   const known = await relayHoldings(id);
   const mateIds = new Set(mates.map((m) => m.player.id));
-  const seen = (known?.owners ?? []).filter((o) => o.player?.id && !mateIds.has(o.player.id));
+  // A numbered copy has one owner: the one seen now (a friend's collection, an offer of the market) wins over the
+  // relay's readings, which may be hours old (the copy changed hands since), and the most recent reading over the
+  // older ones. A player left without any of their copies is not shown.
+  const taken = new Set([...mates.flatMap((m) => m.serials), ...market.map((m) => m.serial)].filter((n) => n != null));
+  const seen = [];
+  for (const o of [...(known?.owners ?? [])].sort((a, b) => (b.seenAt ?? 0) - (a.seenAt ?? 0))) {
+    if (!o.player?.id || mateIds.has(o.player.id)) continue;
+    const serials = (o.serials ?? []).filter((n) => !taken.has(n));
+    const count = (o.count ?? 1) - ((o.serials ?? []).length - serials.length);
+    serials.forEach((n) => taken.add(n));
+    if (count > 0) seen.push({ ...o, serials, count });
+  }
 
   const remote = await relayPulls({ card: id, limit: 200 });
   if (remote?.pulls) await recordFeed(remote.pulls, true);
@@ -1147,6 +1236,25 @@ export async function sayHello(kind) {
   if (now) await chrome.storage.local.set({ revokedFor: id });
   else if (revoked) await chrome.storage.local.remove('revokedFor');
   return { ok: true, revoked: now };
+}
+
+// Whether the author took Aquaman back from this player, asked to the relay once a minute at most; when the relay
+// doesn't answer, the last answer known.
+export async function access() {
+  const id = await myId();
+  return cached(`access:${id}`, 50e3, async () => {
+    const { revokedFor } = await chrome.storage.local.get('revokedFor');
+    try {
+      const res = await fetch(`${RELAY}/access?player=${encodeURIComponent(id)}`);
+      if (!res.ok) return { revoked: revokedFor === id };
+      const revoked = !!(await res.json()).revoked;
+      if (revoked) await chrome.storage.local.set({ revokedFor: id });
+      else if (revokedFor === id) await chrome.storage.local.remove('revokedFor');
+      return { revoked };
+    } catch {
+      return { revoked: revokedFor === id };
+    }
+  });
 }
 
 // ---------- the author's devices: a key per device, approved once ----------
@@ -1268,10 +1376,14 @@ export async function answer(msg) {
         return await playerSummary(msg.id);
       case 'boosters':
         return await boosterReport(msg.query, msg.rarity, msg.field);
+      case 'access':
+        return await access();
+      case 'pity-history':
+        return await pityHistory();
       case 'pity':
         return await pity(!!msg.fresh);
       case 'opened':
-        return await recordOpening(msg.boosters ?? []);
+        return await recordOpening(msg.boosters ?? [], msg.best ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
       case 'favorites':

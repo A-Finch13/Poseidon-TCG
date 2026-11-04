@@ -917,7 +917,7 @@
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
-      send({ type: 'opened', boosters: e.data.boosters }).then((report) => {
+      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
           pityAt = Date.now();
@@ -2049,12 +2049,12 @@
           )
         );
       };
-      // Takes Aquaman back from a player (it stops on their side within 10 minutes), or gives it back.
+      // Takes Aquaman back from a player (it stops on their side within a minute), or gives it back.
       const revokeButton = (u) => {
         const btn = h('button', { type: 'button', class: 'aqm-album-btn aqm-user-revoke' }, u.revoked ? 'Rétablir' : 'Révoquer');
         btn.addEventListener('click', async () => {
           const name = u.name || u.id;
-          if (!u.revoked && !confirm(`Révoquer Aquaman pour ${name} ? Il s’arrêtera chez ce joueur dans les 10 minutes, jusqu’à ce que tu le rétablisses.`)) return;
+          if (!u.revoked && !confirm(`Révoquer Aquaman pour ${name} ? Il s’arrêtera chez ce joueur dans la minute, jusqu’à ce que tu le rétablisses.`)) return;
           btn.disabled = true;
           const res = await ask({ type: 'admin-revoke-player', id: u.id, revoked: !u.revoked }).catch((e) => ({ error: e.message }));
           if (res?.needDevice) return load();
@@ -3476,7 +3476,7 @@
       const when = left <= 1 ? 'au prochain booster' : `dans ${fmt(left)} boosters`;
       return h(
         'div',
-        { class: 'aqm-pity-line', title: p.known ? `${fmt(p.since)} booster${p.since > 1 ? 's' : ''} ouvert${p.since > 1 ? 's' : ''} depuis ta dernière ${code} ou mieux.` : `Aquaman n’a pas encore vu de ${code} sortir : il compte depuis son installation, donc la garantie peut arriver plus tôt.` },
+        { class: 'aqm-pity-line', title: p.known ? `${fmt(p.since)} booster${p.since > 1 ? 's' : ''} ouvert${p.since > 1 ? 's' : ''} depuis ta dernière ${code}.` : `Aquaman n’a pas encore vu de ${code} sortir : il compte depuis son installation, donc la garantie peut arriver plus tôt.` },
         h('p', {}, rarityCode(code), ' garantie ', h('strong', {}, when), p.known ? '' : ' au plus'),
         h('span', { class: 'aqm-bar' }, h('span', { style: `width:${Math.min(100, (100 * p.since) / p.every).toFixed(1)}%` })),
         h('small', {}, p.known ? `${fmt(p.since)} / ${fmt(p.every)} depuis ta dernière ${code}` : `${fmt(p.since)} / ${fmt(p.every)} sans ${code} depuis qu’Aquaman compte`)
@@ -3510,7 +3510,130 @@
           error: 'Compté par Aquaman sur ce navigateur : le partage avec tes autres appareils ne répond pas pour le moment.',
           off: 'Compté par Aquaman à chaque booster ouvert sur ce navigateur (partage entre appareils désactivé).'
         }[pityReport.sync] ?? 'Compté par Aquaman à chaque booster ouvert.'
-      )
+      ),
+      h('div', { class: 'aqm-pity-more' }, h('button', { type: 'button', class: 'aqm-album-btn', onclick: openPityHistory }, '📜 Historique'))
+    );
+  }
+
+  // The tracker of the SSR, UR and SEC (each rarity on its own): how often each drops against
+  // the game's odds, the last boosters opened at a glance, and for each rarity the cards got with the boosters each
+  // one took, the most recent first.
+  async function openPityHistory() {
+    const body = openOverlay('Historique des tirages', 'À quelle fréquence tu tires des SSR, UR et SEC, et combien de boosters il t’a fallu pour chacune.');
+    body.parentElement.classList.add('aqm-panel-wide');
+    const view = h('div', { class: 'aqm-history' }, h('p', { class: 'aqm-note' }, 'Lecture de tes ouvertures…'));
+    body.append(view);
+    let r;
+    try {
+      r = await ask({ type: 'pity-history' });
+    } catch (e) {
+      view.replaceChildren(h('p', { class: 'aqm-note' }, e.message));
+      return;
+    }
+    const CODES = ['SSR', 'UR', 'SEC'];
+    const day = (at) => new Date(at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+    const boosters = (n) => `${fmt(n)} booster${n > 1 ? 's' : ''}`;
+    const decimal = (x) => x.toFixed(1).replace('.', ',');
+    const weeks = r.since ? Math.max(1 / 7, (Date.now() - r.since) / (7 * 86400e3)) : null;
+
+    // One card per rarity: how often it drops, the game's odds (without the guarantee) and the luck.
+    const rate = (code) => {
+      const n = r[code].hits.length;
+      const every = n ? r.opened / n : null;
+      const expected = r.chances?.[code] > 0 ? 1 / r.chances[code] : null;
+      const ratio = every && expected ? expected / every : null;
+      const luck = ratio == null ? null : ratio >= 1.15 ? ['is-good', `${decimal(ratio)}× plus souvent`] : ratio <= 0.87 ? ['is-bad', `${decimal(1 / ratio)}× moins souvent`] : ['', 'Dans la moyenne'];
+      const perWeek = weeks && n ? n / weeks : 0;
+      return h(
+        'div',
+        { class: `aqm-rate is-${code}` },
+        h('div', { class: 'aqm-rate-top' }, rarityCode(code), luck ? h('span', { class: `aqm-tag aqm-luck ${luck[0]}` }, luck[1]) : null),
+        h('p', { class: 'aqm-rate-value' }, every ? ['1 ', h('small', {}, 'tous les'), ` ${fmt(every)}`] : '—'),
+        h('p', { class: 'aqm-rate-sub' }, every ? 'boosters, chez toi' : `aucune en ${boosters(r.opened)}`),
+        h(
+          'p',
+          { class: 'aqm-rate-foot', title: 'La chance du jeu pour un booster classique, sans la garantie anti-malchance.' },
+          expected ? `Jeu : 1 tous les ~${fmt(expected)}` : 'Jeu : chance inconnue',
+          perWeek ? ` · ≈ ${perWeek < 10 ? decimal(perWeek) : fmt(perWeek)}/sem.` : ''
+        )
+      );
+    };
+
+    // The last boosters, one square each, coloured by their best card.
+    const strip = r.recent?.length
+      ? h(
+          'div',
+          { class: 'aqm-history-box' },
+          h('div', { class: 'aqm-history-row' }, h('p', { class: 'aqm-label' }, `Tes ${boosters(r.recent.length)} les plus récents`), h('small', { class: 'aqm-muted' }, 'du plus ancien au plus récent')),
+          h(
+            'div',
+            { class: 'aqm-tracker-strip' },
+            r.recent.map((top) => {
+              const code = top >= 6 ? 'SEC' : top >= 5 ? 'UR' : top >= 4 ? 'SSR' : null;
+              return h('span', { class: `aqm-cell${code ? ` is-${code}` : ''}`, title: code ?? 'Ni SSR, ni UR, ni SEC' });
+            })
+          ),
+          h('p', { class: 'aqm-tracker-legend' }, [null, ...CODES].map((code) => h('span', {}, h('span', { class: `aqm-cell${code ? ` is-${code}` : ''}` }), code ?? 'Autre')))
+        )
+      : null;
+
+    // The cards got for one rarity, as tiles: the picture, how many boosters it took, the day.
+    const tiles = (code) => {
+      const { hits, current } = r[code];
+      const full = hits.filter((x) => !x.first).map((x) => x.after);
+      const stat = (label, value) => h('div', { class: 'aqm-history-stat' }, h('small', {}, label), h('strong', {}, value));
+      return [
+        h(
+          'div',
+          { class: 'aqm-history-stats' },
+          stat('Obtenues', fmt(hits.length)),
+          stat('En moyenne', full.length ? boosters(full.reduce((a, b) => a + b, 0) / full.length) : '—'),
+          stat('Plus rapide', full.length ? boosters(Math.min(...full)) : '—'),
+          stat('Plus long', full.length ? boosters(Math.max(...full)) : '—'),
+          stat('Depuis la dernière', boosters(current))
+        ),
+        hits.length
+          ? h(
+              'div',
+              { class: 'aqm-history-grid' },
+              hits.map((x) => {
+                // Only the card's picture and the boosters it took (its name and day in the tooltip).
+                const link = x.card?.id ? { href: `/jeu/carte/${encodeURIComponent(x.card.id)}` } : {};
+                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
+                return h(
+                  x.card?.id ? 'a' : 'div',
+                  { class: 'aqm-history-tile', ...link, title: tip },
+                  x.card?.image ? h('img', { src: cardImageUrl(x.card.image), alt: x.card.name ?? '', loading: 'lazy', decoding: 'async' }) : h('div', { class: 'aqm-history-blank' }, rarityCode(x.top)),
+                  h('p', { class: 'aqm-history-after' }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after))
+                );
+              })
+            )
+          : h('p', { class: 'aqm-history-empty' }, `Aucune ${code} parmi tes ${boosters(r.opened)} comptés.`)
+      ];
+    };
+
+    // A tab per rarity, the first one with cards open.
+    const panel = h('div', { class: 'aqm-history-panel' });
+    const tabs = h('div', { class: 'aqm-history-tabs', role: 'tablist' });
+    const show = (code) => {
+      tabs.replaceChildren(
+        ...CODES.map((c) =>
+          h(
+            'button',
+            { type: 'button', role: 'tab', class: `aqm-history-tabbtn${c === code ? ' is-on' : ''}`, 'aria-selected': String(c === code), onclick: () => show(c) },
+            rarityCode(c),
+            h('span', { class: 'aqm-history-tabcount' }, fmt(r[c].hits.length))
+          )
+        )
+      );
+      panel.replaceChildren(...tiles(code));
+    };
+    show(CODES.find((code) => r[code].hits.length) ?? 'SSR');
+    view.replaceChildren(
+      h('p', { class: 'aqm-history-count' }, r.since ? `${boosters(r.opened)} comptés depuis le ${new Date(r.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'Aucun booster compté pour le moment.'),
+      h('div', { class: 'aqm-rates' }, CODES.map(rate)),
+      strip,
+      h('div', { class: 'aqm-history-box' }, tabs, panel)
     );
   }
 
@@ -4254,7 +4377,8 @@
     const dots = h('div', { class: 'aqm-wheel-dots' });
     const prev = arrow(-1, 'Catégorie précédente');
     const next = arrow(1, 'Catégorie suivante');
-    strip.replaceChildren(h('div', { class: 'aqm-wheel' }, prev, track, next), controls, dots);
+    const wheel = h('div', { class: 'aqm-wheel' }, prev, track, next);
+    strip.replaceChildren(wheel, controls, dots);
 
     let width = 0;
     function place() {
@@ -4276,6 +4400,7 @@
       });
       wheelKey = ordered[front].key;
       showTitleCount(ordered[front].count);
+      paintGlow(wheel, ordered[front]);
       if (controls.firstChild !== buttonsOf[front]) controls.replaceChildren(buttonsOf[front]);
       // Two kinds: no arrow toward nothing.
       prev.hidden = n < 3 && at === 0;
@@ -4302,6 +4427,57 @@
       place();
       requestAnimationFrame(() => strip.classList.remove('is-still'));
     });
+  }
+
+  // The glow behind the booster in front takes the colour of its pack: the main colour of its picture (the most vivid
+  // pixels count the most), the game's blue for the classic boosters. Read once per picture.
+  const GLOW_BLUE = [37, 99, 235];
+  const glowOf = new Map(); // picture -> Promise<[r, g, b] | null>
+  function packColour(art) {
+    if (!art) return Promise.resolve(null);
+    if (!glowOf.has(art))
+      glowOf.set(
+        art,
+        new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = canvas.height = 24;
+              const g = canvas.getContext('2d', { willReadFrequently: true });
+              g.drawImage(img, 0, 0, 24, 24);
+              const d = g.getImageData(0, 0, 24, 24).data;
+              let r = 0;
+              let gr = 0;
+              let b = 0;
+              let w = 0;
+              for (let i = 0; i < d.length; i += 4) {
+                const max = Math.max(d[i], d[i + 1], d[i + 2]);
+                const sat = max ? (max - Math.min(d[i], d[i + 1], d[i + 2])) / max : 0;
+                const weight = (d[i + 3] / 255) * sat * sat * (max / 255);
+                r += d[i] * weight;
+                gr += d[i + 1] * weight;
+                b += d[i + 2] * weight;
+                w += weight;
+              }
+              if (w < 0.5) return resolve(null);
+              // (as bright as the game's blue glow, whatever the picture)
+              const c = [r / w, gr / w, b / w];
+              const k = 235 / Math.max(...c);
+              resolve(c.map((x) => Math.round(x * k)));
+            } catch {
+              resolve(null); // a picture of another site: its pixels can't be read
+            }
+          };
+          img.onerror = () => resolve(null);
+          img.src = art;
+        })
+      );
+    return glowOf.get(art);
+  }
+  async function paintGlow(wheel, shot) {
+    const c = (await packColour(shot.art)) ?? GLOW_BLUE;
+    if (wheelKey === shot.key) wheel.style.setProperty('--aqm-glow', `rgb(${c.join(' ')} / 0.38)`);
   }
 
   // The strip takes the whole inner width of the home's field (the rounded box around the boosters), whatever the
@@ -4604,7 +4780,7 @@
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       try {
         step();
       } catch (e) {
@@ -4647,7 +4823,19 @@
     );
     document.body.append(box);
   }
-  const helloTimer = setInterval(() => !stopped && settled && document.visibilityState === 'visible' && sayHello(), 60e3);
+  const helloTimer = setInterval(() => {
+    if (stopped || !settled || document.visibilityState !== 'visible') return;
+    sayHello();
+    checkAccess();
+  }, 60e3);
+
+  // Whether the author took Aquaman back from this player: asked once a minute while a page of the game is shown.
+  let accessAt = 0;
+  function checkAccess() {
+    if (Date.now() - accessAt < 55e3) return;
+    accessAt = Date.now();
+    send({ type: 'access' }).then((res) => res?.revoked && !stopped && revoke());
+  }
 
   // The script also looks for a new version every 10 minutes (the script managers only look once a day), and offers
   // it in a box at the bottom of the screen; the extension tells it with its notification and its window.
