@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS pity (
   PRIMARY KEY (player, id)
 );
 CREATE INDEX IF NOT EXISTS pity_player_at ON pity (player, at);
+-- The player's last SEC (MAX(at) of their openings with top >= SEC) found without reading all their openings.
+CREATE INDEX IF NOT EXISTS pity_player_top ON pity (player, top, at);
 
 -- Favourite series of each player, the most recent list (relay/worker.js).
 CREATE TABLE IF NOT EXISTS favorites (

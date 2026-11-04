@@ -265,7 +265,8 @@ async function findHoldings(env, params) {
     )
       .bind(card)
       .all(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM scans WHERE private = 0').first()
+    // (how many collections were read: kept 10 minutes, it reads the whole table)
+    remember('scans-count', 10 * 60e3, () => env.DB.prepare('SELECT COUNT(*) AS n FROM scans WHERE private = 0').first())
   ]);
   return {
     scanned: total?.n ?? 0,
@@ -355,6 +356,24 @@ export class PullsWriter {
   }
 }
 
+// Answers kept a moment in this instance of the relay: the same question asked again reads nothing.
+const memo = new Map();
+async function remember(key, ttl, make) {
+  const hit = memo.get(key);
+  if (hit && Date.now() - hit.at < ttl) return hit.value;
+  const value = await make();
+  if (memo.size > 500) memo.clear();
+  memo.set(key, { at: Date.now(), value });
+  return value;
+}
+
+// The start and end of the history and its size, in a few rows: each aggregate alone uses its index (together in one
+// SELECT they read the whole table), and pulls are never deleted, so the last rowid counts them.
+const pullsSpan = (env) =>
+  remember('pulls-span', 60e3, () =>
+    env.DB.prepare('SELECT (SELECT MIN(pulled_at) FROM pulls) AS since, (SELECT MAX(pulled_at) FROM pulls) AS latest, (SELECT MAX(rowid) FROM pulls) AS total').first()
+  );
+
 // The pulls of a card (?card=), matching a name or a series (?q=), or the latest ones; with the start of the history.
 async function findPulls(env, params) {
   const limit = Math.min(200, Math.max(1, Number(params.get('limit')) || 100));
@@ -365,7 +384,8 @@ async function findPulls(env, params) {
   if (card && CARD.test(card)) stmt = env.DB.prepare(`SELECT ${cols} FROM pulls WHERE card_id = ?1 ORDER BY pulled_at DESC LIMIT ?2`).bind(card, limit);
   else if (q.length >= 2) stmt = env.DB.prepare(`SELECT ${cols} FROM pulls WHERE search LIKE ?1 ORDER BY pulled_at DESC LIMIT ?2`).bind(`%${q.replace(/[%_]/g, '')}%`, limit);
   else stmt = env.DB.prepare(`SELECT ${cols} FROM pulls ORDER BY pulled_at DESC LIMIT ?1`).bind(limit);
-  const [{ results }, first] = await Promise.all([stmt.all(), env.DB.prepare('SELECT MIN(pulled_at) AS since, MAX(pulled_at) AS latest, COUNT(*) AS total FROM pulls').first()]);
+  const key = `pulls:${card ?? ''}:${q}:${limit}`;
+  const [results, first] = await Promise.all([remember(key, 60e3, async () => (await stmt.all()).results), pullsSpan(env)]);
   return {
     since: first?.since ?? null,
     latest: first?.latest ?? null,
@@ -382,11 +402,16 @@ async function findPulls(env, params) {
 // Players seen in the recent pulls, the most recent first.
 async function recentPlayers(env, params) {
   const limit = Math.min(300, Math.max(1, Number(params.get('limit')) || 150));
-  const { results } = await env.DB.prepare(
-    'SELECT player_id AS id, MAX(player_name) AS name, MAX(pulled_at) AS last FROM pulls WHERE player_id IS NOT NULL GROUP BY player_id ORDER BY last DESC LIMIT ?1'
-  )
-    .bind(limit)
-    .all();
+  // (it reads every pull with a player: kept 10 minutes)
+  const results = await remember(`players:${limit}`, 10 * 60e3, async () =>
+    (
+      await env.DB.prepare(
+        'SELECT player_id AS id, MAX(player_name) AS name, MAX(pulled_at) AS last FROM pulls WHERE player_id IS NOT NULL GROUP BY player_id ORDER BY last DESC LIMIT ?1'
+      )
+        .bind(limit)
+        .all()
+    ).results
+  );
   return { players: results.map((r) => ({ id: r.id, name: r.name })) };
 }
 
@@ -421,7 +446,7 @@ async function readGameFeed(env) {
 async function status(env) {
   const { results } = await env.DB.prepare("SELECT key, value FROM meta WHERE key LIKE 'feed_%'").all();
   const meta = Object.fromEntries(results.map((r) => [r.key, r.value]));
-  const latest = await env.DB.prepare('SELECT MAX(pulled_at) AS latest, COUNT(*) AS total FROM pulls').first();
+  const latest = await pullsSpan(env);
   const time = (v) => (v ? new Date(Number(v)).toISOString() : null);
   return {
     reading: env.GAME_COOKIE ? meta.feed_state ?? 'waiting' : 'off',
