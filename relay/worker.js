@@ -77,6 +77,7 @@ export default {
       if (req.method === 'GET' && pathname === '/players') return shared(await recentPlayers(env, url.searchParams));
       if (req.method === 'GET' && pathname === '/status') return json(await status(env));
       if (req.method === 'POST' && pathname === '/hello') return json(await hello(env, await readBody(req)));
+      if (req.method === 'GET' && pathname === '/access') return json(await access(env, url.searchParams));
       if (pathname.startsWith('/admin/')) return await admin(req, env, url);
       return json({ error: 'not_found' }, 404);
     } catch (e) {
@@ -500,6 +501,14 @@ async function hello(env, body) {
   return { ok: true, revoked: !!row?.revoked };
 }
 
+// Whether the author took Aquaman back from a player (?player=): asked every minute by each Aquaman, one row read.
+async function access(env, params) {
+  const player = String(params.get('player') ?? '');
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  const row = await env.DB.prepare('SELECT revoked FROM users WHERE player = ?1').bind(player).first();
+  return { revoked: !!row?.revoked };
+}
+
 // True when the request carries the author's code (compared in constant time).
 function isAuthor(req, env) {
   const given = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
@@ -600,7 +609,7 @@ async function admin(req, env, url) {
     return json({ ok: true });
   }
   if (req.method === 'POST' && path === '/admin/packs') return json(await publishPacks(env, data));
-  // A player's Aquaman taken back (revoked: true) or given back: it stops at its next hello (10 minutes at most).
+  // A player's Aquaman taken back (revoked: true) or given back: it stops within a minute (GET /access).
   if (req.method === 'POST' && path === '/admin/users/revoke' && PLAYER.test(String(data.id ?? ''))) {
     await env.DB.prepare('UPDATE users SET revoked = ?2 WHERE player = ?1').bind(data.id, data.revoked ? Date.now() : null).run();
     return json({ ok: true });
