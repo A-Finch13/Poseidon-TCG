@@ -4,8 +4,10 @@ CREATE TABLE IF NOT EXISTS pity (
   id TEXT NOT NULL,
   at INTEGER NOT NULL,
   top INTEGER NOT NULL,
+  card TEXT, -- the best card of a SSR, UR or SEC opening (JSON: id, name, image, rarity), for the history
   PRIMARY KEY (player, id)
 );
+-- On a database made before it: ALTER TABLE pity ADD COLUMN card TEXT;
 CREATE INDEX IF NOT EXISTS pity_player_at ON pity (player, at);
 -- The player's last SEC (MAX(at) of their openings with top >= SEC) found without reading all their openings.
 CREATE INDEX IF NOT EXISTS pity_player_top ON pity (player, top, at);

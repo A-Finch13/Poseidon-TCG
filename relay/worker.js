@@ -112,7 +112,9 @@ async function pity(env, body) {
   if (!PLAYER.test(player)) throw new Error('bad_player');
   const events = (Array.isArray(body.events) ? body.events : []).slice(0, MAX_IN).filter(valid);
   if (events.length)
-    await env.DB.batch(events.map((e) => env.DB.prepare('INSERT OR IGNORE INTO pity (player, id, at, top) VALUES (?1, ?2, ?3, ?4)').bind(player, e.id, Math.round(e.at), e.top)));
+    await env.DB.batch(
+      events.map((e) => env.DB.prepare('INSERT OR IGNORE INTO pity (player, id, at, top, card) VALUES (?1, ?2, ?3, ?4, ?5)').bind(player, e.id, Math.round(e.at), e.top, pityCard(e)))
+    );
   const [{ results }, sec] = await Promise.all([
     env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at DESC LIMIT ?2').bind(player, KEEP).all(),
     env.DB.prepare(
@@ -125,13 +127,27 @@ async function pity(env, body) {
   return { events: results.reverse(), sec: { since: sec?.since ?? 0, known: sec?.last != null } };
 }
 
-// All the openings of a player kept (a year), oldest first, for their history ("Historique" of the pity); read only
-// when the player opens it.
+// The best card of a SSR, UR or SEC opening ({ id, name, image, rarity }), checked, as JSON; null for the others.
+function pityCard(e) {
+  const c = e?.card;
+  if (e.top < 4 || !c || !CARD.test(String(c.id ?? '')) || !RARE.has(c.rarity)) return null;
+  return JSON.stringify({ id: c.id, name: text(c.name, 120), image: text(c.image, 200), rarity: c.rarity });
+}
+
+// All the openings of a player kept (a year), oldest first, with the card of their SSR, UR and SEC when it was kept;
+// and the player's pulls seen in the game's "beaux tirages", to find the card of the older ones. For their history
+// ("Historique" of the pity); read only when the player opens it.
 async function pityAll(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
-  const { results } = await env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at LIMIT 50000').bind(player).all();
-  return { events: results };
+  const [{ results }, { results: pulls }] = await Promise.all([
+    env.DB.prepare('SELECT id, at, top, card FROM pity WHERE player = ?1 ORDER BY at LIMIT 50000').bind(player).all(),
+    env.DB.prepare('SELECT card_id, card_name, rarity, image, pulled_at FROM pulls WHERE player_id = ?1 ORDER BY pulled_at DESC LIMIT 2000').bind(player).all()
+  ]);
+  return {
+    events: results.map((r) => ({ id: r.id, at: r.at, top: r.top, card: r.card ? JSON.parse(r.card) : null })),
+    pulls: pulls.map((p) => ({ id: p.card_id, name: p.card_name, rarity: p.rarity, image: p.image, at: p.pulled_at }))
+  };
 }
 
 // Keeps the most recent list of favourite series of the player (by the time of its change), and sends it back.
