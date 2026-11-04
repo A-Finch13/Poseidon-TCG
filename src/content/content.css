@@ -1555,6 +1555,127 @@ html.aqm-grabbing * {
   margin-top: 3px;
   accent-color: #2563eb;
 }
+.aqm-switch.is-off {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Réglages: a card per group, each setting with its title, its hint and a switch on the right. */
+.aqm-settings-groups {
+  columns: 2 340px;
+  column-gap: 14px;
+}
+.aqm-settings-group {
+  break-inside: avoid;
+  margin: 0 0 14px;
+  padding: 6px 0;
+  border: 1px solid var(--aqm-line);
+  border-radius: 18px;
+  background: var(--aqm-card);
+}
+.aqm-settings-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 16px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #93c5fd;
+}
+.aqm-settings-title span {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+.aqm-setting {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+.aqm-setting + .aqm-setting {
+  border-top: 1px solid var(--aqm-line);
+}
+.aqm-setting:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+.aqm-setting.is-off {
+  cursor: default;
+  opacity: 0.45;
+}
+.aqm-setting-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.aqm-setting-text strong {
+  font-size: 14px;
+  color: var(--aqm-text);
+}
+.aqm-setting-text small {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--aqm-dim);
+}
+.aqm-toggle {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.aqm-toggle::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.aqm-toggle:checked {
+  background: #2563eb;
+}
+.aqm-toggle:checked::before {
+  transform: translateX(16px);
+}
+.aqm-toggle:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+.aqm-toggle:disabled {
+  cursor: default;
+}
+.aqm-settings-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+.aqm-settings-foot p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--aqm-dim);
+}
+.aqm-settings-actions {
+  display: flex;
+  gap: 8px;
+}
 
 /* ---------- Qui a tiré… ? ---------- */
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.0
+// @version      1.4.1
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -39,14 +39,14 @@
  *  2. aquaman.js  — accès à l'API du jeu, collections, calcul des boosters ;
  *  3. bridge.js   — fait dans la page le travail du service de fond de l'extension ;
  *  4. inject.js   — lit les réponses que le site reçoit déjà (boosters à ouvrir, collection modifiée) ;
- *  5. tutorial.js et content.js — étapes de la visite et nouveautés, puis tout ce qui s'affiche sur le site ;
- *  6. panel.js    — réglages dans le menu « Plus ».
+ *  5. tutorial.js et content.js — étapes de la visite et nouveautés, puis tout ce qui s'affiche sur le site
+ *     (réglages compris, dans le menu « Plus », les mêmes que l'extension).
  */
 (() => {
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -159,15 +159,70 @@ const RANK = { N: 1, R: 2, SR: 3, SSR: 4, UR: 5, SEC: 6 };
 
 // ---------- settings ----------
 
-const DEFAULTS = {
-  notifyBoosters: true,
-  notifyUpdated: true,
-  syncPity: true,
-  syncFavorites: true,
-  syncWants: true,
-  syncMarket: true,
-  sharePulls: true
-};
+// Every setting, by group: the same list in the extension's popup and in "Plus › Réglages" (extension and script, on
+// a computer or a phone). All are on at first. Each item: [key, title, hint, only] (only: "extension" for what the
+// script can't do).
+const SETTINGS = [
+  {
+    title: 'Accueil',
+    icon: '🏠',
+    items: [
+      ['boosterWheel', 'Boosters par catégorie', 'Classique, Magie, Action… côte à côte, avec le compte de chacun'],
+      ['packGlow', 'Lueur du pack', 'La lueur derrière le booster prend la couleur de son pack'],
+      ['pity', 'Garantie anti-malchance', 'Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages'],
+      ['bigPulls', 'Beaux tirages agrandis', 'Les dernières cartes rares tirées par les joueurs, en plus grand']
+    ]
+  },
+  {
+    title: 'Collection',
+    icon: '🗂️',
+    items: [
+      ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites et tri « Les plus avancées »'],
+      ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
+      ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
+      ['missingSales', 'Bouton « En vente »', 'Sur les cartes manquantes vendues au marché, avec les 5 moins chères']
+    ]
+  },
+  {
+    title: 'Marché',
+    icon: '🛒',
+    items: [
+      ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
+      ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
+      ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
+    ]
+  },
+  {
+    title: 'Échanges et vitrine',
+    icon: '🔁',
+    items: [
+      ['tradeMarks', 'Échanges', 'Cartes agrandies et pastille « déjà possédée »'],
+      ['showcaseDrag', 'Ma vitrine', 'Glisser-déposer pour ranger tes cartes'],
+      ['recycleHelp', 'Recycler des cartes', 'Rien de coché au départ, bouton « Tout cocher »']
+    ]
+  },
+  {
+    title: 'Notifications',
+    icon: '🔔',
+    items: [
+      ['notifyBoosters', 'Nouveaux boosters', 'Une notification quand des boosters t’attendent', 'extension'],
+      ['notifyUpdated', 'Nouveautés', 'Ce qui a changé, après une mise à jour d’Aquaman']
+    ]
+  },
+  {
+    title: 'Partage entre mes appareils',
+    icon: '☁️',
+    items: [
+      ['syncPity', 'Garantie anti-malchance', 'Le compte des boosters ouverts et l’historique'],
+      ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
+      ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
+      ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
+      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
+    ]
+  }
+];
+
+const DEFAULTS = Object.fromEntries(SETTINGS.flatMap((g) => g.items.map(([key]) => [key, true])));
 
 // Settings with their default values.
 async function getSettings() {
@@ -1528,6 +1583,10 @@ async function answer(msg) {
         return await boosterReport(msg.query, msg.rarity, msg.field);
       case 'access':
         return await access();
+      case 'settings':
+        return { groups: SETTINGS, values: await getSettings() };
+      case 'set-settings':
+        return { values: await setSettings(msg.patch ?? {}) };
       case 'pity-history':
         return await pityHistory();
       case 'pity':
@@ -1957,9 +2016,76 @@ async function handle(msg) {
     return best;
   }
 
-  // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through.
+  // ---------- the picture of a themed kind in the 3D pack of the opening ----------
+  // The game draws the pack of its opening window in 3D (three.js) with the classic picture (classique.webp) when it
+  // opens several boosters, whatever their kind. While Aquaman opens a themed kind (content.js writes its picture in
+  // data-aqm-opening-art), that picture takes the classic one's place wherever the game loads or draws it: the same
+  // size (720 × 1080), nothing else changes.
+  const CLASSIC_ART = /\/game\/boosters\/classique\.(webp|png|jpe?g)/i;
+  const openingArt = () => document.documentElement.getAttribute('data-aqm-opening-art') || '';
+  const isClassicUrl = (url) => {
+    try {
+      return CLASSIC_ART.test(decodeURIComponent(String(url ?? '')));
+    } catch {
+      return CLASSIC_ART.test(String(url ?? ''));
+    }
+  };
+  const arts = new Map(); // picture -> its <img>, loaded once
+  const artImage = (url) => {
+    if (!arts.has(url)) {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = url;
+      arts.set(url, img);
+    }
+    return arts.get(url);
+  };
+  new MutationObserver(() => openingArt() && artImage(openingArt())).observe(document.documentElement, { attributes: true, attributeFilter: ['data-aqm-opening-art'] });
+  // A classic picture already loaded (kept by the game): its themed replacement, once loaded, else null.
+  const swapFor = (source) => {
+    const art = openingArt();
+    if (!art || !(source instanceof HTMLImageElement) || !isClassicUrl(source.currentSrc || source.src)) return null;
+    const img = artImage(art);
+    return img.complete && img.naturalWidth ? img : null;
+  };
+  const srcSetter = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+  Object.defineProperty(HTMLImageElement.prototype, 'src', {
+    ...srcSetter,
+    set(url) {
+      const art = openingArt();
+      srcSetter.set.call(this, art && isClassicUrl(url) ? art : url);
+    }
+  });
+  for (const proto of [CanvasRenderingContext2D.prototype, globalThis.OffscreenCanvasRenderingContext2D?.prototype].filter(Boolean)) {
+    const draw = proto.drawImage;
+    proto.drawImage = function (source, ...rest) {
+      return draw.call(this, swapFor(source) ?? source, ...rest);
+    };
+  }
+  for (const proto of [globalThis.WebGLRenderingContext?.prototype, globalThis.WebGL2RenderingContext?.prototype].filter(Boolean))
+    for (const name of ['texImage2D', 'texSubImage2D']) {
+      const upload = proto[name];
+      proto[name] = function (...args) {
+        const i = args.findIndex((a) => a instanceof HTMLImageElement);
+        if (i >= 0) {
+          const swap = swapFor(args[i]);
+          if (swap) args[i] = swap;
+        }
+        return upload.apply(this, args);
+      };
+    }
+  const bitmap = globalThis.createImageBitmap;
+  if (bitmap)
+    globalThis.createImageBitmap = function (source, ...rest) {
+      return bitmap.call(this, swapFor(source) ?? source, ...rest);
+    };
+
+  // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through, but the
+  // classic picture of a pack is fetched as the themed one during a themed opening (see above).
   window.fetch = function (input, init) {
     const path = pathOf(input);
+    const art = openingArt();
+    if (art && isClassicUrl(typeof input === 'string' ? input : input?.url ?? String(input))) return original.call(this, art, init);
     if (!path?.startsWith('/api-game/')) return original.apply(this, arguments);
     return watch(original.apply(this, arguments), path, input, init);
   };
@@ -3636,6 +3762,127 @@ html.aqm-grabbing * {
   margin-top: 3px;
   accent-color: #2563eb;
 }
+.aqm-switch.is-off {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Réglages: a card per group, each setting with its title, its hint and a switch on the right. */
+.aqm-settings-groups {
+  columns: 2 340px;
+  column-gap: 14px;
+}
+.aqm-settings-group {
+  break-inside: avoid;
+  margin: 0 0 14px;
+  padding: 6px 0;
+  border: 1px solid var(--aqm-line);
+  border-radius: 18px;
+  background: var(--aqm-card);
+}
+.aqm-settings-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 16px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #93c5fd;
+}
+.aqm-settings-title span {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+.aqm-setting {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+.aqm-setting + .aqm-setting {
+  border-top: 1px solid var(--aqm-line);
+}
+.aqm-setting:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+.aqm-setting.is-off {
+  cursor: default;
+  opacity: 0.45;
+}
+.aqm-setting-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.aqm-setting-text strong {
+  font-size: 14px;
+  color: var(--aqm-text);
+}
+.aqm-setting-text small {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--aqm-dim);
+}
+.aqm-toggle {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.aqm-toggle::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.aqm-toggle:checked {
+  background: #2563eb;
+}
+.aqm-toggle:checked::before {
+  transform: translateX(16px);
+}
+.aqm-toggle:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+.aqm-toggle:disabled {
+  cursor: default;
+}
+.aqm-settings-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+.aqm-settings-foot p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--aqm-dim);
+}
+.aqm-settings-actions {
+  display: flex;
+  gap: 8px;
+}
 
 /* ---------- Qui a tiré… ? ---------- */
 
@@ -4830,6 +5077,14 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.1',
+    items: [
+      ['Réglages : Plus › Réglages permet d’activer ou de couper chaque fonction d’Aquaman (boosters par catégorie, lueur, garantie, « Manquantes », « En vente », échanges…). La même liste sur PC et téléphone, dans l’extension comme dans le script, et dans la fenêtre de l’extension.'],
+      ['Collection : changer de série ne fait plus sauter la page ; la file d’attente des recherches reste en bas de l’écran et dans Séries favorites.'],
+      ['Correction : en ouvrant des boosters à thème (Action, Magie…), le pack de l’animation d’ouverture a bien l’image de sa catégorie, et non celle du booster classique.']
+    ]
+  },
+  {
     version: '1.4.0',
     items: [
       ['Garantie anti-malchance : un bouton « Historique » ouvre ton tracker. Il montre à quelle fréquence tu tires des SSR, UR et SEC comparé à la chance du jeu, tes 300 derniers boosters d’un coup d’œil, et combien de boosters il t’a fallu pour chacune.'],
@@ -4948,6 +5203,8 @@ const CHANGES = [
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>';
   const ICON_COMPASS =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216ZM172.42,72.84l-64,32a8.05,8.05,0,0,0-3.58,3.58l-32,64A8,8,0,0,0,80,184a8.1,8.1,0,0,0,3.58-.84l64-32a8.05,8.05,0,0,0,3.58-3.58l32-64a8,8,0,0,0-10.74-10.74ZM138,138,97.89,158.11,118,118l40.15-20.07Z"/></svg>';
+  const ICON_GEAR =
+    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm88-29.84q.06-2.16,0-4.32l14.92-18.64a8,8,0,0,0,1.48-7.06,107.21,107.21,0,0,0-10.88-26.25,8,8,0,0,0-6-3.93l-23.72-2.64q-1.48-1.56-3-3L186,40.54a8,8,0,0,0-3.94-6,107.71,107.71,0,0,0-26.25-10.87,8,8,0,0,0-7.06,1.49L130.16,40Q128,40,125.84,40L107.2,25.11a8,8,0,0,0-7.06-1.48A107.6,107.6,0,0,0,73.89,34.51a8,8,0,0,0-3.93,6L67.32,64.27q-1.56,1.49-3,3L40.54,70a8,8,0,0,0-6,3.94,107.71,107.71,0,0,0-10.87,26.25,8,8,0,0,0,1.49,7.06L40,125.84Q40,128,40,130.16L25.11,148.8a8,8,0,0,0-1.48,7.06,107.21,107.21,0,0,0,10.88,26.25,8,8,0,0,0,6,3.93l23.72,2.64q1.49,1.56,3,3L70,215.46a8,8,0,0,0,3.94,6,107.71,107.71,0,0,0,26.25,10.87,8,8,0,0,0,7.06-1.49L125.84,216q2.16.06,4.32,0l18.64,14.92a8,8,0,0,0,7.06,1.48,107.21,107.21,0,0,0,26.25-10.88,8,8,0,0,0,3.93-6l2.64-23.72q1.56-1.48,3-3L215.46,186a8,8,0,0,0,6-3.94,107.71,107.71,0,0,0,10.87-26.25,8,8,0,0,0-1.49-7.06Z"/></svg>';
   const ICON_SPARK =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M197.58,129.06,146,110l-19-51.62a15.92,15.92,0,0,0-29.88,0L78,110l-51.62,19a15.92,15.92,0,0,0,0,29.88L78,178l19,51.62a15.92,15.92,0,0,0,29.88,0L146,178l51.62-19a15.92,15.92,0,0,0,0-29.88ZM137,164.22a8,8,0,0,0-4.74,4.74L112,223.85,91.78,169A8,8,0,0,0,87,164.22L32.15,144,87,123.78A8,8,0,0,0,91.78,119L112,64.15,132.22,119a8,8,0,0,0,4.74,4.74L191.85,144ZM144,40a8,8,0,0,1,8-8h16V16a8,8,0,0,1,16,0V32h16a8,8,0,0,1,0,16H184V64a8,8,0,0,1-16,0V48H152A8,8,0,0,1,144,40ZM248,88a8,8,0,0,1-8,8h-8v8a8,8,0,0,1-16,0V96h-8a8,8,0,0,1,0-16h8V72a8,8,0,0,1,16,0v8h8A8,8,0,0,1,248,88Z"/></svg>';
   const ICON_SEARCH =
@@ -5046,6 +5303,17 @@ const CHANGES = [
   const pause = (ms) => new Promise((r) => setTimeout(r, ms));
   let queueRunning = false;
   let settled = false; // the page was taken over by React: Aquaman may change it (see whenSettled)
+
+  // The features the player turned off ("Plus › Réglages" or the extension's popup), read at start; a change applies
+  // once the page is loaded again.
+  let feat = {};
+  let featLoaded = false;
+  const on = (key) => feat[key] !== false;
+  const featReady = chrome.storage.local
+    .get('settings')
+    .then(({ settings }) => (feat = settings ?? {}))
+    .catch(() => {})
+    .finally(() => (featLoaded = true));
 
   const readQueue = async () => (await chrome.storage.local.get(QUEUE))[QUEUE] ?? null;
   const writeQueue = (q) => chrome.storage.local.set({ [QUEUE]: q });
@@ -5594,7 +5862,7 @@ const CHANGES = [
   }
 
   function hideBoughtCards() {
-    if (!boughtNames.size || !location.pathname.startsWith('/jeu')) return;
+    if (!on('hideBought') || !boughtNames.size || !location.pathname.startsWith('/jeu')) return;
     for (const t of marketTiles()) {
       const { tile } = t;
       if (tile.hasAttribute('data-aqm-bought')) continue;
@@ -5780,6 +6048,12 @@ const CHANGES = [
   // The queue changed (in this tab or another one): the boxes follow, and this tab takes over if needed.
   function onStorage(changes) {
     if (stopped || !settled) return;
+    // A feature turned on or off elsewhere (the extension's popup, another tab): offered to load the page again.
+    if (changes.settings && !settingsOpen) {
+      const now = changes.settings.newValue ?? {};
+      const STEPS = new Set(STEP_SETTING.values()).add('packGlow');
+      if ([...STEPS].some((key) => (now[key] !== false) !== on(key))) offerReload();
+    }
     if (changes[QUEUE]) {
       renderBox();
       runQueue();
@@ -6009,6 +6283,7 @@ const CHANGES = [
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
       item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
       item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews()),
+      item('Réglages', 'Activer ou couper chaque fonction d’Aquaman', ICON_GEAR, openSettings),
       meId === AUTHOR_ID ? item('Joueurs avec Aquaman', 'Réservé à l’auteur', ICON_TROPHY, openUsers) : null,
       meId === AUTHOR_ID ? item('Scanner les packs', 'Publier le design de chaque booster', ICON_PACK, startScan) : null
     );
@@ -6019,6 +6294,59 @@ const CHANGES = [
     const below = r.bottom + 8 + menu.offsetHeight < innerHeight;
     menu.style.top = `${below ? r.bottom + 8 : r.top - 8 - menu.offsetHeight}px`;
     menu.style.left = `${Math.max(8, Math.min(innerWidth - menu.offsetWidth - 8, r.left + r.width / 2 - menu.offsetWidth / 2))}px`;
+  }
+
+  // The settings, the same in the extension and the script, on a computer or a phone (SETTINGS in src/lib/aquaman.js).
+  // A feature turned on or off applies once the window is closed: the page is loaded again.
+  let settingsOpen = false;
+  async function openSettings() {
+    const body = openOverlay('Réglages', `Aquaman ${chrome.runtime.getManifest().version} · ${owner === 'userscript' ? 'script' : 'extension'} · les mêmes réglages sur PC et téléphone`);
+    body.parentElement.classList.add('aqm-panel-wide');
+    let r;
+    try {
+      r = await ask({ type: 'settings' });
+    } catch (e) {
+      body.append(h('p', { class: 'aqm-note' }, e.message));
+      return;
+    }
+    const values = { ...r.values };
+    const before = JSON.stringify(values);
+    // A card per group, each setting with its title, its hint and a switch on the right.
+    const row = ([key, title, hint, only]) => {
+      const away = only === 'extension' && owner === 'userscript';
+      const box = h('input', { type: 'checkbox', role: 'switch', class: 'aqm-toggle', disabled: away, 'aria-label': title });
+      box.checked = !away && !!values[key];
+      box.addEventListener('change', () => {
+        values[key] = box.checked;
+        ask({ type: 'set-settings', patch: { [key]: box.checked } }).catch(() => {});
+      });
+      return h(
+        'label',
+        { class: `aqm-setting${away ? ' is-off' : ''}` },
+        h('span', { class: 'aqm-setting-text' }, h('strong', {}, title), h('small', {}, away ? `${hint} · extension sur PC seulement` : hint)),
+        box
+      );
+    };
+    body.append(
+      h(
+        'div',
+        { class: 'aqm-settings-groups' },
+        r.groups.map((group) =>
+          h('section', { class: 'aqm-settings-group' }, h('p', { class: 'aqm-settings-title' }, h('span', { 'aria-hidden': 'true' }, group.icon ?? ''), group.title), group.items.map(row))
+        )
+      ),
+      h(
+        'div',
+        { class: 'aqm-settings-foot' },
+        h('p', {}, 'Un changement s’applique à la fermeture de cette fenêtre : la page se recharge.'),
+        h('div', { class: 'aqm-settings-actions' }, h('button', { type: 'button', class: 'aqm-tour-btn', onclick: () => openNews() }, 'Nouveautés'), h('button', { type: 'button', class: 'aqm-tour-btn is-main', onclick: () => startTour(0) }, 'Visite guidée'))
+      )
+    );
+    settingsOpen = true;
+    overlayClosed = () => {
+      settingsOpen = false;
+      if (JSON.stringify(values) !== before) location.reload();
+    };
   }
 
   function closeMenu() {
@@ -7667,7 +7995,7 @@ const CHANGES = [
     const paintWant = () => {
       want.hidden = !st.missing;
       want.disabled = !st.toWant;
-      want.textContent = st.toWant ? `🔭 Rechercher les ${st.toWant} manquante${st.toWant > 1 ? 's' : ''}` : '🔭 Toutes les manquantes sont recherchées';
+      want.textContent = st.toWant > 1 ? `🔭 Rechercher les ${st.toWant} manquantes` : st.toWant ? '🔭 Rechercher la manquante' : '🔭 Toutes les manquantes sont recherchées';
       want.title = 'Les mettre dans ta liste de recherches : le jeu te prévient quand elles sont mises en vente';
     };
     want.addEventListener('click', async () => {
@@ -7680,8 +8008,9 @@ const CHANGES = [
       note.textContent = wantsNote(r, 'tu peux changer de page ou ouvrir des boosters');
     });
     paintWant();
-    // The progress of the adding and of the waiting cards; once it ended, the buttons show what is left to search.
-    box.replaceChildren(fav, want, note, searchPanel(() => box.isConnected && renderAlbum(box, id)));
+    // (no progress of the waiting cards here: drawn again at each series, it made the page jump; it stays at the
+    // bottom of the screen and in "Séries favorites")
+    box.replaceChildren(fav, want, note);
   }
 
   async function openFavorites() {
@@ -9181,6 +9510,11 @@ const CHANGES = [
     }
   }
 
+  // The game draws the 3D pack of its opening window with the classic picture when it opens several boosters: while
+  // Aquaman opens a themed kind, its picture is written on the page for inject.js, which puts it in the classic one's
+  // place.
+  const OPENING_ART = 'data-aqm-opening-art';
+
   async function openFromCopy(key, index) {
     if (drawing || opening) return;
     opening = true;
@@ -9190,6 +9524,8 @@ const CHANGES = [
       if (!(await showKind(key, true))) return;
       title?.removeAttribute('data-aqm-veiled'); // the game counts the boosters of the kind it opens
       const real = [...(findHomeParts()?.buttons.querySelectorAll('button') ?? [])][index];
+      const art = boosterKinds().find((k) => k.key === key)?.art;
+      if (art && siteUrl(art)) document.documentElement.setAttribute(OPENING_ART, art.split(/[?#]/)[0]);
       real?.click();
       // The game opens (its window shows): the copies are drawn again once it is done.
       const started = Date.now();
@@ -9199,6 +9535,7 @@ const CHANGES = [
       await showKind('', false, true);
       await unveilTitle(title);
     } finally {
+      document.documentElement.removeAttribute(OPENING_ART);
       title?.removeAttribute('data-aqm-veiled');
       opening = false;
       piles = null;
@@ -9207,7 +9544,7 @@ const CHANGES = [
   }
 
   function markBoosterKinds() {
-    if (!/^\/jeu\/?$/.test(location.pathname) || drawing || opening) return;
+    if (!featLoaded || !on('boosterWheel') || !/^\/jeu\/?$/.test(location.pathname) || drawing || opening) return;
     // The game read its boosters before Aquaman listened: inject.js wrote them on the page; else Aquaman reads them
     // once itself (all of them).
     try {
@@ -9397,7 +9734,7 @@ const CHANGES = [
     return glowOf.get(art);
   }
   async function paintGlow(wheel, shot) {
-    const c = (await packColour(shot.art)) ?? GLOW_BLUE;
+    const c = (on('packGlow') && (await packColour(shot.art))) || GLOW_BLUE;
     if (wheelKey === shot.key) wheel.style.setProperty('--aqm-glow', `rgb(${c.join(' ')} / 0.38)`);
   }
 
@@ -9691,6 +10028,25 @@ const CHANGES = [
 
   // ---------- loop ----------
 
+  // The steps of run() that a setting turns off (SETTINGS in src/lib/aquaman.js).
+  const STEP_SETTING = new Map([
+    [enlargePulls, 'bigPulls'],
+    [showPity, 'pity'],
+    [markSeriesStrip, 'seriesTools'],
+    [markFavoriteSeries, 'seriesTools'],
+    [markAlbum, 'albumButtons'],
+    [markMissingTab, 'missingTab'],
+    [markMissingSales, 'missingSales'],
+    [markSellDialog, 'sellTools'],
+    [markUnlistButton, 'sellTools'],
+    [hideBoughtCards, 'hideBought'],
+    [markMarketFavorites, 'marketFavorites'],
+    [markRecycleDialog, 'recycleHelp'],
+    [markBoosterKinds, 'boosterWheel'],
+    [enhanceShowcaseEditor, 'showcaseDrag'],
+    [markTrades, 'tradeMarks']
+  ]);
+
   function run() {
     if (stopped) return;
     if (!alive()) return shutdown();
@@ -9702,6 +10058,7 @@ const CHANGES = [
     const began = performance.now();
     runText = null;
     for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+      if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
       try {
         step();
       } catch (e) {
@@ -9792,6 +10149,24 @@ const CHANGES = [
   // its last run took, the longer it waits (8 times as long, 0.15 to 1.5 s), so the game keeps most of the time.
   // The run waits for a moment when the browser has nothing to draw (1 s more at most), and for the tab to be shown
   // again when it is hidden.
+  // Settings changed elsewhere: a box offers to load the page again to apply them.
+  function offerReload() {
+    if (document.querySelector('.aqm-reload')) return;
+    const box = h(
+      'div',
+      { class: 'aqm-root aqm-update aqm-reload', role: 'status' },
+      h('div', { class: 'aqm-queue-head' }, h('strong', {}, '🔱 Réglages d’Aquaman modifiés')),
+      h('p', {}, 'Recharge la page pour les appliquer.'),
+      h(
+        'div',
+        { class: 'aqm-update-actions' },
+        h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => box.remove() }, 'Plus tard'),
+        h('button', { type: 'button', class: 'aqm-queue-btn is-main', onclick: () => location.reload() }, 'Recharger')
+      )
+    );
+    document.body.append(box);
+  }
+
   let queued = false;
   let runCost = 0;
   // A visit of a page: a new one each time the path changes (another series keeps the path).
@@ -9888,7 +10263,7 @@ const CHANGES = [
   addEventListener('message', (e) => {
     if (e.source === window && e.data?.aquaman === 'boosters-refreshed') onBoostersRefreshed(e.data.id, !!e.data.ok);
   });
-  loadShotStore().then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
+  Promise.all([loadShotStore(), featReady]).then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
   if (/^\/jeu\/?$/.test(location.pathname)) {
     let frame = 0;
     const early = new MutationObserver(() => {
@@ -9922,91 +10297,8 @@ const CHANGES = [
   });
 })();
 
-  // ---------- 6. src/userscript/panel.js : réglages ----------
-  if (document.documentElement.dataset.aqmOwner === OWNER) {
-// Userscript: settings in the "Plus" menu of the site, in place of the extension's popup.
-(() => {
-  const OPTIONS = [
-    ['notifyUpdated', 'Afficher les nouveautés après une mise à jour du script'],
-    ['syncPity', 'Partager le compte de la garantie anti-malchance entre mes appareils (PC, téléphone, extension et script)'],
-    ['syncFavorites', 'Partager mes séries favorites entre mes appareils'],
-    ['syncWants', 'Partager les cartes en attente de recherche entre mes appareils'],
-    ['syncMarket', 'Partager les cartes achetées masquées et les doublons en attente de vente entre mes appareils'],
-    ['sharePulls', 'Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)']
-  ];
-  const ICON_GEAR =
-    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Zm88-29.84q.06-2.16,0-4.32l14.92-18.64a8,8,0,0,0,1.48-7.06,107.21,107.21,0,0,0-10.88-26.25,8,8,0,0,0-6-3.93l-23.72-2.64q-1.48-1.56-3-3L186,40.54a8,8,0,0,0-3.94-6,107.71,107.71,0,0,0-26.25-10.87,8,8,0,0,0-7.06,1.49L130.16,40Q128,40,125.84,40L107.2,25.11a8,8,0,0,0-7.06-1.48A107.6,107.6,0,0,0,73.89,34.51a8,8,0,0,0-3.93,6L67.32,64.27q-1.56,1.49-3,3L40.54,70a8,8,0,0,0-6,3.94,107.71,107.71,0,0,0-10.87,26.25,8,8,0,0,0,1.49,7.06L40,125.84Q40,128,40,130.16L25.11,148.8a8,8,0,0,0-1.48,7.06,107.21,107.21,0,0,0,10.88,26.25,8,8,0,0,0,6,3.93l23.72,2.64q1.49,1.56,3,3L70,215.46a8,8,0,0,0,3.94,6,107.71,107.71,0,0,0,26.25,10.87,8,8,0,0,0,7.06-1.49L125.84,216q2.16.06,4.32,0l18.64,14.92a8,8,0,0,0,7.06,1.48,107.21,107.21,0,0,0,26.25-10.88,8,8,0,0,0,3.93-6l2.64-23.72q1.56-1.48,3-3L215.46,186a8,8,0,0,0,6-3.94,107.71,107.71,0,0,0,10.87-26.25,8,8,0,0,0-1.49-7.06Z"/></svg>';
-
-  // Settings window.
-  async function openSettings() {
-    document.querySelector('.aqm-settings')?.remove();
-    const { settings } = await chrome.storage.local.get('settings');
-    const current = { notifyUpdated: true, syncPity: true, syncFavorites: true, syncWants: true, syncMarket: true, sharePulls: true, ...settings };
-    const close = () => {
-      back.remove();
-      document.removeEventListener('keydown', onKey, true);
-    };
-    const onKey = (e) => e.key === 'Escape' && (e.stopPropagation(), close());
-    const go = (hash) => {
-      close();
-      location.hash = hash;
-    };
-    const back = document.createElement('div');
-    back.className = 'aqm-root aqm-overlay aqm-settings';
-    back.innerHTML = `
-      <div class="aqm-panel" role="dialog" aria-modal="true" aria-label="Réglages d’Aquaman">
-        <div class="aqm-head">
-          <div><h2 class="aqm-title">Réglages</h2><p class="aqm-sub">Script Aquaman · version ${VERSION}</p></div>
-          <button type="button" class="aqm-close" aria-label="Fermer">✕</button>
-        </div>
-        <div class="aqm-body">
-          <div class="aqm-settings-list"></div>
-          <div class="aqm-news-foot">
-            <button type="button" class="aqm-tour-btn" data-go="#aqm-nouveautes">Nouveautés</button>
-            <button type="button" class="aqm-tour-btn is-main" data-go="#aqm-visite">Visite guidée</button>
-          </div>
-          <p class="aqm-note">Aquaman cherche une nouvelle version toutes les 10 minutes et te la propose en haut de l’écran ; ton gestionnaire de scripts (Tampermonkey, Violentmonkey, Userscripts) l’installe.</p>
-        </div>
-      </div>`;
-    const list = back.querySelector('.aqm-settings-list');
-    for (const [key, text] of OPTIONS) {
-      const label = document.createElement('label');
-      label.className = 'aqm-switch';
-      label.innerHTML = '<input type="checkbox" /> <span></span>';
-      label.querySelector('span').textContent = text;
-      const box = label.querySelector('input');
-      box.checked = !!current[key];
-      box.addEventListener('change', async () => {
-        const { settings: now } = await chrome.storage.local.get('settings');
-        await chrome.storage.local.set({ settings: { ...now, [key]: box.checked } });
-      });
-      list.appendChild(label);
-    }
-    back.querySelector('.aqm-close').addEventListener('click', close);
-    back.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
-    back.addEventListener('click', (e) => e.target === back && close());
-    document.addEventListener('keydown', onKey, true);
-    document.body.appendChild(back);
-  }
-
-  // "Réglages" entry at the end of the "Plus" menu each time it opens.
-  new MutationObserver(() => {
-    const menu = document.querySelector('.aqm-menu');
-    if (!menu || menu.querySelector('.aqm-menu-settings')) return;
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.setAttribute('role', 'menuitem');
-    item.className = 'aqm-menu-item aqm-menu-settings';
-    item.innerHTML = `<span class="aqm-menu-ico">${ICON_GEAR}</span><span><strong>Réglages</strong><small>Script Aquaman ${VERSION}</small></span>`;
-    item.addEventListener('click', () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); // closes the menu
-      openSettings();
-    });
-    menu.appendChild(item);
-  }).observe(document.body, { childList: true });
-})();
-
-  } else style.remove();
+  // (the extension runs on this page: the script's style goes)
+  if (document.documentElement.dataset.aqmOwner !== OWNER) style.remove();
 };
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
 else start();

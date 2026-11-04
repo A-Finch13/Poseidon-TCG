@@ -100,6 +100,14 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.1',
+    items: [
+      ['Réglages : Plus › Réglages permet d’activer ou de couper chaque fonction d’Aquaman (boosters par catégorie, lueur, garantie, « Manquantes », « En vente », échanges…). La même liste sur PC et téléphone, dans l’extension comme dans le script, et dans la fenêtre de l’extension.'],
+      ['Collection : changer de série ne fait plus sauter la page ; la file d’attente des recherches reste en bas de l’écran et dans Séries favorites.'],
+      ['Correction : en ouvrant des boosters à thème (Action, Magie…), le pack de l’animation d’ouverture a bien l’image de sa catégorie, et non celle du booster classique.']
+    ]
+  },
+  {
     version: '1.4.0',
     items: [
       ['Garantie anti-malchance : un bouton « Historique » ouvre ton tracker. Il montre à quelle fréquence tu tires des SSR, UR et SEC comparé à la chance du jeu, tes 300 derniers boosters d’un coup d’œil, et combien de boosters il t’a fallu pour chacune.'],

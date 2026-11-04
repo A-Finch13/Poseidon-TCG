@@ -9,15 +9,70 @@ export const RANK = { N: 1, R: 2, SR: 3, SSR: 4, UR: 5, SEC: 6 };
 
 // ---------- settings ----------
 
-export const DEFAULTS = {
-  notifyBoosters: true,
-  notifyUpdated: true,
-  syncPity: true,
-  syncFavorites: true,
-  syncWants: true,
-  syncMarket: true,
-  sharePulls: true
-};
+// Every setting, by group: the same list in the extension's popup and in "Plus › Réglages" (extension and script, on
+// a computer or a phone). All are on at first. Each item: [key, title, hint, only] (only: "extension" for what the
+// script can't do).
+export const SETTINGS = [
+  {
+    title: 'Accueil',
+    icon: '🏠',
+    items: [
+      ['boosterWheel', 'Boosters par catégorie', 'Classique, Magie, Action… côte à côte, avec le compte de chacun'],
+      ['packGlow', 'Lueur du pack', 'La lueur derrière le booster prend la couleur de son pack'],
+      ['pity', 'Garantie anti-malchance', 'Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages'],
+      ['bigPulls', 'Beaux tirages agrandis', 'Les dernières cartes rares tirées par les joueurs, en plus grand']
+    ]
+  },
+  {
+    title: 'Collection',
+    icon: '🗂️',
+    items: [
+      ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites et tri « Les plus avancées »'],
+      ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
+      ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
+      ['missingSales', 'Bouton « En vente »', 'Sur les cartes manquantes vendues au marché, avec les 5 moins chères']
+    ]
+  },
+  {
+    title: 'Marché',
+    icon: '🛒',
+    items: [
+      ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
+      ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
+      ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
+    ]
+  },
+  {
+    title: 'Échanges et vitrine',
+    icon: '🔁',
+    items: [
+      ['tradeMarks', 'Échanges', 'Cartes agrandies et pastille « déjà possédée »'],
+      ['showcaseDrag', 'Ma vitrine', 'Glisser-déposer pour ranger tes cartes'],
+      ['recycleHelp', 'Recycler des cartes', 'Rien de coché au départ, bouton « Tout cocher »']
+    ]
+  },
+  {
+    title: 'Notifications',
+    icon: '🔔',
+    items: [
+      ['notifyBoosters', 'Nouveaux boosters', 'Une notification quand des boosters t’attendent', 'extension'],
+      ['notifyUpdated', 'Nouveautés', 'Ce qui a changé, après une mise à jour d’Aquaman']
+    ]
+  },
+  {
+    title: 'Partage entre mes appareils',
+    icon: '☁️',
+    items: [
+      ['syncPity', 'Garantie anti-malchance', 'Le compte des boosters ouverts et l’historique'],
+      ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
+      ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
+      ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
+      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
+    ]
+  }
+];
+
+export const DEFAULTS = Object.fromEntries(SETTINGS.flatMap((g) => g.items.map(([key]) => [key, true])));
 
 // Settings with their default values.
 export async function getSettings() {
@@ -1378,6 +1433,10 @@ export async function answer(msg) {
         return await boosterReport(msg.query, msg.rarity, msg.field);
       case 'access':
         return await access();
+      case 'settings':
+        return { groups: SETTINGS, values: await getSettings() };
+      case 'set-settings':
+        return { values: await setSettings(msg.patch ?? {}) };
       case 'pity-history':
         return await pityHistory();
       case 'pity':

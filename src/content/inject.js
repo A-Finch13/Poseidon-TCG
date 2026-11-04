@@ -281,9 +281,76 @@
     return best;
   }
 
-  // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through.
+  // ---------- the picture of a themed kind in the 3D pack of the opening ----------
+  // The game draws the pack of its opening window in 3D (three.js) with the classic picture (classique.webp) when it
+  // opens several boosters, whatever their kind. While Aquaman opens a themed kind (content.js writes its picture in
+  // data-aqm-opening-art), that picture takes the classic one's place wherever the game loads or draws it: the same
+  // size (720 × 1080), nothing else changes.
+  const CLASSIC_ART = /\/game\/boosters\/classique\.(webp|png|jpe?g)/i;
+  const openingArt = () => document.documentElement.getAttribute('data-aqm-opening-art') || '';
+  const isClassicUrl = (url) => {
+    try {
+      return CLASSIC_ART.test(decodeURIComponent(String(url ?? '')));
+    } catch {
+      return CLASSIC_ART.test(String(url ?? ''));
+    }
+  };
+  const arts = new Map(); // picture -> its <img>, loaded once
+  const artImage = (url) => {
+    if (!arts.has(url)) {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = url;
+      arts.set(url, img);
+    }
+    return arts.get(url);
+  };
+  new MutationObserver(() => openingArt() && artImage(openingArt())).observe(document.documentElement, { attributes: true, attributeFilter: ['data-aqm-opening-art'] });
+  // A classic picture already loaded (kept by the game): its themed replacement, once loaded, else null.
+  const swapFor = (source) => {
+    const art = openingArt();
+    if (!art || !(source instanceof HTMLImageElement) || !isClassicUrl(source.currentSrc || source.src)) return null;
+    const img = artImage(art);
+    return img.complete && img.naturalWidth ? img : null;
+  };
+  const srcSetter = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+  Object.defineProperty(HTMLImageElement.prototype, 'src', {
+    ...srcSetter,
+    set(url) {
+      const art = openingArt();
+      srcSetter.set.call(this, art && isClassicUrl(url) ? art : url);
+    }
+  });
+  for (const proto of [CanvasRenderingContext2D.prototype, globalThis.OffscreenCanvasRenderingContext2D?.prototype].filter(Boolean)) {
+    const draw = proto.drawImage;
+    proto.drawImage = function (source, ...rest) {
+      return draw.call(this, swapFor(source) ?? source, ...rest);
+    };
+  }
+  for (const proto of [globalThis.WebGLRenderingContext?.prototype, globalThis.WebGL2RenderingContext?.prototype].filter(Boolean))
+    for (const name of ['texImage2D', 'texSubImage2D']) {
+      const upload = proto[name];
+      proto[name] = function (...args) {
+        const i = args.findIndex((a) => a instanceof HTMLImageElement);
+        if (i >= 0) {
+          const swap = swapFor(args[i]);
+          if (swap) args[i] = swap;
+        }
+        return upload.apply(this, args);
+      };
+    }
+  const bitmap = globalThis.createImageBitmap;
+  if (bitmap)
+    globalThis.createImageBitmap = function (source, ...rest) {
+      return bitmap.call(this, swapFor(source) ?? source, ...rest);
+    };
+
+  // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through, but the
+  // classic picture of a pack is fetched as the themed one during a themed opening (see above).
   window.fetch = function (input, init) {
     const path = pathOf(input);
+    const art = openingArt();
+    if (art && isClassicUrl(typeof input === 'string' ? input : input?.url ?? String(input))) return original.call(this, art, init);
     if (!path?.startsWith('/api-game/')) return original.apply(this, arguments);
     return watch(original.apply(this, arguments), path, input, init);
   };

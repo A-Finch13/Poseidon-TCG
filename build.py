@@ -95,8 +95,8 @@ def userscript(version):
  *  2. aquaman.js  — accès à l'API du jeu, collections, calcul des boosters ;
  *  3. bridge.js   — fait dans la page le travail du service de fond de l'extension ;
  *  4. inject.js   — lit les réponses que le site reçoit déjà (boosters à ouvrir, collection modifiée) ;
- *  5. tutorial.js et content.js — étapes de la visite et nouveautés, puis tout ce qui s'affiche sur le site ;
- *  6. panel.js    — réglages dans le menu « Plus ».
+ *  5. tutorial.js et content.js — étapes de la visite et nouveautés, puis tout ce qui s'affiche sur le site
+ *     (réglages compris, dans le menu « Plus », les mêmes que l'extension).
  */
 """
     body = f"""(() => {{
@@ -121,10 +121,8 @@ const start = () => {{
   // ---------- 5. src/content/tutorial.js et content.js : visite, nouveautés, puis tout ce qui s'affiche sur le site ----------
 {read('content/tutorial.js')}
 {read('content/content.js')}
-  // ---------- 6. src/userscript/panel.js : réglages ----------
-  if (document.documentElement.dataset.aqmOwner === OWNER) {{
-{read('userscript/panel.js')}
-  }} else style.remove();
+  // (the extension runs on this page: the script's style goes)
+  if (document.documentElement.dataset.aqmOwner !== OWNER) style.remove();
 }};
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {{ once: true }});
 else start();

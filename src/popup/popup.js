@@ -1,4 +1,4 @@
-import { ORIGIN, REPO, getSettings, setSettings } from '../lib/aquaman.js';
+import { ORIGIN, REPO, SETTINGS, getSettings, setSettings } from '../lib/aquaman.js';
 
 const $ = (s) => document.querySelector(s);
 const FIREFOX = navigator.userAgent.includes('Firefox');
@@ -61,12 +61,35 @@ $('#update-go').addEventListener('click', async () => {
 
 // ---------- settings ----------
 
+// The same list as "Plus › Réglages" on the site; the open pages of the game offer to load again to apply a feature.
 async function bindSettings() {
   const settings = await getSettings();
-  for (const box of document.querySelectorAll('[data-setting]')) {
-    box.checked = !!settings[box.dataset.setting];
-    box.addEventListener('change', () => setSettings({ [box.dataset.setting]: box.checked }));
-  }
+  const box = $('#settings');
+  box.replaceChildren();
+  SETTINGS.forEach((group, i) => {
+    const title = document.createElement('h2');
+    if (i) title.className = 'gap';
+    title.textContent = `${group.icon ?? ''} ${group.title}`.trim();
+    box.append(title);
+    // (each: its title, its hint, and a switch on the right)
+    for (const [key, text, hint] of group.items) {
+      const label = document.createElement('label');
+      label.className = 'switch';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.setAttribute('role', 'switch');
+      input.checked = !!settings[key];
+      input.addEventListener('change', () => setSettings({ [key]: input.checked }));
+      const span = document.createElement('span');
+      const strong = document.createElement('strong');
+      strong.textContent = text;
+      const small = document.createElement('small');
+      small.textContent = hint ?? '';
+      span.append(strong, small);
+      label.append(span, input);
+      box.append(label);
+    }
+  });
 }
 
 // ---------- status ----------

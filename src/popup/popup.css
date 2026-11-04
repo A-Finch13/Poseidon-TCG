@@ -116,15 +116,54 @@ h2.gap {
 }
 .switch {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 6px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
   font-size: 13px;
   cursor: pointer;
 }
+.switch + .switch {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.switch span {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+}
+.switch small {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+}
+/* A switch, as in "Plus › Réglages" on the site. */
 .switch input {
-  margin-top: 3px;
-  accent-color: #2563eb;
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  appearance: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.switch input::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+}
+.switch input:checked {
+  background: #2563eb;
+}
+.switch input:checked::before {
+  transform: translateX(14px);
 }
 .foot {
   display: flex;

@@ -33,20 +33,8 @@
       <button type="button" class="btn" data-open="/jeu#aqm-nouveautes">Nouveautés</button>
     </nav>
 
-    <section class="settings">
-      <h2>Notifications</h2>
-      <label class="switch"><input type="checkbox" data-setting="notifyBoosters" /> <span>Nouveaux boosters à ouvrir</span></label>
-      <label class="switch"><input type="checkbox" data-setting="notifyUpdated" /> <span>Nouvelle version installée (notification et nouveautés sur le site)</span></label>
-      <h2 class="gap">Garantie anti-malchance</h2>
-      <label class="switch"><input type="checkbox" data-setting="syncPity" /> <span>Partager le compte des boosters ouverts entre mes appareils (PC, téléphone, extension et script)</span></label>
-      <h2 class="gap">Séries favorites</h2>
-      <label class="switch"><input type="checkbox" data-setting="syncFavorites" /> <span>Partager mes séries favorites entre mes appareils</span></label>
-      <label class="switch"><input type="checkbox" data-setting="syncWants" /> <span>Partager les cartes en attente de recherche entre mes appareils</span></label>
-      <h2 class="gap">Marché</h2>
-      <label class="switch"><input type="checkbox" data-setting="syncMarket" /> <span>Partager les cartes achetées masquées et les doublons en attente de vente entre mes appareils</span></label>
-      <h2 class="gap">Beaux tirages</h2>
-      <label class="switch"><input type="checkbox" data-setting="sharePulls" /> <span>Envoyer les beaux tirages que je vois à la base commune d’Aquaman (« Qui a cette carte ? »)</span></label>
-    </section>
+    <!-- The same settings as "Plus › Réglages" on the site (SETTINGS in src/lib/aquaman.js), filled by popup.js. -->
+    <section class="settings" id="settings"></section>
 
     <footer class="foot">
       <a href="#" data-open="https://github.com/A-Finch13/Poseidon-TCG">GitHub</a>
