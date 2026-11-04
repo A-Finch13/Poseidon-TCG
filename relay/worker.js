@@ -64,6 +64,7 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     try {
       if (req.method === 'POST' && pathname === '/pity') return json(await pity(env, await readBody(req)));
+      if (req.method === 'POST' && pathname === '/pity/all') return json(await pityAll(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/wants') return json(await wants(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/lists') return json(await playerList(env, await readBody(req)));
@@ -121,6 +122,15 @@ async function pity(env, body) {
       .first()
   ]);
   return { events: results.reverse(), sec: { since: sec?.since ?? 0, known: sec?.last != null } };
+}
+
+// All the openings of a player kept (a year), oldest first, for their history ("Historique" of the pity); read only
+// when the player opens it.
+async function pityAll(env, body) {
+  const player = String(body?.player ?? '');
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  const { results } = await env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at LIMIT 50000').bind(player).all();
+  return { events: results };
 }
 
 // Keeps the most recent list of favourite series of the player (by the time of its change), and sends it back.
