@@ -103,6 +103,9 @@
       error.wait = (Number(res.headers?.get?.('retry-after')) || Number(error.message.match(/(\d+)\s*(?:s\b|sec)/i)?.[1]) || 0) * 1000;
       throw error;
     }
+    // Perles or cards changed (a sale, a withdrawal…): the game reads them again from the API (inject.js). The
+    // extension's requests don't go through the page's fetch, where inject.js sees the game's own.
+    if (method !== 'GET' && /^\/(market|trades|auctions|copies)\//.test(path)) window.postMessage({ aquamanCmd: 'reload-game', assets: true }, location.origin);
     return body;
   }
 
@@ -2248,22 +2251,20 @@
     if (!location.pathname.startsWith('/jeu/collection')) return;
     const strip = document.querySelector('[role="radiogroup"][aria-label="Série"], [role="radiogroup"][aria-label="Série"]') ?? seriesStrip();
     if (!strip || strip.closest('.aqm-root')) return;
-    if (!seriesBySlug) {
-      if (!favLoading) {
-        favLoading = true;
-        loadFavIds().finally(() => {
-          favLoading = false;
-          schedule();
-        });
-      }
-      return;
+    // The buttons come at once with the strip; only the stars wait for the series (their count shows "…" until then).
+    if (!seriesBySlug && !favLoading) {
+      favLoading = true;
+      loadFavIds().finally(() => {
+        favLoading = false;
+        schedule();
+      });
     }
     if (!strip.previousElementSibling?.classList.contains('aqm-fav-bar'))
       strip.before(
         h(
           'div',
           { class: 'aqm-root aqm-fav-bar' },
-          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, String(favIds?.size ?? 0))),
+          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, favIds ? String(favIds.size) : '…')),
           h('button', {
             type: 'button',
             class: 'aqm-chip aqm-sort-progress',
@@ -2290,6 +2291,7 @@
       );
     sortByProgress(strip);
     keepStripPlace(strip);
+    if (!seriesBySlug) return;
     for (const img of strip.querySelectorAll('img[src*="/api/covers/"]')) {
       const tile = img.closest('button, a, [role="radio"]') ?? img.parentElement;
       if (!tile || tile.querySelector(':scope > .aqm-star')) continue;
@@ -2628,25 +2630,18 @@
       btn.disabled = true;
       btn.textContent = 'Achat…';
       try {
-        await gameWrite(`/market/listings/${encodeURIComponent(offer.id)}/buy`, 'POST');
+        const bought = await gameWrite(`/market/listings/${encodeURIComponent(offer.id)}/buy`, 'POST');
         btn.textContent = '✅ Achetée';
         if (offer.card?.name) addBought(offer.card.name, offer.card.rarity); // its other sales, hidden on the market
         owned = null;
         send({ type: 'collection-stale' });
-        // The game's Perles and the card's copies ("Mes exemplaires"), read again; the page is loaded again if the
-        // copies still show the same after 2 s.
-        // Bought from the "En vente" window of the collection: the page is loaded again, the card shows as owned.
-        // (the "Manquantes" filter, if on, is turned on again once the page is back)
-        if (!location.pathname.startsWith('/jeu/carte/')) {
-          if (missingOnly()) session(MISSING_AGAIN, '1');
-          return void setTimeout(() => location.reload(), 900);
-        }
+        // The game's Perles and the card's copies ("Mes exemplaires") read again from the API and given to the page:
+        // it is never loaded again (it lost the player's place). Once more if the copies still show the same after 2 s.
+        const perles = bought?.perles ?? bought?.balance ?? bought?.buyer?.perles;
         const before = myCopiesText();
-        window.postMessage({ aquamanCmd: 'reload-game' }, location.origin);
-        setTimeout(() => {
-          if (location.pathname.includes(encodeURIComponent(cardId)) || location.pathname.includes(cardId))
-            if (myCopiesText() === before) location.reload();
-        }, 2000);
+        const refresh = () => window.postMessage({ aquamanCmd: 'reload-game', cardId, perles: typeof perles === 'number' ? perles : undefined }, location.origin);
+        refresh();
+        setTimeout(() => myCopiesText() === before && refresh(), 2000);
         setTimeout(() => box.isConnected && showListings(box, cardId, true), 1200);
       } catch (e) {
         // The game's refusal under the offers (no Perles enough, the offer gone…), then the offers read again.
@@ -2662,10 +2657,8 @@
   // ---------- collection: a "Manquantes" tab beside "Mes cartes / Mes doublons / Album complet" ----------
   // It shows the full album with only the cards marked "Manquante" by the game; the choice is kept for the tab.
 
-  // Off at every visit (never kept: on "Mes cartes" it would hide every card), and only with "Album complet"; but
-  // turned on again after the page was loaded again for a card bought from its "En vente" window (MISSING_AGAIN).
+  // Off at every visit (never kept: on "Mes cartes" it would hide every card), and only with "Album complet".
   const VIEW_TABS = /^(mes cartes|mes doublons|album complet)$/i;
-  const MISSING_AGAIN = 'aqm-missing-again';
   let missingOn = false;
   let missingAt = 0; // when it was turned on: the game takes a moment to show "Album complet"
   const missingOnly = () => missingOn;
@@ -2715,10 +2708,6 @@
         }
       });
       full.after(tab);
-    }
-    if (session(MISSING_AGAIN)) {
-      session(MISSING_AGAIN, null);
-      if (!missingOnly()) return void tab.click();
     }
     // The game shows its selected tab with a pill inside it (a box set over the tab): while the filter is on, the pill
     // of "Album complet" is hidden and "Manquantes" gets one like it.
@@ -5199,6 +5188,16 @@
     if (e.source === window && e.data?.aquaman === 'boosters-refreshed') onBoostersRefreshed(e.data.id, !!e.data.ok);
   });
   Promise.all([loadShotStore(), featReady]).then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
+  // The series and favourites are read as soon as the script starts, in any page of the game: the stars of the
+  // Collection come with its strip, even when it is the first page opened.
+  featReady.then(() => {
+    if (stopped || favLoading || seriesBySlug || !on('seriesTools') || !location.pathname.startsWith('/jeu')) return;
+    favLoading = true;
+    loadFavIds().finally(() => {
+      favLoading = false;
+      schedule();
+    });
+  });
   if (/^\/jeu\/?$/.test(location.pathname)) {
     let frame = 0;
     const early = new MutationObserver(() => {

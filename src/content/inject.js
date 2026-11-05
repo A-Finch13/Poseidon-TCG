@@ -17,6 +17,10 @@
   const ORDERS = /^\/api-game\/v1\/market\/orders$/;
   const BUY = /^\/api-game\/v1\/shop\/booster$/;
   const MARKET_BUY = /^\/api-game\/v1\/market\/listings\/([^/]+)\/buy$/;
+  // Changes of Perles or cards made outside the boosters (market, exchanges, auctions, copies sold or recycled): the
+  // game's status and the card of the page are read again from the API afterwards. (Not the boosters: the game counts
+  // their Perles and cards itself, and a status read again would redraw the pile in the middle of an opening.)
+  const ASSETS = /^\/api-game\/v1\/(trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
   const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
   // The card of each sale the market last showed (listing id -> { name, rarity }), for the card of a purchase.
   const listingCards = new Map();
@@ -110,14 +114,63 @@
     } catch {}
   }
 
-  // content.js asks the game to read its status again (its Perles after a purchase, its boosters…).
+  // A card's page holds the card read from /cards/:id (with the player's copies) in a state of its components: the
+  // card is read again from the API and given to that state, the page draws it at once. False if no such state.
+  async function refreshCardState(id) {
+    const res = await fetch(`/api-game/v1/cards/${encodeURIComponent(id)}`, { credentials: 'include', headers: { accept: 'application/json' } });
+    if (!res.ok) return false;
+    const fresh = await res.json().catch(() => null);
+    if (!fresh || typeof fresh !== 'object') return false;
+    const card = fresh.card ?? fresh;
+    const start =
+      [...document.querySelectorAll('main p, main span, main h2, main h3')].find((el) => /^mes exemplaires$/i.test(el.textContent.trim())) ??
+      document.querySelector('main *');
+    const key = start && Object.keys(start).find((k) => k.startsWith('__reactFiber$'));
+    let done = false;
+    for (let fiber = key ? start[key] : null; fiber; fiber = fiber.return) {
+      for (let hook = typeof fiber.memoizedState === 'object' ? fiber.memoizedState : null; hook && 'next' in hook; hook = hook.next) {
+        const s = hook.memoizedState;
+        const dispatch = hook.queue?.dispatch;
+        if (typeof dispatch !== 'function' || !s || typeof s !== 'object') continue;
+        if (s.id === id && 'copies' in s) dispatch(card);
+        else if (s.card?.id === id) dispatch({ ...s, ...(fresh.card ? fresh : { card }) });
+        else continue;
+        done = true;
+      }
+    }
+    return done;
+  }
+
+  // After a change of Perles or cards, the game's status (/me: Perles…) and the card of the page are read again from
+  // the API, once for a burst of changes.
+  let assetsTimer = 0;
+  function assetsChanged() {
+    clearTimeout(assetsTimer);
+    assetsTimer = setTimeout(() => {
+      const cardId = location.pathname.match(/^\/jeu\/carte\/([^/?#]+)/)?.[1];
+      window.postMessage({ aquamanCmd: 'reload-game', cardId: cardId ? decodeURIComponent(cardId) : undefined }, location.origin);
+    }, 600);
+  }
+
+  // content.js asks the game to read its status again (its Perles after a purchase, its boosters…), and the card of
+  // its page (cardId) after a purchase: straight from the API, the page isn't loaded again.
   window.addEventListener('message', async (e) => {
     if (e.source !== window || e.data?.aquamanCmd !== 'reload-game') return;
+    if (e.data.assets) return void assetsChanged(); // a change made by Aquaman itself, outside this page's fetch
+    const { cardId, perles } = e.data;
+    let fixed = false;
+    if (typeof cardId === 'string')
+      try {
+        fixed = await refreshCardState(cardId);
+      } catch {}
+    if (!fixed)
+      try {
+        window.next?.router?.refresh?.(); // the page's own data (a card's copies…)
+      } catch {}
     try {
-      window.next?.router?.refresh?.(); // the page's own data (a card's copies…)
-    } catch {}
-    try {
-      await (await gameStore())?.load().catch(() => {});
+      const store = await gameStore();
+      if (typeof perles === 'number') store?.setPerles?.(perles); // the Perles the purchase answered, at once
+      await store?.load().catch(() => {}); // then the game's status read again from /me
     } catch {}
   });
 
@@ -465,6 +518,7 @@
                 if (opened.length) post({ type: 'opened', boosters: opened.map(raritiesOf), best: opened.map(bestCard) });
               })
               .catch(() => {});
+          if (ASSETS.test(path) && res.ok) assetsChanged();
           post({ type: 'collection-stale' });
         }
       }

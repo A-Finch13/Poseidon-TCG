@@ -100,6 +100,13 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.4',
+    items: [
+      ['Page d’une carte : après un achat avec « Acheter », la page ne se recharge plus ; tes Perles et tes exemplaires se mettent à jour sur place.'],
+      ['Collection : « ★ Favoris », « Les plus avancées » et « Masquer séries <= 5 persos » apparaissent dès l’ouverture de l’onglet.']
+    ]
+  },
+  {
     version: '1.4.3',
     items: [
       ['Échanges : la pastille verte ou rouge apparaît sur toutes les pages d’échange, et sur les propositions envoyées en MP.', 'echanges'],
