@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.4
+// @version      1.4.5
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.4';
+const VERSION = '1.4.5';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -190,7 +190,7 @@ const SETTINGS = [
     items: [
       ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
       ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
-      ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter »'],
+      ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter », et les enchères en cours'],
       ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
     ]
   },
@@ -1286,6 +1286,33 @@ async function cardListings(id) {
   return { offers: offers.slice(0, 5), count: offers.length, maxCopies: card.maxCopies ?? null, name: card.name ?? null };
 }
 
+// The auctions of a card still running, the lowest bid first: the bid to beat (the highest bid, else the
+// starting price), its end, its number, its seller and how many bids it has. The game's answer is read loosely (its
+// fields may have other names): an auction whose card or bid can't be found is left out.
+async function cardAuctions(id) {
+  const body = await cached('auctions', 30e3, () => game('/auctions'));
+  const list = Array.isArray(body) ? body : body?.auctions ?? body?.items ?? body?.data ?? [];
+  const num = (...v) => v.find((x) => typeof x === 'number' && Number.isFinite(x)) ?? null;
+  const time = (v) => (v == null ? null : typeof v === 'number' ? (v < 1e12 ? v * 1000 : v) : Date.parse(v) || null);
+  const now = Date.now();
+  return list
+    .filter((a) => (a?.card?.id ?? a?.cardId ?? a?.copy?.card?.id ?? a?.copy?.cardId) === id)
+    .map((a) => {
+      const top = a.highestBid ?? a.topBid ?? a.lastBid ?? null;
+      const seller = a.seller ?? a.player ?? a.owner ?? null;
+      return {
+        id: a.id ?? null,
+        bid: num(a.currentBid, a.currentPrice, typeof top === 'number' ? top : top?.amount, top?.price, a.bid, a.price, a.startingBid, a.startingPrice, a.startPrice, a.minBid),
+        bids: num(a.bidCount, a.bidsCount, a._count?.bids, Array.isArray(a.bids) ? a.bids.length : null),
+        endsAt: time(a.endsAt ?? a.endAt ?? a.endDate ?? a.expiresAt ?? a.closesAt),
+        serial: a.serial ?? a.copy?.serial ?? null,
+        player: seller ? { id: seller.id, name: seller.name } : null
+      };
+    })
+    .filter((a) => a.bid != null && !(a.endsAt && a.endsAt <= now))
+    .sort((a, b) => a.bid - b.bid || (a.endsAt ?? Infinity) - (b.endsAt ?? Infinity));
+}
+
 // A missing card of the collection, known by its id or else by its picture (image: its file name), found among the
 // cards of its series or by its name: how many offers the market has of it.
 async function cardSale(id, image, name, series) {
@@ -1623,8 +1650,8 @@ async function answer(msg) {
       case 'card-search':
         return { cards: await searchCards(msg.query) };
       case 'card-listings':
-        if (msg.fresh) forget(`listings:${msg.id}`, 'showcase:');
-        return await cardListings(msg.id);
+        if (msg.fresh) forget(`listings:${msg.id}`, 'showcase:', 'auctions');
+        return { ...(await cardListings(msg.id)), auctions: await cardAuctions(msg.id).catch(() => null) };
       case 'card-sale':
         return await cardSale(msg.id ?? null, msg.image ?? null, msg.name ?? null, msg.series ?? null);
       case 'card-rarity':
@@ -5047,6 +5074,16 @@ html.aqm-grabbing * {
 [data-aqm-unfav] {
   display: none !important;
 }
+/* A card's page: its running auctions, under the market's offers. */
+.aqm-auctions-head {
+  margin-top: 18px;
+}
+.aqm-auction-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
 `;
   document.head.appendChild(style);
   // ---------- 5. src/content/tutorial.js et content.js : visite, nouveautés, puis tout ce qui s'affiche sur le site ----------
@@ -5151,6 +5188,10 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.4.5',
+    items: [['Page d’une carte : sous les annonces du marché, les 3 enchères en cours avec la mise la plus faible, avec le nombre d’enchères et le temps restant.']]
+  },
   {
     version: '1.4.4',
     items: [
@@ -7881,10 +7922,40 @@ const CHANGES = [
           h('div', { class: 'aqm-listings-head' },
             h('p', { class: 'aqm-label' }, 'En vente au marché'),
             h('small', { class: 'aqm-muted' }, r.count ? `${r.count > 5 ? `5 moins chères sur ${fmt(r.count)}` : `${r.count} offre${r.count > 1 ? 's' : ''}`}, de la moins chère à la plus chère` : '')),
-          rows.length ? h('ul', { class: 'aqm-owners' }, rows) : h('p', { class: 'aqm-muted' }, 'Personne ne la vend pour le moment.')
+          rows.length ? h('ul', { class: 'aqm-owners' }, rows) : h('p', { class: 'aqm-muted' }, 'Personne ne la vend pour le moment.'),
+          ...auctionsPart(r.auctions, r.maxCopies)
         );
       })
       .catch((e) => fresh.isConnected && fresh.replaceChildren(h('p', { class: 'aqm-label' }, 'En vente au marché'), h('p', { class: 'aqm-muted' }, e.message)));
+  }
+
+  // Time left before the end of an auction: "2 j 4 h", "3 h 12 min", "8 min".
+  function timeLeft(at) {
+    const m = Math.max(1, Math.round((at - Date.now()) / 60e3));
+    if (m < 60) return `${m} min`;
+    if (m < 1440) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+    return `${Math.floor(m / 1440)} j${Math.floor((m % 1440) / 60) ? ` ${Math.floor((m % 1440) / 60)} h` : ''}`;
+  }
+
+  // Under the offers, the card's 3 running auctions with the lowest bids, the lowest first: the bid to beat and the
+  // time left.
+  // Nothing when they couldn't be read (null).
+  function auctionsPart(auctions, maxCopies) {
+    if (!auctions) return [];
+    const rows = auctions.slice(0, 3).map((a) =>
+      playerRow(
+        a.serial,
+        a.player,
+        h('span', { class: 'aqm-auction-cell' }, perles(a.bid), h('small', { class: 'aqm-muted' }, [a.bids != null ? `${a.bids} enchère${a.bids > 1 ? 's' : ''}` : null, a.endsAt ? `fin dans ${timeLeft(a.endsAt)}` : null].filter(Boolean).join(' · '))),
+        { maxCopies }
+      )
+    );
+    return [
+      h('div', { class: 'aqm-listings-head aqm-auctions-head' },
+        h('p', { class: 'aqm-label' }, 'Aux enchères'),
+        h('small', { class: 'aqm-muted' }, auctions.length ? `${auctions.length > 3 ? `3 mises les plus faibles sur ${fmt(auctions.length)}` : `${auctions.length} en cours`}, de la plus faible à la plus haute` : '')),
+      rows.length ? h('ul', { class: 'aqm-owners' }, rows) : h('p', { class: 'aqm-muted' }, 'Aucune enchère en cours.')
+    ];
   }
 
   // What the game's "Mes exemplaires" panel of the card says (to see whether it changed).

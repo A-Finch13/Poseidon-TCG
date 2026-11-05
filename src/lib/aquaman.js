@@ -40,7 +40,7 @@ export const SETTINGS = [
     items: [
       ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
       ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
-      ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter »'],
+      ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter », et les enchères en cours'],
       ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
     ]
   },
@@ -1136,6 +1136,33 @@ export async function cardListings(id) {
   return { offers: offers.slice(0, 5), count: offers.length, maxCopies: card.maxCopies ?? null, name: card.name ?? null };
 }
 
+// The auctions of a card still running, the lowest bid first: the bid to beat (the highest bid, else the
+// starting price), its end, its number, its seller and how many bids it has. The game's answer is read loosely (its
+// fields may have other names): an auction whose card or bid can't be found is left out.
+export async function cardAuctions(id) {
+  const body = await cached('auctions', 30e3, () => game('/auctions'));
+  const list = Array.isArray(body) ? body : body?.auctions ?? body?.items ?? body?.data ?? [];
+  const num = (...v) => v.find((x) => typeof x === 'number' && Number.isFinite(x)) ?? null;
+  const time = (v) => (v == null ? null : typeof v === 'number' ? (v < 1e12 ? v * 1000 : v) : Date.parse(v) || null);
+  const now = Date.now();
+  return list
+    .filter((a) => (a?.card?.id ?? a?.cardId ?? a?.copy?.card?.id ?? a?.copy?.cardId) === id)
+    .map((a) => {
+      const top = a.highestBid ?? a.topBid ?? a.lastBid ?? null;
+      const seller = a.seller ?? a.player ?? a.owner ?? null;
+      return {
+        id: a.id ?? null,
+        bid: num(a.currentBid, a.currentPrice, typeof top === 'number' ? top : top?.amount, top?.price, a.bid, a.price, a.startingBid, a.startingPrice, a.startPrice, a.minBid),
+        bids: num(a.bidCount, a.bidsCount, a._count?.bids, Array.isArray(a.bids) ? a.bids.length : null),
+        endsAt: time(a.endsAt ?? a.endAt ?? a.endDate ?? a.expiresAt ?? a.closesAt),
+        serial: a.serial ?? a.copy?.serial ?? null,
+        player: seller ? { id: seller.id, name: seller.name } : null
+      };
+    })
+    .filter((a) => a.bid != null && !(a.endsAt && a.endsAt <= now))
+    .sort((a, b) => a.bid - b.bid || (a.endsAt ?? Infinity) - (b.endsAt ?? Infinity));
+}
+
 // A missing card of the collection, known by its id or else by its picture (image: its file name), found among the
 // cards of its series or by its name: how many offers the market has of it.
 export async function cardSale(id, image, name, series) {
@@ -1473,8 +1500,8 @@ export async function answer(msg) {
       case 'card-search':
         return { cards: await searchCards(msg.query) };
       case 'card-listings':
-        if (msg.fresh) forget(`listings:${msg.id}`, 'showcase:');
-        return await cardListings(msg.id);
+        if (msg.fresh) forget(`listings:${msg.id}`, 'showcase:', 'auctions');
+        return { ...(await cardListings(msg.id)), auctions: await cardAuctions(msg.id).catch(() => null) };
       case 'card-sale':
         return await cardSale(msg.id ?? null, msg.image ?? null, msg.name ?? null, msg.series ?? null);
       case 'card-rarity':

@@ -2772,3 +2772,13 @@ html.aqm-grabbing * {
 [data-aqm-unfav] {
   display: none !important;
 }
+/* A card's page: its running auctions, under the market's offers. */
+.aqm-auctions-head {
+  margin-top: 18px;
+}
+.aqm-auction-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}

@@ -2607,10 +2607,40 @@
           h('div', { class: 'aqm-listings-head' },
             h('p', { class: 'aqm-label' }, 'En vente au marché'),
             h('small', { class: 'aqm-muted' }, r.count ? `${r.count > 5 ? `5 moins chères sur ${fmt(r.count)}` : `${r.count} offre${r.count > 1 ? 's' : ''}`}, de la moins chère à la plus chère` : '')),
-          rows.length ? h('ul', { class: 'aqm-owners' }, rows) : h('p', { class: 'aqm-muted' }, 'Personne ne la vend pour le moment.')
+          rows.length ? h('ul', { class: 'aqm-owners' }, rows) : h('p', { class: 'aqm-muted' }, 'Personne ne la vend pour le moment.'),
+          ...auctionsPart(r.auctions, r.maxCopies)
         );
       })
       .catch((e) => fresh.isConnected && fresh.replaceChildren(h('p', { class: 'aqm-label' }, 'En vente au marché'), h('p', { class: 'aqm-muted' }, e.message)));
+  }
+
+  // Time left before the end of an auction: "2 j 4 h", "3 h 12 min", "8 min".
+  function timeLeft(at) {
+    const m = Math.max(1, Math.round((at - Date.now()) / 60e3));
+    if (m < 60) return `${m} min`;
+    if (m < 1440) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+    return `${Math.floor(m / 1440)} j${Math.floor((m % 1440) / 60) ? ` ${Math.floor((m % 1440) / 60)} h` : ''}`;
+  }
+
+  // Under the offers, the card's 3 running auctions with the lowest bids, the lowest first: the bid to beat and the
+  // time left.
+  // Nothing when they couldn't be read (null).
+  function auctionsPart(auctions, maxCopies) {
+    if (!auctions) return [];
+    const rows = auctions.slice(0, 3).map((a) =>
+      playerRow(
+        a.serial,
+        a.player,
+        h('span', { class: 'aqm-auction-cell' }, perles(a.bid), h('small', { class: 'aqm-muted' }, [a.bids != null ? `${a.bids} enchère${a.bids > 1 ? 's' : ''}` : null, a.endsAt ? `fin dans ${timeLeft(a.endsAt)}` : null].filter(Boolean).join(' · '))),
+        { maxCopies }
+      )
+    );
+    return [
+      h('div', { class: 'aqm-listings-head aqm-auctions-head' },
+        h('p', { class: 'aqm-label' }, 'Aux enchères'),
+        h('small', { class: 'aqm-muted' }, auctions.length ? `${auctions.length > 3 ? `3 mises les plus faibles sur ${fmt(auctions.length)}` : `${auctions.length} en cours`}, de la plus faible à la plus haute` : '')),
+      rows.length ? h('ul', { class: 'aqm-owners' }, rows) : h('p', { class: 'aqm-muted' }, 'Aucune enchère en cours.')
+    ];
   }
 
   // What the game's "Mes exemplaires" panel of the card says (to see whether it changed).

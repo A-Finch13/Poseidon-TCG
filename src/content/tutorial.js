@@ -100,6 +100,10 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.5',
+    items: [['Page d’une carte : sous les annonces du marché, les 3 enchères en cours avec la mise la plus faible, avec le nombre d’enchères et le temps restant.']]
+  },
+  {
     version: '1.4.4',
     items: [
       ['Page d’une carte : après un achat avec « Acheter », la page ne se recharge plus ; tes Perles et tes exemplaires se mettent à jour sur place.'],
