@@ -2782,3 +2782,12 @@ html.aqm-grabbing * {
   align-items: flex-end;
   gap: 2px;
 }
+/* "Enchérir": a link to the auction's page, drawn like the "Acheter" button (not like a player's name). */
+.aqm-owner a.aqm-buy {
+  display: inline-flex;
+  align-items: center;
+  overflow: visible;
+  color: #fff;
+  font-weight: 800;
+  text-decoration: none;
+}

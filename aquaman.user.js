@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.5
+// @version      1.4.6
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.5';
+const VERSION = '1.4.6';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -5084,6 +5084,15 @@ html.aqm-grabbing * {
   align-items: flex-end;
   gap: 2px;
 }
+/* "Enchérir": a link to the auction's page, drawn like the "Acheter" button (not like a player's name). */
+.aqm-owner a.aqm-buy {
+  display: inline-flex;
+  align-items: center;
+  overflow: visible;
+  color: #fff;
+  font-weight: 800;
+  text-decoration: none;
+}
 `;
   document.head.appendChild(style);
   // ---------- 5. src/content/tutorial.js et content.js : visite, nouveautés, puis tout ce qui s'affiche sur le site ----------
@@ -5188,6 +5197,10 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.4.6',
+    items: [['Page d’une carte : un bouton « Enchérir » sur chaque enchère en cours, qui ouvre sa page dans le jeu.']]
+  },
   {
     version: '1.4.5',
     items: [['Page d’une carte : sous les annonces du marché, les 3 enchères en cours avec la mise la plus faible, avec le nombre d’enchères et le temps restant.']]
@@ -7937,8 +7950,8 @@ const CHANGES = [
     return `${Math.floor(m / 1440)} j${Math.floor((m % 1440) / 60) ? ` ${Math.floor((m % 1440) / 60)} h` : ''}`;
   }
 
-  // Under the offers, the card's 3 running auctions with the lowest bids, the lowest first: the bid to beat and the
-  // time left.
+  // Under the offers, the card's 3 running auctions with the lowest bids, the lowest first: the bid to beat, the
+  // time left and a button to the auction's page.
   // Nothing when they couldn't be read (null).
   function auctionsPart(auctions, maxCopies) {
     if (!auctions) return [];
@@ -7946,7 +7959,13 @@ const CHANGES = [
       playerRow(
         a.serial,
         a.player,
-        h('span', { class: 'aqm-auction-cell' }, perles(a.bid), h('small', { class: 'aqm-muted' }, [a.bids != null ? `${a.bids} enchère${a.bids > 1 ? 's' : ''}` : null, a.endsAt ? `fin dans ${timeLeft(a.endsAt)}` : null].filter(Boolean).join(' · '))),
+        h(
+          'span',
+          { class: 'aqm-buy-cell' },
+          h('span', { class: 'aqm-auction-cell' }, perles(a.bid), h('small', { class: 'aqm-muted' }, [a.bids != null ? `${a.bids} enchère${a.bids > 1 ? 's' : ''}` : null, a.endsAt ? `fin dans ${timeLeft(a.endsAt)}` : null].filter(Boolean).join(' · '))),
+          // The auction's page in the game (/jeu/encheres/:id), where the player bids.
+          a.id ? h('a', { class: 'aqm-queue-btn is-main aqm-buy', href: `/jeu/encheres/${encodeURIComponent(a.id)}` }, a.player?.id === meId ? 'Voir' : 'Enchérir') : null
+        ),
         { maxCopies }
       )
     );

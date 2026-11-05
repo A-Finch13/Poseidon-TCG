@@ -2622,8 +2622,8 @@
     return `${Math.floor(m / 1440)} j${Math.floor((m % 1440) / 60) ? ` ${Math.floor((m % 1440) / 60)} h` : ''}`;
   }
 
-  // Under the offers, the card's 3 running auctions with the lowest bids, the lowest first: the bid to beat and the
-  // time left.
+  // Under the offers, the card's 3 running auctions with the lowest bids, the lowest first: the bid to beat, the
+  // time left and a button to the auction's page.
   // Nothing when they couldn't be read (null).
   function auctionsPart(auctions, maxCopies) {
     if (!auctions) return [];
@@ -2631,7 +2631,13 @@
       playerRow(
         a.serial,
         a.player,
-        h('span', { class: 'aqm-auction-cell' }, perles(a.bid), h('small', { class: 'aqm-muted' }, [a.bids != null ? `${a.bids} enchère${a.bids > 1 ? 's' : ''}` : null, a.endsAt ? `fin dans ${timeLeft(a.endsAt)}` : null].filter(Boolean).join(' · '))),
+        h(
+          'span',
+          { class: 'aqm-buy-cell' },
+          h('span', { class: 'aqm-auction-cell' }, perles(a.bid), h('small', { class: 'aqm-muted' }, [a.bids != null ? `${a.bids} enchère${a.bids > 1 ? 's' : ''}` : null, a.endsAt ? `fin dans ${timeLeft(a.endsAt)}` : null].filter(Boolean).join(' · '))),
+          // The auction's page in the game (/jeu/encheres/:id), where the player bids.
+          a.id ? h('a', { class: 'aqm-queue-btn is-main aqm-buy', href: `/jeu/encheres/${encodeURIComponent(a.id)}` }, a.player?.id === meId ? 'Voir' : 'Enchérir') : null
+        ),
         { maxCopies }
       )
     );
