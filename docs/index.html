@@ -505,11 +505,24 @@
                 <p><b>Réglages</b> → <b>Apps</b> → <b>Safari</b> → <b>Extensions</b> → <b>Userscripts</b> : active-la, puis dans <b>Autorisations</b>, choisis <b>Autoriser</b> pour poseidon-scans.net (ou « Tous les sites web »).</p>
               </div>
             </li>
+            <li class="step">
+              <div>
+                <h3>Désactive les restrictions</h3>
+                <p><b>Réglages</b> → <b>Temps d'écran</b> → <b>Contenu et confidentialité</b> : désactive-le, sinon Safari peut bloquer le téléchargement du script et l'extension.</p>
+              </div>
+            </li>
             <li class="step main">
               <div>
                 <h3>Installe Aquaman</h3>
-                <p>Ouvre ce lien <b>dans Safari</b>, touche l'icône <b>Userscripts</b> (à gauche de la barre d'adresse, ou dans le menu <b>ᴀA</b>), puis <b>Installer</b>.</p>
-                <div class="buttons"><a class="btn primary" href="https://raw.githubusercontent.com/A-Finch13/Poseidon-TCG/main/aquaman.user.js">⬇ aquaman.user.js</a></div>
+                <p>Touche ce bouton <b>dans Safari</b>, puis <b>Télécharger</b> : le fichier <b>aquaman.user.js</b> arrive dans tes <b>Téléchargements</b>.</p>
+                <div class="buttons"><a class="btn primary" data-download="aquaman.user.js" href="https://raw.githubusercontent.com/A-Finch13/Poseidon-TCG/main/aquaman.user.js">⬇ Installer aquaman.user.js</a></div>
+              </div>
+            </li>
+            <li class="step">
+              <div>
+                <h3>Range le script dans le dossier Userscripts</h3>
+                <p>Ouvre l'app <b>Fichiers</b> → <b>Téléchargements</b>, garde le doigt sur <b>aquaman.user.js</b> → <b>Déplacer</b> → <b>Sur mon iPhone</b> (ou <b>Sur mon iPad</b>) → <b>Userscripts</b> → <b>Déplacer</b>.</p>
+                <p>Si tu as choisi un autre dossier dans l'app Userscripts, mets-le dans celui-là : il est indiqué dans l'app, sous <b>Current directory</b>.</p>
               </div>
             </li>
             <li class="step">
@@ -586,6 +599,26 @@
         versionPanels.forEach((p) => (p.hidden = p.dataset.versionPanel !== name));
       };
       versions.forEach((b) => b.addEventListener('click', () => pickVersion(b.dataset.version)));
+
+      // Downloads the script as a file instead of opening it in a new page.
+      document.querySelectorAll('[data-download]').forEach((a) =>
+        a.addEventListener('click', async (e) => {
+          e.preventDefault();
+          try {
+            const res = await fetch(a.href, { cache: 'no-store' });
+            if (!res.ok) throw new Error(res.status);
+            const blob = new Blob([await res.text()], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const link = Object.assign(document.createElement('a'), { href: url, download: a.dataset.download });
+            document.body.append(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+          } catch {
+            location.href = a.href;
+          }
+        })
+      );
 
       // Opens the tab of the device in use.
       const ua = navigator.userAgent;
