@@ -51,6 +51,7 @@ export const SETTINGS = [
     icon: '🔁',
     items: [
       ['tradeMarks', 'Échanges', 'Pastille « déjà possédée » sur les cartes des échanges, dans le jeu et en MP'],
+      ['tradeFilters', 'Filtres des échanges', 'Proposer un échange : « Mes recherches », « Il me manque » et « Il lui manque » à côté de « Doublons »'],
       ['showcaseDrag', 'Ma vitrine', 'Glisser-déposer pour ranger tes cartes'],
       ['recycleHelp', 'Recycler des cartes', 'Rien de coché au départ, bouton « Tout cocher »']
     ]
@@ -774,6 +775,54 @@ async function searchedIds() {
   const [wanted, waiting] = await Promise.all([wantedIds().catch(() => new Set()), waitingIds()]);
   for (const id of waiting) wanted.add(id);
   return wanted;
+}
+
+// Image keys of the cards searched by the player (the filters of the exchanges tell the cards by their picture):
+// the pictures of the game's list, and the catalogue's for Aquaman's waiting ones.
+async function searchedImages() {
+  const keys = new Set();
+  const [ids, catalog] = await Promise.all([searchedIds(), loadCatalog()]);
+  try {
+    const { wants } = await cached('wants', 30e3, () => game('/wants'));
+    for (const w of wants ?? []) {
+      const key = imageKey(w?.card?.image);
+      if (key) keys.add(key);
+    }
+  } catch {}
+  for (const c of catalog ?? []) {
+    const key = ids.has(c.id) && imageKey(c.image);
+    if (key) keys.add(key);
+  }
+  return [...keys];
+}
+
+// The copies of another player by image key ({ found, private, byImage }), for the filter "Il lui manque" of the
+// exchanges: by their id, else by their name among the friends, then among the players the relay saw.
+async function playerOwnership({ id, name } = {}) {
+  if (typeof id !== 'string' || !id) id = name ? await playerIdByName(name) : null;
+  if (!id) return { found: false };
+  const sc = await showcase(id);
+  if (sc?.private) return { found: true, private: true };
+  return { found: true, private: false, byImage: countCopies(sc).byImage };
+}
+
+async function playerIdByName(name) {
+  const n = fold(name);
+  if (!n) return null;
+  try {
+    const hit = (await friends()).friends.find((f) => fold(f.name) === n);
+    if (hit) return hit.id;
+  } catch {}
+  try {
+    const { players } = await cached('relay-players', 10 * 60e3, async () => {
+      const res = await fetch(`${RELAY}/players?limit=300`);
+      if (!res.ok) throw new Error(`relay_${res.status}`);
+      return res.json();
+    });
+    return (players ?? []).find((p) => fold(p.name) === n)?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // The cards waiting in Aquaman.
@@ -1508,6 +1557,10 @@ export async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
+      case 'searched-images':
+        return { keys: await searchedImages() };
+      case 'player-ownership':
+        return await playerOwnership(msg);
       case 'card-images':
         return { keys: (await loadCatalog())?.map((c) => imageKey(c.image)).filter(Boolean) ?? null };
       case 'friends':

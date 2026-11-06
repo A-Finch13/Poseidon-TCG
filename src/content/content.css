@@ -2898,6 +2898,17 @@ html.aqm-grabbing * {
 [data-aqm-unfav] {
   display: none !important;
 }
+/* The filters of Aquaman in the window of an exchange, beside the game's chips. */
+.aqm-trade-filter.is-on {
+  background: #1e3a5f !important;
+  color: #fff !important;
+}
+.aqm-trade-filter.is-on.is-off {
+  opacity: 0.55;
+}
+[data-aqm-tradehide] {
+  display: none !important;
+}
 /* A card's page: its running auctions, under the market's offers. */
 .aqm-auctions-head {
   margin-top: 18px;

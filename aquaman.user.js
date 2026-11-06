@@ -201,6 +201,7 @@ const SETTINGS = [
     icon: '🔁',
     items: [
       ['tradeMarks', 'Échanges', 'Pastille « déjà possédée » sur les cartes des échanges, dans le jeu et en MP'],
+      ['tradeFilters', 'Filtres des échanges', 'Proposer un échange : « Mes recherches », « Il me manque » et « Il lui manque » à côté de « Doublons »'],
       ['showcaseDrag', 'Ma vitrine', 'Glisser-déposer pour ranger tes cartes'],
       ['recycleHelp', 'Recycler des cartes', 'Rien de coché au départ, bouton « Tout cocher »']
     ]
@@ -924,6 +925,54 @@ async function searchedIds() {
   const [wanted, waiting] = await Promise.all([wantedIds().catch(() => new Set()), waitingIds()]);
   for (const id of waiting) wanted.add(id);
   return wanted;
+}
+
+// Image keys of the cards searched by the player (the filters of the exchanges tell the cards by their picture):
+// the pictures of the game's list, and the catalogue's for Aquaman's waiting ones.
+async function searchedImages() {
+  const keys = new Set();
+  const [ids, catalog] = await Promise.all([searchedIds(), loadCatalog()]);
+  try {
+    const { wants } = await cached('wants', 30e3, () => game('/wants'));
+    for (const w of wants ?? []) {
+      const key = imageKey(w?.card?.image);
+      if (key) keys.add(key);
+    }
+  } catch {}
+  for (const c of catalog ?? []) {
+    const key = ids.has(c.id) && imageKey(c.image);
+    if (key) keys.add(key);
+  }
+  return [...keys];
+}
+
+// The copies of another player by image key ({ found, private, byImage }), for the filter "Il lui manque" of the
+// exchanges: by their id, else by their name among the friends, then among the players the relay saw.
+async function playerOwnership({ id, name } = {}) {
+  if (typeof id !== 'string' || !id) id = name ? await playerIdByName(name) : null;
+  if (!id) return { found: false };
+  const sc = await showcase(id);
+  if (sc?.private) return { found: true, private: true };
+  return { found: true, private: false, byImage: countCopies(sc).byImage };
+}
+
+async function playerIdByName(name) {
+  const n = fold(name);
+  if (!n) return null;
+  try {
+    const hit = (await friends()).friends.find((f) => fold(f.name) === n);
+    if (hit) return hit.id;
+  } catch {}
+  try {
+    const { players } = await cached('relay-players', 10 * 60e3, async () => {
+      const res = await fetch(`${RELAY}/players?limit=300`);
+      if (!res.ok) throw new Error(`relay_${res.status}`);
+      return res.json();
+    });
+    return (players ?? []).find((p) => fold(p.name) === n)?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // The cards waiting in Aquaman.
@@ -1658,6 +1707,10 @@ async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
+      case 'searched-images':
+        return { keys: await searchedImages() };
+      case 'player-ownership':
+        return await playerOwnership(msg);
       case 'card-images':
         return { keys: (await loadCatalog())?.map((c) => imageKey(c.image)).filter(Boolean) ?? null };
       case 'friends':
@@ -1840,6 +1893,7 @@ async function handle(msg) {
   const OPEN = /^\/api-game\/v1\/boosters\/([^/]+\/open|open-many|open)$/;
   const ORDERS = /^\/api-game\/v1\/market\/orders$/;
   const BUY = /^\/api-game\/v1\/shop\/booster$/;
+  const PLAYER_PATH = /^\/api-game\/v1\/(?:public\/)?(?:players|users)\/([^/?]+)/;
   const MARKET_BUY = /^\/api-game\/v1\/market\/listings\/([^/]+)\/buy$/;
   // Changes of Perles or cards made outside the boosters (market, exchanges, auctions, copies sold or recycled): the
   // game's status and the card of the page are read again from the API afterwards. (Not the boosters: the game counts
@@ -2309,6 +2363,15 @@ async function handle(msg) {
           .clone()
           .json()
           .then(learnCopies)
+          .catch(() => {});
+      // A player whose cards the game reads (the partner of an exchange…): their id with their name, for the filter
+      // "Il lui manque" of the exchanges.
+      const player = path && res.ok && method === 'GET' ? path.match(PLAYER_PATH)?.[1] : null;
+      if (player)
+        res
+          .clone()
+          .json()
+          .then((body) => post({ type: 'player-seen', id: decodeURIComponent(player), name: body?.player?.name ?? body?.user?.name ?? body?.name ?? null }))
           .catch(() => {});
       if (path && res.ok) {
         if (method === 'GET' && ME.test(path)) {
@@ -5282,6 +5345,17 @@ html.aqm-grabbing * {
 [data-aqm-unfav] {
   display: none !important;
 }
+/* The filters of Aquaman in the window of an exchange, beside the game's chips. */
+.aqm-trade-filter.is-on {
+  background: #1e3a5f !important;
+  color: #fff !important;
+}
+.aqm-trade-filter.is-on.is-off {
+  opacity: 0.55;
+}
+[data-aqm-tradehide] {
+  display: none !important;
+}
 /* A card's page: its running auctions, under the market's offers. */
 .aqm-auctions-head {
   margin-top: 18px;
@@ -5407,7 +5481,7 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.7',
-    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.']]
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.'], ['Proposer un échange : à côté de « Doublons », les filtres « Mes recherches » et « Il me manque » dans « Tu demandes », et « Il lui manque » dans « Tu donnes » (avec « Doublons » : tes doublons qu’il n’a pas).']]
   },
   {
     version: '1.4.6',
@@ -5668,6 +5742,13 @@ const CHANGES = [
   const TAB = Math.random().toString(36).slice(2);
   const STALE = 10e3; // a tab silent for this long hands the queue over
   const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  const playersSeen = new Map(); // folded name -> id of the players whose cards the game read (inject.js)
+  const foldName = (s) =>
+    String(s ?? '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .trim();
   let batch = null; // { kind, before, opened }: the last "Tout ouvrir", the boosters of its kind then, how many it opened (markOpenMore)
   let queueRunning = false;
   let settled = false; // the page was taken over by React: Aquaman may change it (see whenSettled)
@@ -6479,6 +6560,7 @@ const CHANGES = [
     }
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
+    else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && typeof e.data.name === 'string') playersSeen.set(foldName(e.data.name), e.data.id);
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
       if (batch) batch.opened = e.data.boosters.length;
       send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [] }).then((report) => {
@@ -8880,6 +8962,161 @@ const CHANGES = [
     }
   }
 
+  // ---------- trades: filters "Mes recherches", "Il me manque", "Il lui manque" ----------
+  // In the window "Proposer un échange", beside the game's chips (Toutes, Doublons, En vente): Aquaman's own filters,
+  // which hide the cards that don't match, on top of the game's (with "Doublons": the duplicates that match).
+  // "Tu demandes" (the partner's cards): Mes recherches, Il me manque. "Tu donnes" (the player's): Il lui manque.
+  const TRADE_FILTERS = [
+    { key: 'searched', label: 'Mes recherches', title: 'Seulement les cartes de ta liste de recherches', on: 'asks' },
+    { key: 'mine', label: 'Il me manque', title: 'Seulement les cartes que tu n’as pas', on: 'asks' },
+    { key: 'theirs', label: 'Il lui manque', title: 'Seulement les cartes que ton partenaire n’a pas', on: 'gives' }
+  ];
+  const tradeOn = new Set(); // the filters picked, kept while the page stays open
+  let searchedKeys = null; // { at, keys: Set } the pictures of the searched cards
+  let partner = null; // { name, at, state: 'loading' | 'ok' | 'private' | 'unknown', byImage }
+  let tradeLoading = false;
+  let tradeAskedAt = 0;
+  const tradeTiles = new WeakMap(); // picture -> its tile in the grid
+
+  // The window of an exchange being made: its chips, and which side is shown (gives: "Tu donnes").
+  function tradeWindow() {
+    const doubles = [...document.querySelectorAll('button')].find((b) => !b.closest('.aqm-root') && /^doublons\b/i.test(b.textContent.trim()));
+    const chips = doubles?.parentElement;
+    if (!chips || ![...chips.querySelectorAll('button')].some((b) => /^toutes$/i.test(b.textContent.trim()))) return null;
+    const tabText = (b) => b.textContent.trim().toLowerCase();
+    for (let box = chips.parentElement, up = 0; box && box !== document.body && up < 10; box = box.parentElement, up++) {
+      const tabs = [...box.querySelectorAll('button, [role="tab"]')].filter((b) => /^(tu donnes|tu demandes|perles et mot)$/.test(tabText(b)));
+      const gives = tabs.find((b) => tabText(b) === 'tu donnes');
+      const asks = tabs.find((b) => tabText(b) === 'tu demandes');
+      if (!gives || !asks) continue;
+      // The tab shown: the one marked so, else the one drawn unlike the others.
+      const marked = tabs.find((b) => b.getAttribute('aria-selected') === 'true' || b.getAttribute('data-state') === 'active' || b.getAttribute('aria-pressed') === 'true');
+      const odd = tabs.find((b) => tabs.filter((x) => x.className === b.className).length === 1);
+      const shown = marked ?? (tabs.length > 2 ? odd : null);
+      if (!shown) return null;
+      return { box, chips, side: shown === gives ? 'gives' : shown === asks ? 'asks' : null };
+    }
+    return null;
+  }
+
+  // The partner's name: "Avec Towntter" at the top of the window.
+  function tradePartnerName(box) {
+    for (const el of box.querySelectorAll('p, span, div, h2, h3')) {
+      const text = el.textContent.trim();
+      if (text.length > 80 || el.children.length > 3) continue;
+      const m = text.match(/^avec\s+(.+)$/i);
+      if (m) return m[1].trim();
+    }
+    return null;
+  }
+
+  async function loadTradeData(name) {
+    if (tradeLoading) return;
+    tradeLoading = true;
+    try {
+      const jobs = [];
+      if (tradeOn.has('searched') && (!searchedKeys || Date.now() - searchedKeys.at > 60e3))
+        jobs.push(
+          ask({ type: 'searched-images' })
+            .then((r) => (searchedKeys = { at: Date.now(), keys: new Set(r.keys ?? []) }))
+            .catch(() => (searchedKeys = { at: Date.now(), keys: new Set() }))
+        );
+      if (tradeOn.has('mine')) jobs.push(ownedByImage().catch(() => null));
+      if (tradeOn.has('theirs') && name && (partner?.name !== name || Date.now() - partner.at > 5 * 60e3)) {
+        partner = { name, at: Date.now(), state: 'loading', byImage: null };
+        jobs.push(
+          ask({ type: 'player-ownership', id: playersSeen.get(foldName(name)) ?? null, name })
+            .then((r) => {
+              if (partner?.name !== name) return;
+              partner.state = !r.found ? 'unknown' : r.private ? 'private' : 'ok';
+              partner.byImage = r.byImage ?? null;
+            })
+            .catch(() => partner?.name === name && (partner.state = 'unknown'))
+        );
+      }
+      await Promise.all(jobs);
+    } finally {
+      tradeLoading = false;
+    }
+  }
+
+  function markTradeFilters() {
+    const win = tradeWindow();
+    if (!win) {
+      if (!document.querySelector('.aqm-trade-filter')) return;
+      document.querySelectorAll('.aqm-trade-filter').forEach((el) => el.remove());
+      document.querySelectorAll('[data-aqm-tradehide]').forEach((el) => el.removeAttribute('data-aqm-tradehide'));
+      return;
+    }
+    const { box, chips, side } = win;
+    const name = tradePartnerName(box);
+    // The chips of this side, after the game's.
+    const plain = [...chips.querySelectorAll('button')].find((b) => !b.classList.contains('aqm-trade-filter') && /^doublons\b/i.test(b.textContent.trim()));
+    for (const f of TRADE_FILTERS) {
+      let chip = chips.querySelector(`:scope > .aqm-trade-filter[data-key="${f.key}"]`);
+      if (f.on !== side) {
+        chip?.remove();
+        continue;
+      }
+      if (!chip) {
+        chip = h(
+          'button',
+          {
+            type: 'button',
+            class: `${plain?.className ?? ''} aqm-trade-filter`,
+            'data-key': f.key,
+            onclick: () => {
+              tradeOn.has(f.key) ? tradeOn.delete(f.key) : tradeOn.add(f.key);
+              markTradeFilters();
+            }
+          },
+          f.label
+        );
+        chips.append(chip);
+      }
+      const isOn = tradeOn.has(f.key);
+      chip.classList.toggle('is-on', isOn);
+      chip.setAttribute('aria-pressed', String(isOn));
+      const state = f.key === 'theirs' && isOn ? partner?.state : null;
+      const title = state === 'private' ? `${f.title} : sa collection est privée, rien n’est masqué.` : state === 'unknown' ? `${f.title} : Aquaman n’a pas trouvé ${name ?? 'ce joueur'}, rien n’est masqué.` : f.title;
+      if (chip.title !== title) chip.title = title;
+      chip.classList.toggle('is-off', state === 'private' || state === 'unknown');
+    }
+
+    // The filters of this side, with what they need.
+    const active = TRADE_FILTERS.filter((f) => f.on === side && tradeOn.has(f.key)).map((f) => f.key);
+    const mine = owned && Date.now() - owned.at < 30e3 ? owned.byImage : null;
+    const needs =
+      (active.includes('searched') && (!searchedKeys || Date.now() - searchedKeys.at > 60e3)) ||
+      (active.includes('mine') && !mine) ||
+      (active.includes('theirs') && name && (partner?.name !== name || Date.now() - partner.at > 5 * 60e3));
+    // (once every 5 s at most: an answer that doesn't come doesn't ask again on every change of the page)
+    if (needs && Date.now() - tradeAskedAt > 5000) {
+      tradeAskedAt = Date.now();
+      loadTradeData(name).then(() => !stopped && markTradeFilters());
+    }
+    const tests = [];
+    if (active.includes('searched') && searchedKeys) tests.push((key) => searchedKeys.keys.has(key));
+    if (active.includes('mine') && mine) tests.push((key) => !mine[key]);
+    if (active.includes('theirs') && partner?.name === name && partner.state === 'ok') tests.push((key) => !partner.byImage[key]);
+
+    // The cards of the grid: each picture's tile (its largest box holding only it), hidden when a filter says no.
+    for (const img of box.querySelectorAll('img')) {
+      const src = img.currentSrc || img.src;
+      // (only the grid under the chips: not the partner's picture, nor the cards already put in the exchange above)
+      if (img.closest('.aqm-root') || !(chips.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING) || chips.contains(img) || !isCardImage(src)) continue;
+      let tile = tradeTiles.get(img);
+      if (!tile?.isConnected || !tile.contains(img)) {
+        tile = img;
+        while (tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll('img').length === 1) tile = tile.parentElement;
+        tradeTiles.set(img, tile);
+      }
+      const key = imageKey(src);
+      const hide = !!tests.length && !!key && !tests.every((t) => t(key));
+      if (tile.hasAttribute('data-aqm-tradehide') !== hide) tile.toggleAttribute('data-aqm-tradehide', hide);
+    }
+  }
+
   // ---------- home: bigger "Les beaux tirages" ----------
 
   function enlargePulls() {
@@ -10804,7 +11041,8 @@ const CHANGES = [
     [markBoosterKinds, 'boosterWheel'],
     [markOpenMore, 'openMore'],
     [enhanceShowcaseEditor, 'showcaseDrag'],
-    [markTrades, 'tradeMarks']
+    [markTrades, 'tradeMarks'],
+    [markTradeFilters, 'tradeFilters']
   ]);
 
   function run() {
@@ -10819,7 +11057,7 @@ const CHANGES = [
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
       if (!inGame && step !== markTrades && step !== checkAccess) continue;
       try {
@@ -10994,7 +11232,8 @@ const CHANGES = [
     tour = null;
     menu = null;
     overlay = null;
-    document.querySelectorAll('.aqm-root, .aqm-plus, .aqm-open-more').forEach((el) => el.remove());
+    document.querySelectorAll('.aqm-root, .aqm-plus, .aqm-open-more, .aqm-trade-filter').forEach((el) => el.remove());
+    document.querySelectorAll('[data-aqm-tradehide]').forEach((el) => el.removeAttribute('data-aqm-tradehide'));
     document.querySelectorAll('[class*="aqm-"]').forEach((el) => {
       for (const cls of [...el.classList]) if (cls.startsWith('aqm-')) el.classList.remove(cls);
     });

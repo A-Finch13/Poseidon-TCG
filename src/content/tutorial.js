@@ -101,7 +101,7 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.7',
-    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.']]
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.'], ['Proposer un échange : à côté de « Doublons », les filtres « Mes recherches » et « Il me manque » dans « Tu demandes », et « Il lui manque » dans « Tu donnes » (avec « Doublons » : tes doublons qu’il n’a pas).']]
   },
   {
     version: '1.4.6',

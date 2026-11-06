@@ -16,6 +16,7 @@
   const OPEN = /^\/api-game\/v1\/boosters\/([^/]+\/open|open-many|open)$/;
   const ORDERS = /^\/api-game\/v1\/market\/orders$/;
   const BUY = /^\/api-game\/v1\/shop\/booster$/;
+  const PLAYER_PATH = /^\/api-game\/v1\/(?:public\/)?(?:players|users)\/([^/?]+)/;
   const MARKET_BUY = /^\/api-game\/v1\/market\/listings\/([^/]+)\/buy$/;
   // Changes of Perles or cards made outside the boosters (market, exchanges, auctions, copies sold or recycled): the
   // game's status and the card of the page are read again from the API afterwards. (Not the boosters: the game counts
@@ -485,6 +486,15 @@
           .clone()
           .json()
           .then(learnCopies)
+          .catch(() => {});
+      // A player whose cards the game reads (the partner of an exchange…): their id with their name, for the filter
+      // "Il lui manque" of the exchanges.
+      const player = path && res.ok && method === 'GET' ? path.match(PLAYER_PATH)?.[1] : null;
+      if (player)
+        res
+          .clone()
+          .json()
+          .then((body) => post({ type: 'player-seen', id: decodeURIComponent(player), name: body?.player?.name ?? body?.user?.name ?? body?.name ?? null }))
           .catch(() => {});
       if (path && res.ok) {
         if (method === 'GET' && ME.test(path)) {
