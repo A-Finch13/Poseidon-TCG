@@ -1307,6 +1307,25 @@ html.aqm-grabbing * {
 .aqm-pick .aqm-search {
   width: min(520px, 100%);
 }
+/* The window of cards after a "Tout ouvrir": the seconds before it closes (on the next ones, or alone). */
+.aqm-open-count {
+  margin-left: 2px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+.aqm-open-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
 /* The suggestions of the search field: the picture of a card, the name, the rarities. */
 .aqm-suggest-box {
   position: relative;

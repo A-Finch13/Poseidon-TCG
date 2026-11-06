@@ -169,6 +169,7 @@ const SETTINGS = [
     items: [
       ['boosterWheel', 'Boosters par catégorie', 'Classique, Magie, Action… côte à côte, avec le compte de chacun'],
       ['openMore', 'Ouvrir les 10 suivants', 'Après un « Tout ouvrir », un bouton ouvre les boosters suivants du même pack, 10 par 10'],
+      ['openMoreAuto', 'Fermeture automatique', 'Après un « Tout ouvrir », la fenêtre des cartes se ferme 5 s après la dernière (sur les 10 suivantes s’il en reste)'],
       ['packGlow', 'Lueur du pack', 'La lueur derrière le booster prend la couleur de son pack'],
       ['pity', 'Garantie anti-malchance', 'Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages'],
       ['bigPulls', 'Beaux tirages agrandis', 'Les dernières cartes rares tirées par les joueurs, en plus grand']
@@ -3690,6 +3691,25 @@ html.aqm-grabbing * {
 .aqm-pick .aqm-search {
   width: min(520px, 100%);
 }
+/* The window of cards after a "Tout ouvrir": the seconds before it closes (on the next ones, or alone). */
+.aqm-open-count {
+  margin-left: 2px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+.aqm-open-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
 /* The suggestions of the search field: the picture of a card, the name, the rarities. */
 .aqm-suggest-box {
   position: relative;
@@ -5387,7 +5407,7 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.7',
-    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup).']]
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.']]
   },
   {
     version: '1.4.6',
@@ -10176,25 +10196,79 @@ const CHANGES = [
     true
   );
 
+  // The window of cards closes by itself AUTO_CLOSE ms after its last card (setting openMoreAuto): on the next ones
+  // when some wait, else on the home page. A click in the window stops it, to look at the cards.
+  const AUTO_CLOSE = 5000;
+  let autoEnd = null; // { row, close, left, ends, timer, cancelled }
+
+  function stopAuto(cancelled = false) {
+    if (!autoEnd) return;
+    clearInterval(autoEnd.timer);
+    autoEnd.timer = 0;
+    autoEnd.cancelled = cancelled;
+    document.querySelectorAll('.aqm-open-count').forEach((el) => el.remove());
+    if (!cancelled) autoEnd = null;
+  }
+
+  function tickAuto() {
+    const a = autoEnd;
+    if (!a?.timer) return;
+    if (stopped || !a.row.isConnected) return stopAuto();
+    const ms = a.ends - Date.now();
+    if (ms <= 0) {
+      stopAuto();
+      a.left > 0 ? openMore(a.close) : a.close.click();
+      return;
+    }
+    const text = `${Math.ceil(ms / 1000)} s`;
+    for (const el of document.querySelectorAll('.aqm-open-count')) if (el.textContent !== text) el.textContent = text;
+  }
+
+  // (a click in the window of cards, but on Aquaman's button: the countdown stops)
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (!autoEnd?.timer || !e.isTrusted || !(e.target instanceof Element) || e.target.closest('.aqm-open-more')) return;
+      stopAuto(true);
+    },
+    true
+  );
+
   function markOpenMore() {
     const old = document.querySelector('.aqm-open-more');
-    if (!batch && !old) return;
-    // (several boosters opened at once, and some of their kind still waiting)
-    const left = batch?.before != null && batch.opened > 1 ? batch.before - batch.opened : 0;
+    if (!batch && !old && !autoEnd) return;
+    // (several boosters opened at once; left: those of their kind still waiting)
+    const multi = batch?.opened > 1;
+    const left = multi && batch.before != null ? Math.max(0, batch.before - batch.opened) : 0;
     // The window of cards: its "Fermer" beside "Voir ma collection".
-    const close = left > 0 && !chaining ? [...document.querySelectorAll('button')].find((b) => !b.closest('.aqm-root') && /^fermer$/i.test(b.textContent.trim())) : null;
+    const close = multi && !chaining ? [...document.querySelectorAll('button')].find((b) => !b.closest('.aqm-root') && /^fermer$/i.test(b.textContent.trim())) : null;
     const row = close?.parentElement;
     if (!row || ![...row.querySelectorAll('button')].some((b) => /collection/i.test(b.textContent))) {
       old?.remove();
+      stopAuto();
       return;
     }
+    const auto = on('openMoreAuto');
+    if (auto && autoEnd?.row !== row) {
+      stopAuto();
+      autoEnd = { row, close, left, ends: Date.now() + AUTO_CLOSE, timer: setInterval(tickAuto, 200), cancelled: false };
+    }
+    const counting = !!autoEnd?.timer;
+    // Nothing left: only the countdown, beside "Fermer".
     const next = Math.min(batch.opened, left);
-    const label = `Ouvrir ${next > 1 ? `les ${fmt(next)} suivants` : 'le dernier'} (${fmt(left)})`;
-    if (old?.parentElement === row && old.dataset.label === label) return;
+    const label = left > 0 ? `Ouvrir ${next > 1 ? `les ${fmt(next)} suivants` : 'le dernier'} (${fmt(left)})` : 'Fermeture dans';
+    const key = `${label}|${counting}`;
+    if (old?.parentElement === row && old.dataset.key === key) return;
     old?.remove();
-    const icon = row.querySelector('button svg')?.cloneNode(true) ?? null;
-    const more = h('button', { type: 'button', class: `${row.querySelector('button')?.className ?? ''} aqm-open-more`, 'data-label': label, onclick: () => openMore(close) }, icon, label);
-    row.prepend(more);
+    if (left <= 0 && !counting) return;
+    const count = counting ? h('span', { class: 'aqm-open-count' }, `${Math.ceil((autoEnd.ends - Date.now()) / 1000)} s`) : null;
+    if (left > 0) {
+      const icon = row.querySelector('button svg')?.cloneNode(true) ?? null;
+      row.prepend(h('button', { type: 'button', class: `${row.querySelector('button')?.className ?? ''} aqm-open-more`, 'data-key': key, onclick: () => (stopAuto(), openMore(close)) }, icon, label, count));
+    } else
+      close.before(
+        h('span', { class: 'aqm-open-more aqm-open-note', 'data-key': key, title: 'Clique dans la fenêtre pour la garder ouverte' }, label, ' ', count)
+      );
   }
 
   // Closes the window of cards, waits for the home page, then opens the next ones of the same kind.
