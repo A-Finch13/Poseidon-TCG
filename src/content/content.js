@@ -128,6 +128,7 @@
   const TAB = Math.random().toString(36).slice(2);
   const STALE = 10e3; // a tab silent for this long hands the queue over
   const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  let batch = null; // { kind, before, opened }: the last "Tout ouvrir", the boosters of its kind then, how many it opened (markOpenMore)
   let queueRunning = false;
   let settled = false; // the page was taken over by React: Aquaman may change it (see whenSettled)
 
@@ -938,7 +939,8 @@
     }
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
-    else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
+    else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
+      if (batch) batch.opened = e.data.boosters.length;
       send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
@@ -946,6 +948,7 @@
         }
         renderPity();
       });
+    }
   }
 
   // ---------- page helpers ----------
@@ -4614,6 +4617,95 @@
     }
   }
 
+  // ---------- home: more than 10 boosters, 10 at a time ----------
+  // The game's "Tout ouvrir" opens 10 boosters at most. When more of that kind wait, its window of cards gets, beside
+  // "Fermer", a button "Ouvrir les 10 suivants": it closes the window and clicks the game's "Tout ouvrir" again, on
+  // the same kind. Each opening is a real one of the game, with its animation; nothing goes past its limit.
+
+  let chaining = false;
+  const OPEN_ALL = /^tout ouvrir/i;
+
+  // The kind a "Tout ouvrir" opens: the one in front of the piles, else the one the game is set on, else its only one.
+  function kindOpened(button) {
+    if (button?.closest('.aqm-piles')) return wheelKey;
+    const set = (() => {
+      try {
+        return sessionStorage.getItem(KIND_KEY) || '';
+      } catch {
+        return '';
+      }
+    })();
+    if (set) return set;
+    const kinds = boosterKinds();
+    return kinds.length === 1 ? kinds[0].key : '';
+  }
+  const kindCount = (key) => (key ? boosterKinds().find((k) => k.key === key)?.count : pendingBoosters?.length) ?? null;
+
+  // A click of the player on a "Tout ouvrir" (the game's or a copy): what it opens is kept; on "Ouvrir" (one
+  // booster), forgotten. (Aquaman's own clicks, untrusted, are not counted: openMore sets the batch itself.)
+  document.addEventListener(
+    'click',
+    (e) => {
+      const button = !stopped && e.isTrusted && e.target instanceof Element ? e.target.closest('button') : null;
+      const text = button?.textContent.trim() ?? '';
+      if (OPEN_ALL.test(text)) {
+        const kind = kindOpened(button);
+        batch = { kind, before: kindCount(kind), opened: null };
+      } else if (/^ouvrir\b/i.test(text) && !button.classList.contains('aqm-open-more')) batch = null;
+    },
+    true
+  );
+
+  function markOpenMore() {
+    const old = document.querySelector('.aqm-open-more');
+    if (!batch && !old) return;
+    // (several boosters opened at once, and some of their kind still waiting)
+    const left = batch?.before != null && batch.opened > 1 ? batch.before - batch.opened : 0;
+    // The window of cards: its "Fermer" beside "Voir ma collection".
+    const close = left > 0 && !chaining ? [...document.querySelectorAll('button')].find((b) => !b.closest('.aqm-root') && /^fermer$/i.test(b.textContent.trim())) : null;
+    const row = close?.parentElement;
+    if (!row || ![...row.querySelectorAll('button')].some((b) => /collection/i.test(b.textContent))) {
+      old?.remove();
+      return;
+    }
+    const next = Math.min(batch.opened, left);
+    const label = `Ouvrir ${next > 1 ? `les ${fmt(next)} suivants` : 'le dernier'} (${fmt(left)})`;
+    if (old?.parentElement === row && old.dataset.label === label) return;
+    old?.remove();
+    const icon = row.querySelector('button svg')?.cloneNode(true) ?? null;
+    const more = h('button', { type: 'button', class: `${row.querySelector('button')?.className ?? ''} aqm-open-more`, 'data-label': label, onclick: () => openMore(close) }, icon, label);
+    row.prepend(more);
+  }
+
+  // Closes the window of cards, waits for the home page, then opens the next ones of the same kind.
+  async function openMore(close) {
+    if (chaining || !batch) return;
+    chaining = true;
+    const { kind } = batch;
+    const left = batch.before - batch.opened;
+    document.querySelector('.aqm-open-more')?.remove();
+    try {
+      close.click();
+      // (the window goes, then the copies of the piles are drawn again)
+      const started = Date.now();
+      while (!stopped && Date.now() - started < 15e3 && (gameBusy() || opening || drawing || !findHomeParts())) await pause(250);
+      await pause(400);
+      if (stopped || gameBusy()) return;
+      batch = { kind, before: left, opened: null };
+      const strip = document.querySelector('.aqm-piles');
+      const shot = strip && piles?.shots?.find((s) => s.key === kind);
+      if (shot) {
+        const index = [...shot.buttons.querySelectorAll('button')].findIndex((b) => OPEN_ALL.test(b.textContent.trim()));
+        if (index >= 0) openFromCopy(kind, index);
+        return;
+      }
+      const real = [...(findHomeParts()?.buttons.querySelectorAll('button') ?? [])].find((b) => OPEN_ALL.test(b.textContent.trim()));
+      real?.click();
+    } finally {
+      chaining = false;
+    }
+  }
+
   function markBoosterKinds() {
     if (!featLoaded || !on('boosterWheel') || !/^\/jeu\/?$/.test(location.pathname) || drawing || opening) return;
     // The game read its boosters before Aquaman listened: inject.js wrote them on the page; else Aquaman reads them
@@ -5116,6 +5208,7 @@
     [markMarketFavorites, 'marketFavorites'],
     [markRecycleDialog, 'recycleHelp'],
     [markBoosterKinds, 'boosterWheel'],
+    [markOpenMore, 'openMore'],
     [enhanceShowcaseEditor, 'showcaseDrag'],
     [markTrades, 'tradeMarks']
   ]);
@@ -5132,7 +5225,7 @@
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
       if (!inGame && step !== markTrades && step !== checkAccess) continue;
       try {
@@ -5307,7 +5400,7 @@
     tour = null;
     menu = null;
     overlay = null;
-    document.querySelectorAll('.aqm-root, .aqm-plus').forEach((el) => el.remove());
+    document.querySelectorAll('.aqm-root, .aqm-plus, .aqm-open-more').forEach((el) => el.remove());
     document.querySelectorAll('[class*="aqm-"]').forEach((el) => {
       for (const cls of [...el.classList]) if (cls.startsWith('aqm-')) el.classList.remove(cls);
     });

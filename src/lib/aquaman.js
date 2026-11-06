@@ -18,6 +18,7 @@ export const SETTINGS = [
     icon: '🏠',
     items: [
       ['boosterWheel', 'Boosters par catégorie', 'Classique, Magie, Action… côte à côte, avec le compte de chacun'],
+      ['openMore', 'Ouvrir les 10 suivants', 'Après un « Tout ouvrir », un bouton ouvre les boosters suivants du même pack, 10 par 10'],
       ['packGlow', 'Lueur du pack', 'La lueur derrière le booster prend la couleur de son pack'],
       ['pity', 'Garantie anti-malchance', 'Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages'],
       ['bigPulls', 'Beaux tirages agrandis', 'Les dernières cartes rares tirées par les joueurs, en plus grand']
