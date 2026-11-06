@@ -398,8 +398,9 @@ async function sharedPerles(ids) {
   return out;
 }
 
-// The players of the "Global" leaderboard: those the relay saw lately in the "beaux tirages" and those who share
-// their Perles with Aquaman (not every player of the game: the game gives no such list). [{ id, name }]
+// The players of the "Global" leaderboard: the player's friends, those the relay saw lately in the "beaux tirages"
+// and those who share their Perles with Aquaman (not every player of the game: the game gives no such list).
+// [{ id, name }]
 async function globalPlayers() {
   const me = await myId();
   const read = async (path) => {
@@ -407,9 +408,15 @@ async function globalPlayers() {
     if (!res.ok) throw new Error(`relay_${res.status}`);
     return (await res.json()).players ?? [];
   };
-  const [seen, rich] = await Promise.all([read('/players?limit=150').catch(() => []), read('/perles/top?limit=150').catch(() => [])]);
+  const [mates, seen, rich] = await Promise.all([
+    friends()
+      .then((f) => f.friends)
+      .catch(() => []),
+    read('/players?limit=150').catch(() => []),
+    read('/perles/top?limit=150').catch(() => [])
+  ]);
   const byId = new Map();
-  for (const p of [...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
+  for (const p of [...mates, ...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
   return { me, players: [...byId.values()] };
 }
 
@@ -909,17 +916,24 @@ async function guessPacks(events) {
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
 // best: the best card of each booster, and packs: its kind ({ id, name }), kept with the SSR, UR and SEC for the history.
-async function recordOpening(boosters, best = [], packs = []) {
+// ids: the game's id of each booster, when known: the opening is kept under it ("g:<id>"), so that a booster told twice
+// (the same answer read twice) is counted once; else a random id.
+async function recordOpening(boosters, best = [], packs = [], ids = []) {
   const state = await pityState();
   const { mine, rules } = state;
   const now = Date.now();
-  const added = boosters.map((rarities, i) => {
-    const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
-    const c = best[i];
-    const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
-    const pack = top >= RANK.SSR ? cleanPack(packs[i]) : null;
-    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}), ...(pack ? { pack } : {}) };
-  });
+  const known = new Set(mine.events.map((e) => e.id));
+  const added = boosters
+    .map((rarities, i) => {
+      const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
+      const c = best[i];
+      const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
+      const pack = top >= RANK.SSR ? cleanPack(packs[i]) : null;
+      const gameId = typeof ids[i] === 'string' && /^[A-Za-z0-9_.:-]{1,60}$/.test(ids[i]) ? `g:${ids[i]}` : null;
+      return { id: gameId ?? `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}), ...(pack ? { pack } : {}) };
+    })
+    .filter((e, i, all) => !known.has(e.id) && all.findIndex((x) => x.id === e.id) === i);
+  if (!added.length) return pityReport(mine, rules, (await getSettings()).syncPity, await secChance());
   mine.events = mergeEvents(mine.events, added);
   // The relay's SEC count goes on with the new openings until the next exchange.
   if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
@@ -1776,7 +1790,7 @@ async function answer(msg) {
       case 'pity':
         return await pity(!!msg.fresh);
       case 'opened':
-        return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? []);
+        return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? [], msg.ids ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
       case 'favorites':
@@ -2248,9 +2262,9 @@ async function handle(msg) {
   // The kind of each booster of an opening ({ id, name }, null when unknown): from the answer, else from the booster's
   // id (in the path or the body of the request) among the waiting ones, else the kind Aquaman shows the game, else
   // the only kind waiting.
-  function packsOf(boosters, path, init, waiting) {
-    const list = Array.isArray(waiting) ? waiting : [];
-    const named = (id, name) => ({ id: id ?? 'classic', name: name ?? list.find((b) => (b?.kindId ?? 'classic') === (id ?? 'classic'))?.kindName ?? (id && id !== 'classic' ? null : 'Classique') });
+  // The game's id of each booster of an opening (null when unknown): from the answer, else from the request (its path
+  // or its body). Aquaman records each booster under it, so that a booster told twice is counted once.
+  function askedIds(path, init) {
     let asked = [];
     try {
       const sent = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
@@ -2258,12 +2272,26 @@ async function handle(msg) {
     } catch {}
     const inPath = path.match(/\/boosters\/([^/]+)\/open$/)?.[1];
     if (inPath) asked = [decodeURIComponent(inPath)];
+    return asked.map((x) => x?.id ?? x);
+  }
+  function boosterIdsOf(boosters, path, init) {
+    const asked = askedIds(path, init);
+    return boosters.map((b, i) => {
+      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i] : null);
+      return typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,60}$/.test(id) ? id : null;
+    });
+  }
+
+  function packsOf(boosters, path, init, waiting) {
+    const list = Array.isArray(waiting) ? waiting : [];
+    const named = (id, name) => ({ id: id ?? 'classic', name: name ?? list.find((b) => (b?.kindId ?? 'classic') === (id ?? 'classic'))?.kindName ?? (id && id !== 'classic' ? null : 'Classique') });
+    const asked = askedIds(path, init);
     const shown = chosenKind();
     const kinds = new Set(list.map((b) => b?.kindId ?? 'classic'));
     return boosters.map((b, i) => {
       const kindId = b?.kindId ?? b?.booster?.kindId;
       if (kindId) return named(kindId, b?.kindName ?? b?.booster?.kindName);
-      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i]?.id ?? asked[i] : null) ?? b?.id;
+      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i] : null) ?? b?.id;
       const known = id != null && list.find((x) => x?.id === id);
       if (known) return named(known.kindId, known.kindName);
       if (shown) return named(shown);
@@ -2474,9 +2502,16 @@ async function handle(msg) {
               .then((body) => {
                 const all = openedBoosters(body);
                 const packs = packsOf(all, path, init, waiting);
-                const opened = all.map((b, i) => ({ pulls: b.pulls, pack: packs[i] })).filter((b) => raritiesOf(b.pulls).length);
+                const ids = boosterIdsOf(all, path, init);
+                const opened = all.map((b, i) => ({ pulls: b.pulls, pack: packs[i], id: ids[i] })).filter((b) => raritiesOf(b.pulls).length);
                 if (opened.length)
-                  post({ type: 'opened', boosters: opened.map((b) => raritiesOf(b.pulls)), best: opened.map((b) => bestCard(b.pulls)), packs: opened.map((b) => b.pack) });
+                  post({
+                    type: 'opened',
+                    boosters: opened.map((b) => raritiesOf(b.pulls)),
+                    best: opened.map((b) => bestCard(b.pulls)),
+                    packs: opened.map((b) => b.pack),
+                    ids: opened.map((b) => b.id)
+                  });
               })
               .catch(() => {});
           if (ASSETS.test(path) && res.ok) assetsChanged();
@@ -5527,7 +5562,10 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.8',
-    items: [['Petites améliorations.']]
+    items: [
+      ['Classement : « Global » compte aussi tes amis.'],
+      ['Garantie anti-malchance : un booster signalé deux fois n’est plus compté deux fois (un écart de 61 boosters pouvait apparaître pour une garantie de 60).']
+    ]
   },
   {
     version: '1.4.7',
@@ -6613,7 +6651,7 @@ const CHANGES = [
     else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && typeof e.data.name === 'string') playersSeen.set(foldName(e.data.name), e.data.id);
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
       if (batch) batch.opened = e.data.boosters.length;
-      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [] }).then((report) => {
+      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
           pityAt = Date.now();
@@ -6929,7 +6967,7 @@ const CHANGES = [
     );
 
   // ---------- friends' leaderboard ----------
-  // "Amis": the player and their friends. "Global": also the players the relay saw lately in the "beaux tirages" and
+  // "Amis": the player and their friends. "Global": the friends too, and the players the relay saw lately in the "beaux tirages" and
   // those who share their Perles with Aquaman (not every player: the game gives no such list). The collections are read
   // only for the tabs that need them; the Perles are those the players of Aquaman share (sharePerles).
 
@@ -7037,7 +7075,7 @@ const CHANGES = [
           } else {
             const { me, players } = await ask({ type: 'global-players' });
             s.rows = [{ id: me, me: true }, ...players].map((p) => ({ ...p, state: 'idle' }));
-            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
+            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement tes amis, les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
           }
         } catch (e) {
           s.note = e.message;

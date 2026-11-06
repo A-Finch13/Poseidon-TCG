@@ -949,7 +949,7 @@
     else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && typeof e.data.name === 'string') playersSeen.set(foldName(e.data.name), e.data.id);
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
       if (batch) batch.opened = e.data.boosters.length;
-      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [] }).then((report) => {
+      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
           pityAt = Date.now();
@@ -1265,7 +1265,7 @@
     );
 
   // ---------- friends' leaderboard ----------
-  // "Amis": the player and their friends. "Global": also the players the relay saw lately in the "beaux tirages" and
+  // "Amis": the player and their friends. "Global": the friends too, and the players the relay saw lately in the "beaux tirages" and
   // those who share their Perles with Aquaman (not every player: the game gives no such list). The collections are read
   // only for the tabs that need them; the Perles are those the players of Aquaman share (sharePerles).
 
@@ -1373,7 +1373,7 @@
           } else {
             const { me, players } = await ask({ type: 'global-players' });
             s.rows = [{ id: me, me: true }, ...players].map((p) => ({ ...p, state: 'idle' }));
-            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
+            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement tes amis, les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
           }
         } catch (e) {
           s.note = e.message;

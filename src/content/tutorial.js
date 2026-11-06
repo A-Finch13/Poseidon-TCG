@@ -101,7 +101,10 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.8',
-    items: [['Petites améliorations.']]
+    items: [
+      ['Classement : « Global » compte aussi tes amis.'],
+      ['Garantie anti-malchance : un booster signalé deux fois n’est plus compté deux fois (un écart de 61 boosters pouvait apparaître pour une garantie de 60).']
+    ]
   },
   {
     version: '1.4.7',

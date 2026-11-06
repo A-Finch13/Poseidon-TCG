@@ -248,8 +248,9 @@ export async function sharedPerles(ids) {
   return out;
 }
 
-// The players of the "Global" leaderboard: those the relay saw lately in the "beaux tirages" and those who share
-// their Perles with Aquaman (not every player of the game: the game gives no such list). [{ id, name }]
+// The players of the "Global" leaderboard: the player's friends, those the relay saw lately in the "beaux tirages"
+// and those who share their Perles with Aquaman (not every player of the game: the game gives no such list).
+// [{ id, name }]
 export async function globalPlayers() {
   const me = await myId();
   const read = async (path) => {
@@ -257,9 +258,15 @@ export async function globalPlayers() {
     if (!res.ok) throw new Error(`relay_${res.status}`);
     return (await res.json()).players ?? [];
   };
-  const [seen, rich] = await Promise.all([read('/players?limit=150').catch(() => []), read('/perles/top?limit=150').catch(() => [])]);
+  const [mates, seen, rich] = await Promise.all([
+    friends()
+      .then((f) => f.friends)
+      .catch(() => []),
+    read('/players?limit=150').catch(() => []),
+    read('/perles/top?limit=150').catch(() => [])
+  ]);
   const byId = new Map();
-  for (const p of [...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
+  for (const p of [...mates, ...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
   return { me, players: [...byId.values()] };
 }
 
@@ -759,17 +766,24 @@ async function guessPacks(events) {
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
 // best: the best card of each booster, and packs: its kind ({ id, name }), kept with the SSR, UR and SEC for the history.
-export async function recordOpening(boosters, best = [], packs = []) {
+// ids: the game's id of each booster, when known: the opening is kept under it ("g:<id>"), so that a booster told twice
+// (the same answer read twice) is counted once; else a random id.
+export async function recordOpening(boosters, best = [], packs = [], ids = []) {
   const state = await pityState();
   const { mine, rules } = state;
   const now = Date.now();
-  const added = boosters.map((rarities, i) => {
-    const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
-    const c = best[i];
-    const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
-    const pack = top >= RANK.SSR ? cleanPack(packs[i]) : null;
-    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}), ...(pack ? { pack } : {}) };
-  });
+  const known = new Set(mine.events.map((e) => e.id));
+  const added = boosters
+    .map((rarities, i) => {
+      const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
+      const c = best[i];
+      const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
+      const pack = top >= RANK.SSR ? cleanPack(packs[i]) : null;
+      const gameId = typeof ids[i] === 'string' && /^[A-Za-z0-9_.:-]{1,60}$/.test(ids[i]) ? `g:${ids[i]}` : null;
+      return { id: gameId ?? `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}), ...(pack ? { pack } : {}) };
+    })
+    .filter((e, i, all) => !known.has(e.id) && all.findIndex((x) => x.id === e.id) === i);
+  if (!added.length) return pityReport(mine, rules, (await getSettings()).syncPity, await secChance());
   mine.events = mergeEvents(mine.events, added);
   // The relay's SEC count goes on with the new openings until the next exchange.
   if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
@@ -1626,7 +1640,7 @@ export async function answer(msg) {
       case 'pity':
         return await pity(!!msg.fresh);
       case 'opened':
-        return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? []);
+        return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? [], msg.ids ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
       case 'favorites':

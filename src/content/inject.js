@@ -325,9 +325,9 @@
   // The kind of each booster of an opening ({ id, name }, null when unknown): from the answer, else from the booster's
   // id (in the path or the body of the request) among the waiting ones, else the kind Aquaman shows the game, else
   // the only kind waiting.
-  function packsOf(boosters, path, init, waiting) {
-    const list = Array.isArray(waiting) ? waiting : [];
-    const named = (id, name) => ({ id: id ?? 'classic', name: name ?? list.find((b) => (b?.kindId ?? 'classic') === (id ?? 'classic'))?.kindName ?? (id && id !== 'classic' ? null : 'Classique') });
+  // The game's id of each booster of an opening (null when unknown): from the answer, else from the request (its path
+  // or its body). Aquaman records each booster under it, so that a booster told twice is counted once.
+  function askedIds(path, init) {
     let asked = [];
     try {
       const sent = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
@@ -335,12 +335,26 @@
     } catch {}
     const inPath = path.match(/\/boosters\/([^/]+)\/open$/)?.[1];
     if (inPath) asked = [decodeURIComponent(inPath)];
+    return asked.map((x) => x?.id ?? x);
+  }
+  function boosterIdsOf(boosters, path, init) {
+    const asked = askedIds(path, init);
+    return boosters.map((b, i) => {
+      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i] : null);
+      return typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,60}$/.test(id) ? id : null;
+    });
+  }
+
+  function packsOf(boosters, path, init, waiting) {
+    const list = Array.isArray(waiting) ? waiting : [];
+    const named = (id, name) => ({ id: id ?? 'classic', name: name ?? list.find((b) => (b?.kindId ?? 'classic') === (id ?? 'classic'))?.kindName ?? (id && id !== 'classic' ? null : 'Classique') });
+    const asked = askedIds(path, init);
     const shown = chosenKind();
     const kinds = new Set(list.map((b) => b?.kindId ?? 'classic'));
     return boosters.map((b, i) => {
       const kindId = b?.kindId ?? b?.booster?.kindId;
       if (kindId) return named(kindId, b?.kindName ?? b?.booster?.kindName);
-      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i]?.id ?? asked[i] : null) ?? b?.id;
+      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i] : null) ?? b?.id;
       const known = id != null && list.find((x) => x?.id === id);
       if (known) return named(known.kindId, known.kindName);
       if (shown) return named(shown);
@@ -551,9 +565,16 @@
               .then((body) => {
                 const all = openedBoosters(body);
                 const packs = packsOf(all, path, init, waiting);
-                const opened = all.map((b, i) => ({ pulls: b.pulls, pack: packs[i] })).filter((b) => raritiesOf(b.pulls).length);
+                const ids = boosterIdsOf(all, path, init);
+                const opened = all.map((b, i) => ({ pulls: b.pulls, pack: packs[i], id: ids[i] })).filter((b) => raritiesOf(b.pulls).length);
                 if (opened.length)
-                  post({ type: 'opened', boosters: opened.map((b) => raritiesOf(b.pulls)), best: opened.map((b) => bestCard(b.pulls)), packs: opened.map((b) => b.pack) });
+                  post({
+                    type: 'opened',
+                    boosters: opened.map((b) => raritiesOf(b.pulls)),
+                    best: opened.map((b) => bestCard(b.pulls)),
+                    packs: opened.map((b) => b.pack),
+                    ids: opened.map((b) => b.id)
+                  });
               })
               .catch(() => {});
           if (ASSETS.test(path) && res.ok) assetsChanged();
