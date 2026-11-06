@@ -58,9 +58,12 @@ CREATE TABLE IF NOT EXISTS users (
   version TEXT,
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL,
-  revoked INTEGER -- when the author took Aquaman back from the player (null: allowed)
+  revoked INTEGER, -- when the author took Aquaman back from the player (null: allowed)
+  perles INTEGER, -- the Perles the player has, when they share them (the friends' leaderboard); null: not shared
+  perles_at INTEGER
 );
 -- On a database made before it: ALTER TABLE users ADD COLUMN revoked INTEGER;
+-- ALTER TABLE users ADD COLUMN perles INTEGER; ALTER TABLE users ADD COLUMN perles_at INTEGER;
 
 -- The author's devices (relay/worker.js): public key of each device, waiting for approval or approved.
 CREATE TABLE IF NOT EXISTS devices (

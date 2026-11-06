@@ -45,6 +45,8 @@ const KIND = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_PILE_HTML = 150 * 1024; // one drawing of a booster's pile
 const MAX_PACK_DESIGNS = 150; // the author's drawings: every kind of booster, each with 1, 2 and 3+ boosters
 const PACKS_BODY = 8 * 1024 * 1024;
+const MAX_PERLES_IDS = 400; // players asked at once for their shared Perles
+const PERLES_FRESH = 30 * 86400e3; // shared Perles older than this are not shown (the player stopped using Aquaman)
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -77,6 +79,8 @@ export default {
       if (req.method === 'GET' && pathname === '/players') return shared(await recentPlayers(env, url.searchParams));
       if (req.method === 'GET' && pathname === '/status') return json(await status(env));
       if (req.method === 'POST' && pathname === '/hello') return json(await hello(env, await readBody(req)));
+      if (req.method === 'POST' && pathname === '/perles') return json(await sharedPerles(env, await readBody(req)));
+      if (req.method === 'GET' && pathname === '/perles/top') return shared(await topPerles(env, url.searchParams));
       if (req.method === 'GET' && pathname === '/access') return json(await access(env, url.searchParams));
       if (pathname.startsWith('/admin/')) return await admin(req, env, url);
       return json({ error: 'not_found' }, 404);
@@ -514,6 +518,11 @@ async function hello(env, body) {
        ON CONFLICT (player) DO UPDATE SET name = COALESCE(?2, users.name), kind = COALESCE(?3, users.kind), version = COALESCE(?4, users.version), last_seen = ?5`
     ).bind(player, text(body.name, 60), kind, version, now)
   ];
+  // The Perles of the player, when they share them (a number); "perles: null" takes them back.
+  if ('perles' in (body ?? {})) {
+    const perles = Number.isFinite(body.perles) && body.perles >= 0 && body.perles < 1e12 ? Math.round(body.perles) : null;
+    statements.push(env.DB.prepare('UPDATE users SET perles = ?2, perles_at = ?3 WHERE player = ?1').bind(player, perles, perles == null ? null : now));
+  }
   if (kind)
     statements.push(
       env.DB.prepare(
@@ -525,6 +534,28 @@ async function hello(env, body) {
   // The author may have taken Aquaman back from this player: their Aquaman stops. (false while the column is missing)
   const row = await env.DB.prepare('SELECT revoked FROM users WHERE player = ?1').bind(player).first().catch(() => null);
   return { ok: true, revoked: !!row?.revoked };
+}
+
+// The Perles shared by the players who use Aquaman (the leaderboard), seen within PERLES_FRESH: those of the players
+// asked (POST { ids }), or the most of them (GET /perles/top?limit=). { players: [{ id, name, perles, at }] }
+async function sharedPerles(env, body) {
+  const ids = [...new Set((Array.isArray(body?.ids) ? body.ids : []).filter((id) => PLAYER.test(String(id))))].slice(0, MAX_PERLES_IDS);
+  if (!ids.length) return { players: [] };
+  // (the ids as one JSON parameter: D1 takes 100 parameters at most)
+  const { results } = await env.DB.prepare(
+    'SELECT player AS id, name, perles, perles_at AS at FROM users WHERE perles IS NOT NULL AND perles_at > ?1 AND revoked IS NULL AND player IN (SELECT value FROM json_each(?2))'
+  )
+    .bind(Date.now() - PERLES_FRESH, JSON.stringify(ids))
+    .all();
+  return { players: results };
+}
+
+async function topPerles(env, params) {
+  const limit = Math.min(300, Math.max(1, Number(params.get('limit')) || 150));
+  const { results } = await env.DB.prepare('SELECT player AS id, name, perles, perles_at AS at FROM users WHERE perles IS NOT NULL AND perles_at > ?1 AND revoked IS NULL ORDER BY perles DESC LIMIT ?2')
+    .bind(Date.now() - PERLES_FRESH, limit)
+    .all();
+  return { players: results };
 }
 
 // Whether the author took Aquaman back from a player (?player=): asked every minute by each Aquaman, one row read.

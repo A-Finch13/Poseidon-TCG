@@ -72,7 +72,8 @@ export const SETTINGS = [
       ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
       ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
       ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
-      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
+      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)'],
+      ['sharePerles', 'Mes Perles au classement', 'Montrer mon stock de Perles dans le classement des autres utilisateurs d’Aquaman']
     ]
   }
 ];
@@ -221,13 +222,45 @@ export async function ownership() {
   return countCopies(await myShowcase());
 }
 
-// Unique cards, total and completed series of a player, and the value of their collection in Perles (the value the
-// game gives each copy, added up).
+// Unique cards, total and completed series of a player.
 export async function playerSummary(id) {
   const sc = await showcase(id);
   if (sc.private) return { id, name: sc.player?.name ?? null, private: true };
-  const value = (sc.copies ?? []).reduce((sum, c) => sum + (typeof c?.value === 'number' && c.value > 0 ? c.value : 0), 0);
-  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0, value };
+  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+}
+
+// The Perles of players who use Aquaman and share them ({ [id]: perles }), from the relay; the player's own from the
+// game, always.
+export async function sharedPerles(ids) {
+  const me = await myId();
+  const out = {};
+  const others = [...new Set(ids)].filter((id) => id && id !== me);
+  for (let i = 0; i < others.length; i += 400)
+    try {
+      const res = await fetch(`${RELAY}/perles`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: others.slice(i, i + 400) }) });
+      if (!res.ok) throw new Error(`relay_${res.status}`);
+      for (const p of (await res.json()).players ?? []) out[p.id] = p.perles;
+    } catch {}
+  if (ids.includes(me))
+    try {
+      out[me] = (await gameStatus()).perles;
+    } catch {}
+  return out;
+}
+
+// The players of the "Global" leaderboard: those the relay saw lately in the "beaux tirages" and those who share
+// their Perles with Aquaman (not every player of the game: the game gives no such list). [{ id, name }]
+export async function globalPlayers() {
+  const me = await myId();
+  const read = async (path) => {
+    const res = await fetch(`${RELAY}${path}`);
+    if (!res.ok) throw new Error(`relay_${res.status}`);
+    return (await res.json()).players ?? [];
+  };
+  const [seen, rich] = await Promise.all([read('/players?limit=150').catch(() => []), read('/perles/top?limit=150').catch(() => [])]);
+  const byId = new Map();
+  for (const p of [...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
+  return { me, players: [...byId.values()] };
 }
 
 // The logged-in player and their friends.
@@ -1407,21 +1440,28 @@ const HELLO_EVERY = 9.5 * 60e3; // content.js says hello every 10 minutes while 
 // revoked: the author took Aquaman back from this player; asked again at each start until given back.
 export async function sayHello(kind) {
   const id = await myId();
-  const { helloAt = 0, helloKind, helloFor, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'revokedFor']);
+  const { helloAt = 0, helloKind, helloFor, helloShare, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'helloShare', 'revokedFor']);
   const revoked = revokedFor === id;
-  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true, revoked };
+  // The Perles of the player go with it when they share them (the leaderboard); a change of the setting is told at once.
+  const share = (await getSettings()).sharePerles !== false;
+  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id && helloShare === share) return { ok: true, skipped: true, revoked };
   let name = null;
   try {
     name = (await showcase(id)).player?.name ?? null;
   } catch {}
+  let perles = null;
+  if (share)
+    try {
+      perles = (await gameStatus()).perles;
+    } catch {}
   const res = await fetch(`${RELAY}/hello`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version })
+    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version, ...(share && perles == null ? {} : { perles }) })
   });
   if (!res.ok) return { ok: false, revoked };
   const now = !!(await res.json().catch(() => null))?.revoked;
-  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
+  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id, helloShare: share });
   if (now) await chrome.storage.local.set({ revokedFor: id });
   else if (revoked) await chrome.storage.local.remove('revokedFor');
   return { ok: true, revoked: now };
@@ -1559,6 +1599,10 @@ export async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
+      case 'shared-perles':
+        return { perles: await sharedPerles(Array.isArray(msg.ids) ? msg.ids : []) };
+      case 'global-players':
+        return await globalPlayers();
       case 'searched-images':
         return { keys: await searchedImages() };
       case 'player-ownership':

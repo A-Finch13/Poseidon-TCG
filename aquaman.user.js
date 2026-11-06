@@ -222,7 +222,8 @@ const SETTINGS = [
       ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
       ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
       ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
-      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
+      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)'],
+      ['sharePerles', 'Mes Perles au classement', 'Montrer mon stock de Perles dans le classement des autres utilisateurs d’Aquaman']
     ]
   }
 ];
@@ -371,13 +372,45 @@ async function ownership() {
   return countCopies(await myShowcase());
 }
 
-// Unique cards, total and completed series of a player, and the value of their collection in Perles (the value the
-// game gives each copy, added up).
+// Unique cards, total and completed series of a player.
 async function playerSummary(id) {
   const sc = await showcase(id);
   if (sc.private) return { id, name: sc.player?.name ?? null, private: true };
-  const value = (sc.copies ?? []).reduce((sum, c) => sum + (typeof c?.value === 'number' && c.value > 0 ? c.value : 0), 0);
-  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0, value };
+  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+}
+
+// The Perles of players who use Aquaman and share them ({ [id]: perles }), from the relay; the player's own from the
+// game, always.
+async function sharedPerles(ids) {
+  const me = await myId();
+  const out = {};
+  const others = [...new Set(ids)].filter((id) => id && id !== me);
+  for (let i = 0; i < others.length; i += 400)
+    try {
+      const res = await fetch(`${RELAY}/perles`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: others.slice(i, i + 400) }) });
+      if (!res.ok) throw new Error(`relay_${res.status}`);
+      for (const p of (await res.json()).players ?? []) out[p.id] = p.perles;
+    } catch {}
+  if (ids.includes(me))
+    try {
+      out[me] = (await gameStatus()).perles;
+    } catch {}
+  return out;
+}
+
+// The players of the "Global" leaderboard: those the relay saw lately in the "beaux tirages" and those who share
+// their Perles with Aquaman (not every player of the game: the game gives no such list). [{ id, name }]
+async function globalPlayers() {
+  const me = await myId();
+  const read = async (path) => {
+    const res = await fetch(`${RELAY}${path}`);
+    if (!res.ok) throw new Error(`relay_${res.status}`);
+    return (await res.json()).players ?? [];
+  };
+  const [seen, rich] = await Promise.all([read('/players?limit=150').catch(() => []), read('/perles/top?limit=150').catch(() => [])]);
+  const byId = new Map();
+  for (const p of [...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
+  return { me, players: [...byId.values()] };
 }
 
 // The logged-in player and their friends.
@@ -1557,21 +1590,28 @@ const HELLO_EVERY = 9.5 * 60e3; // content.js says hello every 10 minutes while 
 // revoked: the author took Aquaman back from this player; asked again at each start until given back.
 async function sayHello(kind) {
   const id = await myId();
-  const { helloAt = 0, helloKind, helloFor, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'revokedFor']);
+  const { helloAt = 0, helloKind, helloFor, helloShare, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'helloShare', 'revokedFor']);
   const revoked = revokedFor === id;
-  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true, revoked };
+  // The Perles of the player go with it when they share them (the leaderboard); a change of the setting is told at once.
+  const share = (await getSettings()).sharePerles !== false;
+  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id && helloShare === share) return { ok: true, skipped: true, revoked };
   let name = null;
   try {
     name = (await showcase(id)).player?.name ?? null;
   } catch {}
+  let perles = null;
+  if (share)
+    try {
+      perles = (await gameStatus()).perles;
+    } catch {}
   const res = await fetch(`${RELAY}/hello`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version })
+    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version, ...(share && perles == null ? {} : { perles }) })
   });
   if (!res.ok) return { ok: false, revoked };
   const now = !!(await res.json().catch(() => null))?.revoked;
-  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
+  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id, helloShare: share });
   if (now) await chrome.storage.local.set({ revokedFor: id });
   else if (revoked) await chrome.storage.local.remove('revokedFor');
   return { ok: true, revoked: now };
@@ -1709,6 +1749,10 @@ async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
+      case 'shared-perles':
+        return { perles: await sharedPerles(Array.isArray(msg.ids) ? msg.ids : []) };
+      case 'global-players':
+        return await globalPlayers();
       case 'searched-images':
         return { keys: await searchedImages() };
       case 'player-ownership':
@@ -5483,7 +5527,7 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.7',
-    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.'], ['Proposer un échange : à côté de « Doublons », les filtres « Mes recherches » et « Il me manque » dans « Tu demandes », et « Il lui manque » dans « Tu donnes » (avec « Doublons » : tes doublons qu’il n’a pas).'], ['Classement des amis : un onglet « Perles », la valeur de la collection de chacun.']]
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.'], ['Proposer un échange : à côté de « Doublons », les filtres « Mes recherches » et « Il me manque » dans « Tu demandes », et « Il lui manque » dans « Tu donnes » (avec « Doublons » : tes doublons qu’il n’a pas).'], ['Classement : « Global » à côté de « Amis » (les joueurs vus récemment dans les Beaux tirages et les utilisateurs d’Aquaman, pas la liste complète du jeu), et un onglet « Perles » : le stock de Perles des utilisateurs d’Aquaman qui le partagent (réglage « Mes Perles au classement »).']]
   },
   {
     version: '1.4.6',
@@ -6731,7 +6775,7 @@ const CHANGES = [
     menu = h(
       'div',
       { class: 'aqm-root aqm-menu', role: 'menu' },
-      item('Classement des amis', 'Cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
+      item('Classement', 'Amis ou global : cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
       item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
@@ -6881,81 +6925,88 @@ const CHANGES = [
     );
 
   // ---------- friends' leaderboard ----------
+  // "Amis": the player and their friends. "Global": also the players the relay saw lately in the "beaux tirages" and
+  // those who share their Perles with Aquaman (not every player: the game gives no such list). The collections are read
+  // only for the tabs that need them; the Perles are those the players of Aquaman share (sharePerles).
 
   async function openLeaderboard() {
-    const body = openOverlay('Classement des amis', 'Toi et tes amis, selon les cartes uniques, les séries complètes et la valeur de la collection en Perles.');
+    const body = openOverlay('Classement', 'Toi et tes amis, ou plus largement, selon les cartes uniques, les séries complètes et les Perles.');
+    let scope = 'friends';
     let sortBy = 'owned';
-    let rows = [];
+    const scopes = { friends: null, global: null }; // { rows, note, perlesAsked } of each scope, once read
+    const scopeRow = h('div');
     const tabs = h('div');
-    const status = h('p', { class: 'aqm-note' }, 'Chargement des collections…');
+    const status = h('p', { class: 'aqm-note' }, 'Chargement…');
     const list = h('ol', { class: 'aqm-board' });
-    body.append(tabs, status, list);
+    body.append(scopeRow, tabs, status, list);
+    const alive = () => body.isConnected;
+
+    let frame = 0;
+    const later = () => frame || (frame = requestAnimationFrame(() => ((frame = 0), render())));
 
     const render = () => {
+      scopeRow.replaceChildren(
+        chips(
+          [
+            ['friends', 'Amis'],
+            ['global', 'Global']
+          ],
+          scope,
+          (v) => {
+            scope = v;
+            load();
+            render();
+          }
+        )
+      );
       tabs.replaceChildren(
         chips(
           [
             ['owned', 'Cartes uniques'],
             ['albums', 'Séries complètes'],
-            ['value', 'Perles']
+            ['perles', 'Perles']
           ],
           sortBy,
           (v) => {
             sortBy = v;
+            load();
             render();
           }
         )
       );
-      const score = (r) => (r.state === 'ok' ? [r[sortBy], sortBy === 'owned' ? r.albums : r.owned] : [-1, -1]);
+      const s = scopes[scope];
+      status.textContent = s?.note ?? 'Chargement…';
+      const rows = s?.rows ?? [];
+      // A row counts once its number of the tab is known.
+      const known = (r) => (sortBy === 'perles' ? typeof r.perles === 'number' : r.state === 'ok');
+      const score = (r) => (!known(r) ? [-1, -1] : sortBy === 'perles' ? [r.perles, 0] : [r[sortBy], sortBy === 'owned' ? r.albums : r.owned]);
       const sorted = [...rows].sort((a, b) => {
         const [a1, a2] = score(a);
         const [b1, b2] = score(b);
         return b1 - a1 || b2 - a2 || String(a.name).localeCompare(String(b.name));
       });
       let place = 0;
-      const topAlbums = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.albums));
-      const topValue = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.value ?? 0));
+      const ok = rows.filter((r) => r.state === 'ok');
+      const topAlbums = Math.max(0, ...ok.map((r) => r.albums));
+      const topPerles = Math.max(0, ...rows.map((r) => (typeof r.perles === 'number' ? r.perles : 0)));
+      const bar = (part) => h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * Math.min(1, part || 0)).toFixed(2)}%` }));
       list.replaceChildren(
         ...sorted.map((r) => {
-          if (r.state === 'ok') place++;
-          const share = r.total ? r.owned / r.total : 0;
-          // Only the number of the chosen tab; the bar of the series compares to the best of the list.
-          const stats =
-            r.state !== 'ok'
-              ? [h('p', { class: 'aqm-muted' }, r.state === 'loading' ? 'Chargement…' : r.state === 'private' ? 'Collection privée' : 'Collection indisponible')]
-              : sortBy === 'owned'
-                ? [
-                    h(
-                      'div',
-                      { class: 'aqm-stat is-on' },
-                      h('strong', {}, fmt(r.owned)),
-                      h('small', {}, `/ ${fmt(r.total)} cartes`),
-                      h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * share).toFixed(2)}%` }))
-                    )
-                  ]
-                : sortBy === 'value'
-                  ? [
-                      h(
-                        'div',
-                        { class: 'aqm-stat is-on', title: 'La valeur de chaque carte de sa collection, additionnée' },
-                        h('strong', {}, perles(r.value ?? 0)),
-                        h('small', {}, 'de cartes'),
-                        h('span', { class: 'aqm-bar' }, h('span', { style: `width:${topValue ? ((100 * (r.value ?? 0)) / topValue).toFixed(2) : 0}%` }))
-                      )
-                    ]
-                : [
-                    h(
-                      'div',
-                      { class: 'aqm-stat is-on' },
-                      h('strong', {}, fmt(r.albums)),
-                      h('small', {}, r.albums > 1 ? 'séries complètes' : 'série complète'),
-                      h('span', { class: 'aqm-bar' }, h('span', { style: `width:${topAlbums ? ((100 * r.albums) / topAlbums).toFixed(2) : 0}%` }))
-                    )
-                  ];
+          if (known(r)) place++;
+          let stats;
+          if (sortBy === 'perles')
+            stats =
+              typeof r.perles === 'number'
+                ? h('div', { class: 'aqm-stat is-on' }, h('strong', {}, perles(r.perles)), h('small', {}, 'en stock'), bar(topPerles ? r.perles / topPerles : 0))
+                : h('p', { class: 'aqm-muted', title: 'Seuls les joueurs qui utilisent Aquaman et partagent leurs Perles (réglage « Mes Perles au classement ») ont un montant.' }, r.perles === undefined ? 'Chargement…' : 'Non partagé');
+          else if (r.state !== 'ok') stats = h('p', { class: 'aqm-muted' }, r.state === 'private' ? 'Collection privée' : r.state === 'error' ? 'Collection indisponible' : 'Chargement…');
+          else if (sortBy === 'owned')
+            stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.owned)), h('small', {}, `/ ${fmt(r.total)} cartes`), bar(r.total ? r.owned / r.total : 0));
+          else stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.albums)), h('small', {}, r.albums > 1 ? 'séries complètes' : 'série complète'), bar(topAlbums ? r.albums / topAlbums : 0));
           return h(
             'li',
             { class: `aqm-row${r.me ? ' is-me' : ''}` },
-            h('span', { class: `aqm-place aqm-place-${place}` }, r.state === 'ok' ? String(place) : '–'),
+            h('span', { class: `aqm-place aqm-place-${place}` }, known(r) ? String(place) : '–'),
             h('img', { class: 'aqm-avatar', src: avatarUrl(r.id), alt: '', loading: 'lazy' }),
             h('a', { class: 'aqm-name', href: `/profile/${encodeURIComponent(r.id)}` }, r.name || 'Joueur', r.me ? h('span', { class: 'aqm-tag' }, 'Toi') : null),
             h('div', { class: 'aqm-stats' }, stats)
@@ -6964,29 +7015,63 @@ const CHANGES = [
       );
     };
 
-    try {
-      const { me, friends, friendsError: error } = await ask({ type: 'friends' });
-      rows = [{ id: me, me: true }, ...friends].map((p) => ({ ...p, state: 'loading' }));
-      render();
-      await eachLimited(rows, 4, async (row) => {
+    // The players of a scope, then what the tab shown needs: the Perles shared, or the collections (4 at a time).
+    async function load() {
+      const name = scope;
+      let s = scopes[name];
+      if (!s) {
+        s = scopes[name] = { rows: [], note: 'Chargement…', perlesAsked: false, collectionsAsked: false };
         try {
-          const p = await ask({ type: 'player', id: row.id });
-          row.name ||= p.name;
-          if (p.private) row.state = 'private';
-          else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums, value: p.value ?? 0 });
-        } catch {
-          row.state = 'error';
+          if (name === 'friends') {
+            const { me, friends, friendsError: error } = await ask({ type: 'friends' });
+            s.rows = [{ id: me, me: true }, ...friends].map((p) => ({ ...p, state: 'idle' }));
+            s.note = error
+              ? `Liste d'amis indisponible (${error}).`
+              : friends.length
+                ? `${friends.length} ami${friends.length > 1 ? 's' : ''} · une série est complète quand son album est réclamé.`
+                : "Tu n'as pas encore d'amis dans le jeu : ajoute-en depuis leur profil pour te comparer à eux.";
+          } else {
+            const { me, players } = await ask({ type: 'global-players' });
+            s.rows = [{ id: me, me: true }, ...players].map((p) => ({ ...p, state: 'idle' }));
+            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
+          }
+        } catch (e) {
+          s.note = e.message;
         }
-        render();
-      });
-      status.textContent = error
-        ? `Liste d'amis indisponible (${error}).`
-        : friends.length
-          ? `${friends.length} ami${friends.length > 1 ? 's' : ''} · une série est complète quand son album est réclamé.`
-          : "Tu n'as pas encore d'amis dans le jeu : ajoute-en depuis leur profil pour te comparer à eux.";
-    } catch (e) {
-      status.textContent = e.message;
+        if (!alive()) return;
+        later();
+      }
+      if (sortBy === 'perles' && !s.perlesAsked) {
+        s.perlesAsked = true;
+        try {
+          const { perles: byId } = await ask({ type: 'shared-perles', ids: s.rows.map((r) => r.id) });
+          for (const r of s.rows) r.perles = typeof byId?.[r.id] === 'number' ? byId[r.id] : null;
+        } catch {
+          for (const r of s.rows) r.perles = null;
+        }
+        if (alive()) later();
+      }
+      if (sortBy !== 'perles' && !s.collectionsAsked) {
+        s.collectionsAsked = true;
+        for (const r of s.rows) r.state = 'loading';
+        later();
+        await eachLimited(s.rows, 4, async (row) => {
+          if (!alive()) return;
+          try {
+            const p = await ask({ type: 'player', id: row.id });
+            row.name ||= p.name;
+            if (p.private) row.state = 'private';
+            else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+          } catch {
+            row.state = 'error';
+          }
+          later();
+        });
+      }
     }
+
+    render();
+    load();
   }
 
   // ---------- profitable boosters ----------

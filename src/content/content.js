@@ -1115,7 +1115,7 @@
     menu = h(
       'div',
       { class: 'aqm-root aqm-menu', role: 'menu' },
-      item('Classement des amis', 'Cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
+      item('Classement', 'Amis ou global : cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
       item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
@@ -1265,81 +1265,88 @@
     );
 
   // ---------- friends' leaderboard ----------
+  // "Amis": the player and their friends. "Global": also the players the relay saw lately in the "beaux tirages" and
+  // those who share their Perles with Aquaman (not every player: the game gives no such list). The collections are read
+  // only for the tabs that need them; the Perles are those the players of Aquaman share (sharePerles).
 
   async function openLeaderboard() {
-    const body = openOverlay('Classement des amis', 'Toi et tes amis, selon les cartes uniques, les séries complètes et la valeur de la collection en Perles.');
+    const body = openOverlay('Classement', 'Toi et tes amis, ou plus largement, selon les cartes uniques, les séries complètes et les Perles.');
+    let scope = 'friends';
     let sortBy = 'owned';
-    let rows = [];
+    const scopes = { friends: null, global: null }; // { rows, note, perlesAsked } of each scope, once read
+    const scopeRow = h('div');
     const tabs = h('div');
-    const status = h('p', { class: 'aqm-note' }, 'Chargement des collections…');
+    const status = h('p', { class: 'aqm-note' }, 'Chargement…');
     const list = h('ol', { class: 'aqm-board' });
-    body.append(tabs, status, list);
+    body.append(scopeRow, tabs, status, list);
+    const alive = () => body.isConnected;
+
+    let frame = 0;
+    const later = () => frame || (frame = requestAnimationFrame(() => ((frame = 0), render())));
 
     const render = () => {
+      scopeRow.replaceChildren(
+        chips(
+          [
+            ['friends', 'Amis'],
+            ['global', 'Global']
+          ],
+          scope,
+          (v) => {
+            scope = v;
+            load();
+            render();
+          }
+        )
+      );
       tabs.replaceChildren(
         chips(
           [
             ['owned', 'Cartes uniques'],
             ['albums', 'Séries complètes'],
-            ['value', 'Perles']
+            ['perles', 'Perles']
           ],
           sortBy,
           (v) => {
             sortBy = v;
+            load();
             render();
           }
         )
       );
-      const score = (r) => (r.state === 'ok' ? [r[sortBy], sortBy === 'owned' ? r.albums : r.owned] : [-1, -1]);
+      const s = scopes[scope];
+      status.textContent = s?.note ?? 'Chargement…';
+      const rows = s?.rows ?? [];
+      // A row counts once its number of the tab is known.
+      const known = (r) => (sortBy === 'perles' ? typeof r.perles === 'number' : r.state === 'ok');
+      const score = (r) => (!known(r) ? [-1, -1] : sortBy === 'perles' ? [r.perles, 0] : [r[sortBy], sortBy === 'owned' ? r.albums : r.owned]);
       const sorted = [...rows].sort((a, b) => {
         const [a1, a2] = score(a);
         const [b1, b2] = score(b);
         return b1 - a1 || b2 - a2 || String(a.name).localeCompare(String(b.name));
       });
       let place = 0;
-      const topAlbums = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.albums));
-      const topValue = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.value ?? 0));
+      const ok = rows.filter((r) => r.state === 'ok');
+      const topAlbums = Math.max(0, ...ok.map((r) => r.albums));
+      const topPerles = Math.max(0, ...rows.map((r) => (typeof r.perles === 'number' ? r.perles : 0)));
+      const bar = (part) => h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * Math.min(1, part || 0)).toFixed(2)}%` }));
       list.replaceChildren(
         ...sorted.map((r) => {
-          if (r.state === 'ok') place++;
-          const share = r.total ? r.owned / r.total : 0;
-          // Only the number of the chosen tab; the bar of the series compares to the best of the list.
-          const stats =
-            r.state !== 'ok'
-              ? [h('p', { class: 'aqm-muted' }, r.state === 'loading' ? 'Chargement…' : r.state === 'private' ? 'Collection privée' : 'Collection indisponible')]
-              : sortBy === 'owned'
-                ? [
-                    h(
-                      'div',
-                      { class: 'aqm-stat is-on' },
-                      h('strong', {}, fmt(r.owned)),
-                      h('small', {}, `/ ${fmt(r.total)} cartes`),
-                      h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * share).toFixed(2)}%` }))
-                    )
-                  ]
-                : sortBy === 'value'
-                  ? [
-                      h(
-                        'div',
-                        { class: 'aqm-stat is-on', title: 'La valeur de chaque carte de sa collection, additionnée' },
-                        h('strong', {}, perles(r.value ?? 0)),
-                        h('small', {}, 'de cartes'),
-                        h('span', { class: 'aqm-bar' }, h('span', { style: `width:${topValue ? ((100 * (r.value ?? 0)) / topValue).toFixed(2) : 0}%` }))
-                      )
-                    ]
-                : [
-                    h(
-                      'div',
-                      { class: 'aqm-stat is-on' },
-                      h('strong', {}, fmt(r.albums)),
-                      h('small', {}, r.albums > 1 ? 'séries complètes' : 'série complète'),
-                      h('span', { class: 'aqm-bar' }, h('span', { style: `width:${topAlbums ? ((100 * r.albums) / topAlbums).toFixed(2) : 0}%` }))
-                    )
-                  ];
+          if (known(r)) place++;
+          let stats;
+          if (sortBy === 'perles')
+            stats =
+              typeof r.perles === 'number'
+                ? h('div', { class: 'aqm-stat is-on' }, h('strong', {}, perles(r.perles)), h('small', {}, 'en stock'), bar(topPerles ? r.perles / topPerles : 0))
+                : h('p', { class: 'aqm-muted', title: 'Seuls les joueurs qui utilisent Aquaman et partagent leurs Perles (réglage « Mes Perles au classement ») ont un montant.' }, r.perles === undefined ? 'Chargement…' : 'Non partagé');
+          else if (r.state !== 'ok') stats = h('p', { class: 'aqm-muted' }, r.state === 'private' ? 'Collection privée' : r.state === 'error' ? 'Collection indisponible' : 'Chargement…');
+          else if (sortBy === 'owned')
+            stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.owned)), h('small', {}, `/ ${fmt(r.total)} cartes`), bar(r.total ? r.owned / r.total : 0));
+          else stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.albums)), h('small', {}, r.albums > 1 ? 'séries complètes' : 'série complète'), bar(topAlbums ? r.albums / topAlbums : 0));
           return h(
             'li',
             { class: `aqm-row${r.me ? ' is-me' : ''}` },
-            h('span', { class: `aqm-place aqm-place-${place}` }, r.state === 'ok' ? String(place) : '–'),
+            h('span', { class: `aqm-place aqm-place-${place}` }, known(r) ? String(place) : '–'),
             h('img', { class: 'aqm-avatar', src: avatarUrl(r.id), alt: '', loading: 'lazy' }),
             h('a', { class: 'aqm-name', href: `/profile/${encodeURIComponent(r.id)}` }, r.name || 'Joueur', r.me ? h('span', { class: 'aqm-tag' }, 'Toi') : null),
             h('div', { class: 'aqm-stats' }, stats)
@@ -1348,29 +1355,63 @@
       );
     };
 
-    try {
-      const { me, friends, friendsError: error } = await ask({ type: 'friends' });
-      rows = [{ id: me, me: true }, ...friends].map((p) => ({ ...p, state: 'loading' }));
-      render();
-      await eachLimited(rows, 4, async (row) => {
+    // The players of a scope, then what the tab shown needs: the Perles shared, or the collections (4 at a time).
+    async function load() {
+      const name = scope;
+      let s = scopes[name];
+      if (!s) {
+        s = scopes[name] = { rows: [], note: 'Chargement…', perlesAsked: false, collectionsAsked: false };
         try {
-          const p = await ask({ type: 'player', id: row.id });
-          row.name ||= p.name;
-          if (p.private) row.state = 'private';
-          else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums, value: p.value ?? 0 });
-        } catch {
-          row.state = 'error';
+          if (name === 'friends') {
+            const { me, friends, friendsError: error } = await ask({ type: 'friends' });
+            s.rows = [{ id: me, me: true }, ...friends].map((p) => ({ ...p, state: 'idle' }));
+            s.note = error
+              ? `Liste d'amis indisponible (${error}).`
+              : friends.length
+                ? `${friends.length} ami${friends.length > 1 ? 's' : ''} · une série est complète quand son album est réclamé.`
+                : "Tu n'as pas encore d'amis dans le jeu : ajoute-en depuis leur profil pour te comparer à eux.";
+          } else {
+            const { me, players } = await ask({ type: 'global-players' });
+            s.rows = [{ id: me, me: true }, ...players].map((p) => ({ ...p, state: 'idle' }));
+            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
+          }
+        } catch (e) {
+          s.note = e.message;
         }
-        render();
-      });
-      status.textContent = error
-        ? `Liste d'amis indisponible (${error}).`
-        : friends.length
-          ? `${friends.length} ami${friends.length > 1 ? 's' : ''} · une série est complète quand son album est réclamé.`
-          : "Tu n'as pas encore d'amis dans le jeu : ajoute-en depuis leur profil pour te comparer à eux.";
-    } catch (e) {
-      status.textContent = e.message;
+        if (!alive()) return;
+        later();
+      }
+      if (sortBy === 'perles' && !s.perlesAsked) {
+        s.perlesAsked = true;
+        try {
+          const { perles: byId } = await ask({ type: 'shared-perles', ids: s.rows.map((r) => r.id) });
+          for (const r of s.rows) r.perles = typeof byId?.[r.id] === 'number' ? byId[r.id] : null;
+        } catch {
+          for (const r of s.rows) r.perles = null;
+        }
+        if (alive()) later();
+      }
+      if (sortBy !== 'perles' && !s.collectionsAsked) {
+        s.collectionsAsked = true;
+        for (const r of s.rows) r.state = 'loading';
+        later();
+        await eachLimited(s.rows, 4, async (row) => {
+          if (!alive()) return;
+          try {
+            const p = await ask({ type: 'player', id: row.id });
+            row.name ||= p.name;
+            if (p.private) row.state = 'private';
+            else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+          } catch {
+            row.state = 'error';
+          }
+          later();
+        });
+      }
     }
+
+    render();
+    load();
   }
 
   // ---------- profitable boosters ----------
