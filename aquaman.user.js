@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.7
+// @version      1.4.8
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.7';
+const VERSION = '1.4.8';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -5526,6 +5526,10 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.8',
+    items: [['Petites améliorations.']]
+  },
+  {
     version: '1.4.7',
     items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.'], ['Proposer un échange : à côté de « Doublons », les filtres « Mes recherches » et « Il me manque » dans « Tu demandes », et « Il lui manque » dans « Tu donnes » (avec « Doublons » : tes doublons qu’il n’a pas).'], ['Classement : « Global » à côté de « Amis » (les joueurs vus récemment dans les Beaux tirages et les utilisateurs d’Aquaman, pas la liste complète du jeu), et un onglet « Perles » : le stock de Perles des utilisateurs d’Aquaman qui le partagent (réglage « Mes Perles au classement »).']]
   },
@@ -7807,7 +7811,7 @@ const CHANGES = [
   async function openUsers() {
     meId = await accountId();
     if (meId !== AUTHOR_ID) return; // reserved to the author's account, checked again on the site
-    const body = openOverlay('Joueurs avec Aquaman', 'Les joueurs qui utilisent Aquaman, du plus récemment vu au plus ancien. Visible par toi seul.');
+    const body = openOverlay('Joueurs avec Aquaman', 'Les joueurs qui utilisent Aquaman : toi d’abord, puis la version la plus récente en premier et, à version égale, le plus récemment vu. Visible par toi seul.');
     body.parentElement.classList.add('aqm-panel-wide');
     const view = h('div');
     body.append(view);
@@ -7919,7 +7923,13 @@ const CHANGES = [
     // Seen in the last 15 minutes: Aquaman says hello every 10 minutes while a page of the game is open.
     const online = (u) => Date.now() - u.lastSeen < 15 * 60e3;
 
-    function show(all) {
+    // A version as a number to compare ("1.4.10" after "1.4.9"); 0 when unknown.
+    const versionRank = (v) => (/^\d+\.\d+\.\d+$/.test(v ?? '') ? v.split('.').reduce((n, x) => n * 1000 + Number(x), 0) : 0);
+    const bestVersion = (u) => Math.max(0, ...kindsOf(u).map((i) => versionRank(i.version)));
+
+    function show(players) {
+      // The author first, then the most recent version of Aquaman first, then the most recently seen.
+      const all = [...players].sort((a, b) => (b.id === AUTHOR_ID) - (a.id === AUTHOR_ID) || bestVersion(b) - bestVersion(a) || b.lastSeen - a.lastSeen);
       const day = Date.now() - 86400e3;
       const week = Date.now() - 7 * 86400e3;
       const versions = {};
@@ -7986,7 +7996,7 @@ const CHANGES = [
           { class: 'aqm-note' },
           'Versions : ',
           Object.entries(versions)
-            .sort((a, b) => b[1] - a[1])
+            .sort((a, b) => versionRank(b[0]) - versionRank(a[0]) || b[1] - a[1])
             .map(([v, n]) => `${v === '?' ? 'inconnue' : v} (${n})`)
             .join(', '),
           '.'

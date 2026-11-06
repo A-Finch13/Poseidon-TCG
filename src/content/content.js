@@ -2147,7 +2147,7 @@
   async function openUsers() {
     meId = await accountId();
     if (meId !== AUTHOR_ID) return; // reserved to the author's account, checked again on the site
-    const body = openOverlay('Joueurs avec Aquaman', 'Les joueurs qui utilisent Aquaman, du plus récemment vu au plus ancien. Visible par toi seul.');
+    const body = openOverlay('Joueurs avec Aquaman', 'Les joueurs qui utilisent Aquaman : toi d’abord, puis la version la plus récente en premier et, à version égale, le plus récemment vu. Visible par toi seul.');
     body.parentElement.classList.add('aqm-panel-wide');
     const view = h('div');
     body.append(view);
@@ -2259,7 +2259,13 @@
     // Seen in the last 15 minutes: Aquaman says hello every 10 minutes while a page of the game is open.
     const online = (u) => Date.now() - u.lastSeen < 15 * 60e3;
 
-    function show(all) {
+    // A version as a number to compare ("1.4.10" after "1.4.9"); 0 when unknown.
+    const versionRank = (v) => (/^\d+\.\d+\.\d+$/.test(v ?? '') ? v.split('.').reduce((n, x) => n * 1000 + Number(x), 0) : 0);
+    const bestVersion = (u) => Math.max(0, ...kindsOf(u).map((i) => versionRank(i.version)));
+
+    function show(players) {
+      // The author first, then the most recent version of Aquaman first, then the most recently seen.
+      const all = [...players].sort((a, b) => (b.id === AUTHOR_ID) - (a.id === AUTHOR_ID) || bestVersion(b) - bestVersion(a) || b.lastSeen - a.lastSeen);
       const day = Date.now() - 86400e3;
       const week = Date.now() - 7 * 86400e3;
       const versions = {};
@@ -2326,7 +2332,7 @@
           { class: 'aqm-note' },
           'Versions : ',
           Object.entries(versions)
-            .sort((a, b) => b[1] - a[1])
+            .sort((a, b) => versionRank(b[0]) - versionRank(a[0]) || b[1] - a[1])
             .map(([v, n]) => `${v === '?' ? 'inconnue' : v} (${n})`)
             .join(', '),
           '.'
