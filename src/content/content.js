@@ -3782,7 +3782,8 @@
         )
       : null;
 
-    // The kind of booster each card came from (kept since Aquaman 1.4.7; the older ones are "Pack inconnu").
+    // The kind of booster each card came from (kept since Aquaman 1.4.7; before, guessed from the card: Halloween or
+    // Classique; "Pack inconnu" when the card itself is unknown).
     const UNKNOWN = '?';
     const packKey = (x) => x.pack?.id ?? UNKNOWN;
     const packName = (x) => x.pack?.name ?? (x.pack?.id === 'classic' ? 'Classique' : x.pack ? 'Autre pack' : 'Pack inconnu');
@@ -3822,7 +3823,7 @@
               hits.map((x) => {
                 // The card's picture, the boosters it took and its pack (its name and day in the tooltip).
                 const link = x.card?.id ? { href: `/jeu/carte/${encodeURIComponent(x.card.id)}` } : {};
-                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, packName(x), day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
+                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, x.pack?.guessed ? `${packName(x)} (déduit de la carte)` : packName(x), day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
                 return h(
                   x.card?.id ? 'a' : 'div',
                   { class: 'aqm-history-tile', ...link, title: tip },
@@ -3850,7 +3851,7 @@
                 type: 'button',
                 class: `aqm-history-packbtn${p.key === pack ? ' is-on' : ''}`,
                 'aria-pressed': String(p.key === pack),
-                title: p.key === UNKNOWN ? 'Cartes tirées avant qu’Aquaman retienne le pack (version 1.4.7).' : null,
+                title: p.key === UNKNOWN ? 'Cartes tirées avant la version 1.4.7 dont Aquaman ne connaît pas la carte : impossible de savoir leur pack.' : null,
                 onclick: () => {
                   pack = p.key;
                   show();

@@ -421,6 +421,10 @@ function collectCards(data) {
           rarity: v.rarity,
           types: Array.isArray(v.types) ? v.types : [],
           extra: !!(v.variant || v.seasonId || v.baseId),
+          // a card of the Halloween event: its type, its season or its picture say so
+          halloween: [v.types, v.seasonId, v.season?.id, v.season?.name, v.season?.slug, v.season?.title, v.event, v.theme, v.image]
+            .flat()
+            .some((x) => typeof x === 'string' && /hallow/i.test(x)),
           series: s ? { id: s.id, title: s.title, slug: s.slug } : null
         });
       return;
@@ -811,6 +815,7 @@ async function pityHistory() {
   };
   const codeOf = (top) => Object.keys(RANK).find((k) => RANK[k] === top);
   for (const e of events) if (e.top >= RANK.SSR) e.card = cardOf(e, codeOf(e.top));
+  await guessPacks(events);
   // (the tracker: the best rarity of the last 300 boosters, oldest first, and the game's odds)
   const out = { opened: events.length, since: events[0]?.at ?? null, recent: events.slice(-300).map((e) => e.top), chances: await rarityChances() };
   // (each rarity on its own: an UR is not counted among the SSR)
@@ -826,6 +831,24 @@ async function pityHistory() {
     out[code] = { hits: hits.reverse(), current: count };
   }
   return out;
+}
+
+// The pack of the SSR, UR and SEC opened before Aquaman kept it (1.4.7), from their card: a Halloween card can only
+// come from the Halloween pack, any other is taken as from the Classique one (guessed: true). Left unknown without
+// the card or the game's catalogue.
+async function guessPacks(events) {
+  const missing = events.filter((e) => e.top >= RANK.SSR && !e.pack && e.card?.id);
+  if (!missing.length) return;
+  const catalog = await loadCatalog();
+  if (!catalog) return;
+  const byId = new Map(catalog.map((c) => [c.id, c]));
+  const designs = await globalPacks();
+  const halloween = Object.entries(designs ?? {}).find(([, d]) => /halloween/i.test(d?.name ?? ''))?.[0]?.replace(/--n\d+$/, '') ?? 'halloween';
+  for (const e of missing) {
+    const c = byId.get(e.card.id);
+    if (!c) continue;
+    e.pack = c.halloween ? { id: halloween, name: 'Halloween', guessed: true } : { id: 'classic', name: 'Classique', guessed: true };
+  }
 }
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
@@ -5277,7 +5300,7 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.7',
-    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Les cartes tirées avant cette version restent en « Pack inconnu ».']]
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.']]
   },
   {
     version: '1.4.6',
@@ -9192,7 +9215,8 @@ const CHANGES = [
         )
       : null;
 
-    // The kind of booster each card came from (kept since Aquaman 1.4.7; the older ones are "Pack inconnu").
+    // The kind of booster each card came from (kept since Aquaman 1.4.7; before, guessed from the card: Halloween or
+    // Classique; "Pack inconnu" when the card itself is unknown).
     const UNKNOWN = '?';
     const packKey = (x) => x.pack?.id ?? UNKNOWN;
     const packName = (x) => x.pack?.name ?? (x.pack?.id === 'classic' ? 'Classique' : x.pack ? 'Autre pack' : 'Pack inconnu');
@@ -9232,7 +9256,7 @@ const CHANGES = [
               hits.map((x) => {
                 // The card's picture, the boosters it took and its pack (its name and day in the tooltip).
                 const link = x.card?.id ? { href: `/jeu/carte/${encodeURIComponent(x.card.id)}` } : {};
-                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, packName(x), day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
+                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, x.pack?.guessed ? `${packName(x)} (déduit de la carte)` : packName(x), day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
                 return h(
                   x.card?.id ? 'a' : 'div',
                   { class: 'aqm-history-tile', ...link, title: tip },
@@ -9260,7 +9284,7 @@ const CHANGES = [
                 type: 'button',
                 class: `aqm-history-packbtn${p.key === pack ? ' is-on' : ''}`,
                 'aria-pressed': String(p.key === pack),
-                title: p.key === UNKNOWN ? 'Cartes tirées avant qu’Aquaman retienne le pack (version 1.4.7).' : null,
+                title: p.key === UNKNOWN ? 'Cartes tirées avant la version 1.4.7 dont Aquaman ne connaît pas la carte : impossible de savoir leur pack.' : null,
                 onclick: () => {
                   pack = p.key;
                   show();

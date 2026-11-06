@@ -271,6 +271,10 @@ function collectCards(data) {
           rarity: v.rarity,
           types: Array.isArray(v.types) ? v.types : [],
           extra: !!(v.variant || v.seasonId || v.baseId),
+          // a card of the Halloween event: its type, its season or its picture say so
+          halloween: [v.types, v.seasonId, v.season?.id, v.season?.name, v.season?.slug, v.season?.title, v.event, v.theme, v.image]
+            .flat()
+            .some((x) => typeof x === 'string' && /hallow/i.test(x)),
           series: s ? { id: s.id, title: s.title, slug: s.slug } : null
         });
       return;
@@ -661,6 +665,7 @@ export async function pityHistory() {
   };
   const codeOf = (top) => Object.keys(RANK).find((k) => RANK[k] === top);
   for (const e of events) if (e.top >= RANK.SSR) e.card = cardOf(e, codeOf(e.top));
+  await guessPacks(events);
   // (the tracker: the best rarity of the last 300 boosters, oldest first, and the game's odds)
   const out = { opened: events.length, since: events[0]?.at ?? null, recent: events.slice(-300).map((e) => e.top), chances: await rarityChances() };
   // (each rarity on its own: an UR is not counted among the SSR)
@@ -676,6 +681,24 @@ export async function pityHistory() {
     out[code] = { hits: hits.reverse(), current: count };
   }
   return out;
+}
+
+// The pack of the SSR, UR and SEC opened before Aquaman kept it (1.4.7), from their card: a Halloween card can only
+// come from the Halloween pack, any other is taken as from the Classique one (guessed: true). Left unknown without
+// the card or the game's catalogue.
+async function guessPacks(events) {
+  const missing = events.filter((e) => e.top >= RANK.SSR && !e.pack && e.card?.id);
+  if (!missing.length) return;
+  const catalog = await loadCatalog();
+  if (!catalog) return;
+  const byId = new Map(catalog.map((c) => [c.id, c]));
+  const designs = await globalPacks();
+  const halloween = Object.entries(designs ?? {}).find(([, d]) => /halloween/i.test(d?.name ?? ''))?.[0]?.replace(/--n\d+$/, '') ?? 'halloween';
+  for (const e of missing) {
+    const c = byId.get(e.card.id);
+    if (!c) continue;
+    e.pack = c.halloween ? { id: halloween, name: 'Halloween', guessed: true } : { id: 'classic', name: 'Classique', guessed: true };
+  }
 }
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
