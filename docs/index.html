@@ -535,29 +535,33 @@
           </ol>
 
           <h2 style="margin-top: 28px">Mettre à jour sur iPhone et iPad</h2>
-          <p class="small">Quand une nouvelle version sort, un cadre « Aquaman … est disponible » s'affiche sur le jeu.</p>
+          <p class="small">Quand une nouvelle version sort, un cadre « Aquaman … est disponible » s'affiche sur le jeu : touche <b>Installer</b> pour voir ces étapes.</p>
           <ol class="steps">
-            <li class="step main">
-              <div>
-                <h3>Télécharge la nouvelle version</h3>
-                <p>Touche <b>Installer</b> dans le cadre (ou le bouton ci-dessous, dans Safari), puis <b>Télécharger</b> : le nouveau <b>aquaman.user.js</b> arrive dans tes <b>Téléchargements</b>.</p>
-                <div class="buttons"><a class="btn primary" data-download="aquaman.user.js" href="https://raw.githubusercontent.com/A-Finch13/Poseidon-TCG/main/aquaman.user.js">⬇ Télécharger la dernière version</a></div>
-              </div>
-            </li>
             <li class="step">
               <div>
-                <h3>Remplace l'ancien script</h3>
-                <p>App <b>Fichiers</b> → <b>Téléchargements</b>, garde le doigt sur <b>aquaman.user.js</b> → <b>Déplacer</b> → <b>Sur mon iPhone</b> (ou <b>Sur mon iPad</b>) → <b>Userscripts</b> → <b>Déplacer</b>, puis <b>Remplacer</b>.</p>
-                <p class="small">Le fichier s'appelle « aquaman.user 2.js » ? Un ancien était resté dans Téléchargements : supprime-le, puis renomme le nouveau en <b>aquaman.user.js</b> avant de le déplacer.</p>
+                <h3>Ouvre Userscripts</h3>
+                <p>Sur une page du jeu dans Safari, touche <b>ᴀA</b> (ou <b>🧩</b>) à gauche de la barre d'adresse, puis <b>Userscripts</b>.</p>
+              </div>
+            </li>
+            <li class="step main">
+              <div>
+                <h3>Cherche les mises à jour</h3>
+                <p>Dans le panneau de Userscripts, touche le bouton de <b>recherche de mises à jour</b> (↻), puis mets à jour <b>Aquaman</b>.</p>
               </div>
             </li>
             <li class="step">
               <div>
                 <h3>Recharge le jeu</h3>
-                <p>Reviens sur le jeu dans Safari et recharge la page : les nouveautés de la version s'affichent.</p>
+                <p>Recharge la page du jeu : les nouveautés de la version s'affichent.</p>
               </div>
             </li>
           </ol>
+          <details style="margin-top: 12px">
+            <summary>Userscripts ne trouve pas la mise à jour ?</summary>
+            <p>Télécharge le script avec ce bouton (dans Safari), puis <b>Télécharger</b>. Ensuite, app <b>Fichiers</b> → <b>Téléchargements</b>, garde le doigt sur <b>aquaman.user.js</b> → <b>Déplacer</b> → <b>Sur mon iPhone</b> (ou <b>Sur mon iPad</b>) → <b>Userscripts</b> → <b>Déplacer</b>, puis <b>Remplacer</b>. Recharge enfin la page du jeu.</p>
+            <p class="small">Le fichier s'appelle « aquaman.user 2.js » ? Un ancien était resté dans Téléchargements : supprime-le, puis renomme le nouveau en <b>aquaman.user.js</b> avant de le déplacer.</p>
+            <div class="buttons"><a class="btn" data-download="aquaman.user.js" href="https://raw.githubusercontent.com/A-Finch13/Poseidon-TCG/main/aquaman.user.js">⬇ Télécharger la dernière version</a></div>
+          </details>
         </section>
 
         <ol class="steps" style="margin-top: 14px">
@@ -587,7 +591,7 @@
         <h2>Questions</h2>
         <details>
           <summary>Comment se font les mises à jour ?</summary>
-          <p>Script : un cadre te prévient sur le jeu. Sur Android, touche <b>Installer</b> puis <b>Mettre à jour</b> dans Tampermonkey. Sur iPhone et iPad, touche <b>Installer</b> et suis les étapes affichées (télécharger, puis remplacer l'ancien fichier dans le dossier Userscripts) : elles sont aussi dans l'onglet <b>iPhone / iPad</b> ci-dessus. Extension : une notification te prévient, puis clique sur <b>Mettre à jour</b> dans la fenêtre d'Aquaman (après avoir lancé une fois <b>installer-mises-a-jour.bat</b>), ou remplace le dossier par la nouvelle version.</p>
+          <p>Script : un cadre te prévient sur le jeu. Sur Android, touche <b>Installer</b> puis <b>Mettre à jour</b> dans Tampermonkey. Sur iPhone et iPad, touche <b>Installer</b> et suis les étapes affichées (<b>ᴀA</b> → <b>Userscripts</b> → recherche de mises à jour) : elles sont aussi dans l'onglet <b>iPhone / iPad</b> ci-dessus. Extension : une notification te prévient, puis clique sur <b>Mettre à jour</b> dans la fenêtre d'Aquaman (après avoir lancé une fois <b>installer-mises-a-jour.bat</b>), ou remplace le dossier par la nouvelle version.</p>
         </details>
         <details>
           <summary>Mes données sont-elles envoyées quelque part ?</summary>

@@ -657,7 +657,7 @@ html.aqm-lock {
   border-color: #2563eb;
   background: #2563eb;
 }
-/* iPhone: the steps to put the new script in place of the old one. */
+/* iPhone: the steps of the update with Userscripts. */
 .aqm-update-steps {
   display: grid;
   gap: 6px;

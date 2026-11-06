@@ -78,15 +78,15 @@ Si rien ne change, ouvre **[ce lien vers le script](https://raw.githubuserconten
 
 **iPhone / iPad** — Safari + Userscripts :
 
-À partir de la 1.4.8, le bouton **Installer** du cadre télécharge le script et affiche ces étapes :
+À partir de la 1.4.8, le bouton **Installer** du cadre affiche ces étapes :
 
-1. Touche **Installer**, puis **Télécharger** si Safari le demande : le nouveau **aquaman.user.js** arrive dans tes **Téléchargements**.
-2. Ouvre l'app **Fichiers** → **Téléchargements**, garde le doigt sur **aquaman.user.js** → **Déplacer** → **Sur mon iPhone** (ou **Sur mon iPad**) → **Userscripts** → **Déplacer**, puis **Remplacer**.
-3. Reviens sur l'onglet du jeu et **recharge la page**.
+1. Sur une page du jeu dans Safari, touche **ᴀA** (ou 🧩) à gauche de la barre d'adresse → **Userscripts**.
+2. Dans le panneau de Userscripts, touche le bouton de **recherche de mises à jour** (↻), puis mets à jour **Aquaman**.
+3. **Recharge la page** du jeu.
 
-Le fichier s'appelle « aquaman.user 2.js » ? Un ancien était resté dans Téléchargements : supprime-le et renomme le nouveau en **aquaman.user.js** avant de le déplacer. Les mêmes étapes sont sur la [page d'installation](https://a-finch13.github.io/Poseidon-TCG/), onglet **iPhone / iPad**, avec un bouton de téléchargement.
+Userscripts ne trouve rien ? Télécharge la dernière version depuis la [page d'installation](https://a-finch13.github.io/Poseidon-TCG/) (onglet **iPhone / iPad**), puis dans l'app **Fichiers** → **Téléchargements**, garde le doigt sur **aquaman.user.js** → **Déplacer** → **Sur mon iPhone** (ou **Sur mon iPad**) → **Userscripts** → **Déplacer** → **Remplacer**, et recharge la page du jeu.
 
-Jusqu'à la 1.4.7, le bouton **Installer** ouvre le code du script dans un nouvel onglet : télécharge plutôt la nouvelle version depuis la [page d'installation](https://a-finch13.github.io/Poseidon-TCG/) et suis les étapes 2 et 3, ou touche **AA** (ou 🧩) → **Userscripts** → **Installer** sur la page du code.
+Jusqu'à la 1.4.7, le bouton **Installer** ouvre le code du script dans un nouvel onglet : sur cette page, touche **ᴀA** (ou 🧩) → **Userscripts** → **Installer**, ou suis les étapes ci-dessus.
 
 Après le rechargement, la fenêtre **Nouveautés** s'ouvre et résume ce qui a changé. Pour vérifier ta version : **Plus** → **Nouveautés**, la première version de la liste est la tienne. Tes réglages, favoris et historique sont conservés : ils ne sont pas dans le script.
 

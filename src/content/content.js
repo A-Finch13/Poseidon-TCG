@@ -5572,32 +5572,10 @@
     send({ type: 'check-update' }).then((res) => !stopped && showUpdate(res?.update));
   }
 
-  // iPhone and iPad (Safari with the Userscripts app): the new script is saved as a file, which replaces the old one in
-  // the Userscripts folder (the app's own install from the page is unreliable).
+  // iPhone and iPad (Safari with the Userscripts app): "Installer" shows the steps of Userscripts' own update (the
+  // script has an update address), nothing is downloaded.
   const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
-
-  // The text of the new script, read as soon as the box shows: the click then saves it at once (Safari only saves a
-  // file during the touch that asked for it, not after waiting for the network).
-  const scriptTexts = new Map(); // url -> text, or null when it can't be read
-  const readScript = (url) =>
-    scriptTexts.has(url)
-      ? Promise.resolve(scriptTexts.get(url))
-      : fetch(url, { cache: 'no-store' })
-          .then((res) => (res.ok ? res.text() : null))
-          .catch(() => null)
-          .then((text) => (scriptTexts.set(url, text), text));
-
-  // Saves the script as aquaman.user.js (Safari asks "Télécharger"); false when its text isn't there.
-  function downloadScript(url) {
-    const text = scriptTexts.get(url);
-    if (!text) return false;
-    const link = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' })), download: 'aquaman.user.js' });
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(link.href), 60e3);
-    return true;
-  }
+  const INSTALL_PAGE = 'https://a-finch13.github.io/Poseidon-TCG/';
 
   function showUpdate(update) {
     const version = chrome.runtime.getManifest().version;
@@ -5605,38 +5583,19 @@
     if (document.querySelector('.aqm-update')) return;
     const url = update.script || SCRIPT_URL;
     const later = h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => (session('aqm-update-later', update.version), box.remove()) }, 'Plus tard');
-    // iPhone: "Installer" saves the file, then the box shows the steps to put it in place of the old one.
-    if (IOS) readScript(url);
-    const iosSteps = async () => {
-      let saved = downloadScript(url);
-      // (not read yet: read now, then saved, which Safari may refuse: "Télécharger à nouveau" then works)
-      if (!saved && (await readScript(url))) saved = downloadScript(url);
-      // Still nothing (the site doesn't let Aquaman read GitHub): the script's page, for Userscripts' own install.
-      if (!saved) window.open(url, '_blank', 'noopener');
+    const iosSteps = () =>
       box.replaceChildren(
         h('div', { class: 'aqm-queue-head' }, h('strong', {}, `🔱 Installer Aquaman ${update.version}`)),
         h(
           'ol',
           { class: 'aqm-update-steps' },
-          h(
-            'li',
-            {},
-            saved
-              ? ['Touche ', h('b', {}, 'Télécharger'), ' si Safari le demande : ', h('b', {}, 'aquaman.user.js'), ' arrive dans tes Téléchargements.']
-              : ['Le script s’est ouvert dans un nouvel onglet : touche ', h('b', {}, 'ᴀA'), ' → ', h('b', {}, 'Userscripts'), ' → ', h('b', {}, 'Installer'), ', puis passe à l’étape 3. Sinon, touche ', h('b', {}, 'Télécharger à nouveau'), '.']
-          ),
-          h('li', {}, 'Ouvre l’app ', h('b', {}, 'Fichiers'), ' → ', h('b', {}, 'Téléchargements'), ', garde le doigt sur ', h('b', {}, 'aquaman.user.js'), ' → ', h('b', {}, 'Déplacer'), ' → ', h('b', {}, 'Sur mon iPhone'), ' (ou iPad) → ', h('b', {}, 'Userscripts'), ' → ', h('b', {}, 'Déplacer'), ', puis ', h('b', {}, 'Remplacer'), '.'),
-          h('li', {}, 'Reviens ici et touche ', h('b', {}, 'Recharger'), '.')
+          h('li', {}, 'Touche ', h('b', {}, 'ᴀA'), ' (ou ', h('b', {}, '🧩'), ') à gauche de la barre d’adresse, puis ', h('b', {}, 'Userscripts'), '.'),
+          h('li', {}, 'Dans le panneau de Userscripts, touche le bouton de ', h('b', {}, 'recherche de mises à jour'), ' (↻), puis mets à jour ', h('b', {}, 'Aquaman'), '.'),
+          h('li', {}, 'Touche ', h('b', {}, 'Recharger'), ' ci-dessous : les nouveautés de la version s’affichent.')
         ),
-        h('p', { class: 'aqm-muted' }, 'Le fichier s’appelle « aquaman.user 2.js » ? Supprime l’ancien des Téléchargements et renomme le nouveau en aquaman.user.js avant de le déplacer.'),
-        h(
-          'div',
-          { class: 'aqm-update-actions' },
-          h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => downloadScript(url) || readScript(url).then(() => downloadScript(url) || window.open(url, '_blank', 'noopener')) }, 'Télécharger à nouveau'),
-          h('button', { type: 'button', class: 'aqm-queue-btn is-main', onclick: () => location.reload() }, 'Recharger')
-        )
+        h('p', { class: 'aqm-muted' }, 'Userscripts ne trouve rien ? Suis les étapes « Mettre à jour sur iPhone et iPad » de la ', h('a', { href: INSTALL_PAGE, target: '_blank', rel: 'noopener' }, 'page d’installation'), '.'),
+        h('div', { class: 'aqm-update-actions' }, h('button', { type: 'button', class: 'aqm-queue-btn', onclick: () => box.remove() }, 'Fermer'), h('button', { type: 'button', class: 'aqm-queue-btn is-main', onclick: () => location.reload() }, 'Recharger'))
       );
-    };
     const box = h(
       'div',
       { class: 'aqm-root aqm-update', role: 'status' },
@@ -5645,7 +5604,7 @@
         'p',
         {},
         IOS
-          ? `Tu as la version ${version}. Touche « Installer » : le nouveau fichier se télécharge, puis les étapes pour remplacer l’ancien s’affichent ici.`
+          ? `Tu as la version ${version}. Touche « Installer » : les étapes pour mettre Aquaman à jour avec Userscripts s’affichent ici.`
           : `Tu as la version ${version}. Touche « Installer », puis « Mettre à jour » dans Tampermonkey. Recharge ensuite cette page.`
       ),
       h(
