@@ -78,12 +78,15 @@ Si rien ne change, ouvre **[ce lien vers le script](https://raw.githubuserconten
 
 **iPhone / iPad** — Safari + Userscripts :
 
-1. Dans Safari, ouvre **[ce lien vers le script](https://raw.githubusercontent.com/A-Finch13/Poseidon-TCG/main/aquaman.user.js)** : une page de texte s'affiche (le code du script). C'est normal.
-2. Touche **AA** (ou l'icône 🧩) à gauche de la barre d'adresse → **Userscripts**.
-3. Le panneau de Userscripts signale le script trouvé sur la page : touche **Installer**, puis confirme. La nouvelle version remplace l'ancienne.
-4. Reviens sur l'onglet du jeu et **recharge la page**.
+À partir de la 1.4.8, le bouton **Installer** du cadre télécharge le script et affiche ces étapes :
 
-Jusqu'à la version 1.4.2, le bouton **Installer** du cadre fait **télécharger** le fichier au lieu de l'afficher, et Userscripts ne le voit pas : utilise le lien ci-dessus. À partir de la 1.4.3, le bouton **Installer** ouvre directement cette page de texte (étapes 2 à 4).
+1. Touche **Installer**, puis **Télécharger** si Safari le demande : le nouveau **aquaman.user.js** arrive dans tes **Téléchargements**.
+2. Ouvre l'app **Fichiers** → **Téléchargements**, garde le doigt sur **aquaman.user.js** → **Déplacer** → **Sur mon iPhone** (ou **Sur mon iPad**) → **Userscripts** → **Déplacer**, puis **Remplacer**.
+3. Reviens sur l'onglet du jeu et **recharge la page**.
+
+Le fichier s'appelle « aquaman.user 2.js » ? Un ancien était resté dans Téléchargements : supprime-le et renomme le nouveau en **aquaman.user.js** avant de le déplacer. Les mêmes étapes sont sur la [page d'installation](https://a-finch13.github.io/Poseidon-TCG/), onglet **iPhone / iPad**, avec un bouton de téléchargement.
+
+Jusqu'à la 1.4.7, le bouton **Installer** ouvre le code du script dans un nouvel onglet : télécharge plutôt la nouvelle version depuis la [page d'installation](https://a-finch13.github.io/Poseidon-TCG/) et suis les étapes 2 et 3, ou touche **AA** (ou 🧩) → **Userscripts** → **Installer** sur la page du code.
 
 Après le rechargement, la fenêtre **Nouveautés** s'ouvre et résume ce qui a changé. Pour vérifier ta version : **Plus** → **Nouveautés**, la première version de la liste est la tienne. Tes réglages, favoris et historique sont conservés : ils ne sont pas dans le script.
 

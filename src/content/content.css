@@ -657,6 +657,19 @@ html.aqm-lock {
   border-color: #2563eb;
   background: #2563eb;
 }
+/* iPhone: the steps to put the new script in place of the old one. */
+.aqm-update-steps {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.aqm-update .aqm-muted {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
 
 /* ---------- Visite guidée ---------- */
 
