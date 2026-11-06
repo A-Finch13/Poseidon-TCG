@@ -1181,6 +1181,45 @@ html.aqm-grabbing * {
   font-weight: 900;
   text-align: center;
 }
+.aqm-history-pack {
+  margin: 2px 0 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--aqm-dim);
+}
+.aqm-history-pack.is-unknown {
+  opacity: 0.6;
+}
+/* The filter per pack, above the tabs of the rarities. */
+.aqm-history-packs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.aqm-history-packbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--aqm-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aqm-history-packbtn.is-on {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--aqm-text);
+}
 .aqm-history-empty {
   margin: 14px 0 0;
   font-size: 13px;

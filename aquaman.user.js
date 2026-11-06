@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.6
+// @version      1.4.7
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.6';
+const VERSION = '1.4.7';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -720,11 +720,18 @@ function pityReport(mine, rules, sync, chance = null) {
   return out;
 }
 
+// The kind of booster of an opening ({ id, name }), checked; null when unknown.
+function cleanPack(p) {
+  const id = typeof p?.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(p.id) ? p.id : null;
+  return id ? { id, name: typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 60) : null } : null;
+}
+
 // Merges two lists of openings: each booster once, oldest first, the last PITY_EVENTS.
 function mergeEvents(a, b) {
   const byId = new Map();
   for (const e of [...a, ...b])
-    if (e?.id && !byId.has(e.id)) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...(e.card ? { card: e.card } : {}) });
+    if (e?.id && !byId.has(e.id))
+      byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...(e.card ? { card: e.card } : {}), ...(e.pack ? { pack: e.pack } : {}) });
   return [...byId.values()].sort((x, y) => x.at - y.at).slice(-PITY_EVENTS);
 }
 
@@ -779,8 +786,11 @@ async function pityHistory() {
       for (const e of [...(all.events ?? []), ...events]) {
         if (!e?.id) continue;
         const known = byId.get(e.id);
-        if (!known) byId.set(e.id, { at: Number(e.at) || 0, top: Number(e.top) || 0, card: e.card ?? null });
-        else if (!known.card && e.card) known.card = e.card;
+        if (!known) byId.set(e.id, { at: Number(e.at) || 0, top: Number(e.top) || 0, card: e.card ?? null, pack: e.pack ?? null });
+        else {
+          if (!known.card && e.card) known.card = e.card;
+          if (!known.pack && e.pack) known.pack = e.pack;
+        }
       }
       events = [...byId.values()].sort((a, b) => a.at - b.at);
     } catch {}
@@ -810,7 +820,7 @@ async function pityHistory() {
     for (const e of events) {
       count++;
       if (e.top !== RANK[code]) continue;
-      hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, after: count, first: !hits.length });
+      hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, pack: e.pack ?? null, after: count, first: !hits.length });
       count = 0;
     }
     out[code] = { hits: hits.reverse(), current: count };
@@ -819,8 +829,8 @@ async function pityHistory() {
 }
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
-// best: the best card of each booster, kept with the SSR, UR and SEC for the history.
-async function recordOpening(boosters, best = []) {
+// best: the best card of each booster, and packs: its kind ({ id, name }), kept with the SSR, UR and SEC for the history.
+async function recordOpening(boosters, best = [], packs = []) {
   const state = await pityState();
   const { mine, rules } = state;
   const now = Date.now();
@@ -828,7 +838,8 @@ async function recordOpening(boosters, best = []) {
     const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
     const c = best[i];
     const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
-    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}) };
+    const pack = top >= RANK.SSR ? cleanPack(packs[i]) : null;
+    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}), ...(pack ? { pack } : {}) };
   });
   mine.events = mergeEvents(mine.events, added);
   // The relay's SEC count goes on with the new openings until the next exchange.
@@ -1623,7 +1634,7 @@ async function answer(msg) {
       case 'pity':
         return await pity(!!msg.fresh);
       case 'opened':
-        return await recordOpening(msg.boosters ?? [], msg.best ?? []);
+        return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
       case 'favorites':
@@ -2086,11 +2097,35 @@ async function handle(msg) {
   const raritiesOf = (pulls) => pulls.map((p) => p?.card?.rarity ?? p?.rarity).filter((r) => RARITIES.includes(r));
 
   // The boosters of an opening answer: one booster, or several (open-many), each as the pulls of its cards.
-  function openedPulls(body) {
-    if (Array.isArray(body?.pulls)) return [body.pulls];
+  function openedBoosters(body) {
+    if (Array.isArray(body?.pulls)) return [body];
     const list = body?.boosters ?? body?.results ?? body?.opened ?? (Array.isArray(body) ? body : null);
-    if (Array.isArray(list)) return list.filter((b) => Array.isArray(b?.pulls)).map((b) => b.pulls);
-    return [];
+    return Array.isArray(list) ? list.filter((b) => Array.isArray(b?.pulls)) : [];
+  }
+  // The kind of each booster of an opening ({ id, name }, null when unknown): from the answer, else from the booster's
+  // id (in the path or the body of the request) among the waiting ones, else the kind Aquaman shows the game, else
+  // the only kind waiting.
+  function packsOf(boosters, path, init, waiting) {
+    const list = Array.isArray(waiting) ? waiting : [];
+    const named = (id, name) => ({ id: id ?? 'classic', name: name ?? list.find((b) => (b?.kindId ?? 'classic') === (id ?? 'classic'))?.kindName ?? (id && id !== 'classic' ? null : 'Classique') });
+    let asked = [];
+    try {
+      const sent = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      asked = [sent?.ids, sent?.boosterIds, sent?.boosters].find(Array.isArray) ?? (sent?.boosterId ? [sent.boosterId] : []);
+    } catch {}
+    const inPath = path.match(/\/boosters\/([^/]+)\/open$/)?.[1];
+    if (inPath) asked = [decodeURIComponent(inPath)];
+    const shown = chosenKind();
+    const kinds = new Set(list.map((b) => b?.kindId ?? 'classic'));
+    return boosters.map((b, i) => {
+      const kindId = b?.kindId ?? b?.booster?.kindId;
+      if (kindId) return named(kindId, b?.kindName ?? b?.booster?.kindName);
+      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i]?.id ?? asked[i] : null) ?? b?.id;
+      const known = id != null && list.find((x) => x?.id === id);
+      if (known) return named(known.kindId, known.kindName);
+      if (shown) return named(shown);
+      return kinds.size === 1 ? named([...kinds][0]) : null;
+    });
   }
   // The best card of a booster ({ id, name, image, rarity }), for the history of the pity.
   function bestCard(pulls) {
@@ -2186,6 +2221,7 @@ async function handle(msg) {
 
   async function watch(pending, path, input, init) {
     const self = !!window.__aquamanSelf; // a request of Aquaman itself (userscript)
+    const waiting = fullPending; // the boosters waiting when the request left (an opening: those it opens)
     const res = await pending;
     try {
       const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -2284,8 +2320,11 @@ async function handle(msg) {
               .clone()
               .json()
               .then((body) => {
-                const opened = openedPulls(body).filter((pulls) => raritiesOf(pulls).length);
-                if (opened.length) post({ type: 'opened', boosters: opened.map(raritiesOf), best: opened.map(bestCard) });
+                const all = openedBoosters(body);
+                const packs = packsOf(all, path, init, waiting);
+                const opened = all.map((b, i) => ({ pulls: b.pulls, pack: packs[i] })).filter((b) => raritiesOf(b.pulls).length);
+                if (opened.length)
+                  post({ type: 'opened', boosters: opened.map((b) => raritiesOf(b.pulls)), best: opened.map((b) => bestCard(b.pulls)), packs: opened.map((b) => b.pack) });
               })
               .catch(() => {});
           if (ASSETS.test(path) && res.ok) assetsChanged();
@@ -3482,6 +3521,45 @@ html.aqm-grabbing * {
   font-size: 13px;
   font-weight: 900;
   text-align: center;
+}
+.aqm-history-pack {
+  margin: 2px 0 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--aqm-dim);
+}
+.aqm-history-pack.is-unknown {
+  opacity: 0.6;
+}
+/* The filter per pack, above the tabs of the rarities. */
+.aqm-history-packs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.aqm-history-packbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--aqm-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aqm-history-packbtn.is-on {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--aqm-text);
 }
 .aqm-history-empty {
   margin: 14px 0 0;
@@ -5198,6 +5276,10 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.7',
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Les cartes tirées avant cette version restent en « Pack inconnu ».']]
+  },
+  {
     version: '1.4.6',
     items: [['Page d’une carte : un bouton « Enchérir » sur chaque enchère en cours, qui ouvre sa page dans le jeu.']]
   },
@@ -6267,7 +6349,7 @@ const CHANGES = [
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
-      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [] }).then((report) => {
+      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
           pityAt = Date.now();
@@ -9110,17 +9192,35 @@ const CHANGES = [
         )
       : null;
 
-    // The cards got for one rarity, as tiles: the picture, how many boosters it took, the day.
+    // The kind of booster each card came from (kept since Aquaman 1.4.7; the older ones are "Pack inconnu").
+    const UNKNOWN = '?';
+    const packKey = (x) => x.pack?.id ?? UNKNOWN;
+    const packName = (x) => x.pack?.name ?? (x.pack?.id === 'classic' ? 'Classique' : x.pack ? 'Autre pack' : 'Pack inconnu');
+    const packs = new Map();
+    for (const code of CODES)
+      for (const x of r[code].hits) {
+        const key = packKey(x);
+        if (!packs.has(key)) packs.set(key, { key, name: packName(x), count: 0 });
+        packs.get(key).count++;
+      }
+    const packList = [...packs.values()].sort((a, b) => (a.key === UNKNOWN) - (b.key === UNKNOWN) || b.count - a.count);
+    let pack = ''; // the pack shown ('' for all)
+    let rarity = CODES.find((code) => r[code].hits.length) ?? 'SSR';
+    const hitsOf = (code) => (pack ? r[code].hits.filter((x) => packKey(x) === pack) : r[code].hits);
+
+    // The cards got for one rarity, as tiles: the picture, how many boosters it took, the pack, the day.
     const tiles = (code) => {
-      const { hits, current } = r[code];
+      const { current } = r[code];
+      const hits = hitsOf(code);
       const full = hits.filter((x) => !x.first).map((x) => x.after);
       const stat = (label, value) => h('div', { class: 'aqm-history-stat' }, h('small', {}, label), h('strong', {}, value));
+      const all = r[code].hits.length;
       return [
         h(
           'div',
           { class: 'aqm-history-stats' },
           stat('Obtenues', fmt(hits.length)),
-          stat('En moyenne', full.length ? boosters(full.reduce((a, b) => a + b, 0) / full.length) : '—'),
+          pack ? stat(`Part de tes ${code}`, all ? pct(hits.length / all) : '—') : stat('En moyenne', full.length ? boosters(full.reduce((a, b) => a + b, 0) / full.length) : '—'),
           stat('Plus rapide', full.length ? boosters(Math.min(...full)) : '—'),
           stat('Plus long', full.length ? boosters(Math.max(...full)) : '—'),
           stat('Depuis la dernière', boosters(current))
@@ -9130,43 +9230,74 @@ const CHANGES = [
               'div',
               { class: 'aqm-history-grid' },
               hits.map((x) => {
-                // Only the card's picture and the boosters it took (its name and day in the tooltip).
+                // The card's picture, the boosters it took and its pack (its name and day in the tooltip).
                 const link = x.card?.id ? { href: `/jeu/carte/${encodeURIComponent(x.card.id)}` } : {};
-                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
+                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, packName(x), day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
                 return h(
                   x.card?.id ? 'a' : 'div',
                   { class: 'aqm-history-tile', ...link, title: tip },
                   x.card?.image ? h('img', { src: cardImageUrl(x.card.image), alt: x.card.name ?? '', loading: 'lazy', decoding: 'async' }) : h('div', { class: 'aqm-history-blank' }, rarityCode(x.top)),
-                  h('p', { class: 'aqm-history-after' }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after))
+                  h('p', { class: 'aqm-history-after' }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after)),
+                  h('p', { class: `aqm-history-pack${x.pack ? '' : ' is-unknown'}` }, packName(x))
                 );
               })
             )
-          : h('p', { class: 'aqm-history-empty' }, `Aucune ${code} parmi tes ${boosters(r.opened)} comptés.`)
+          : h('p', { class: 'aqm-history-empty' }, pack ? `Aucune ${code} tirée dans ce pack.` : `Aucune ${code} parmi tes ${boosters(r.opened)} comptés.`)
       ];
     };
 
-    // A tab per rarity, the first one with cards open.
+    // A tab per rarity, the first one with cards open; above, a filter per pack (once a card's pack is known).
     const panel = h('div', { class: 'aqm-history-panel' });
     const tabs = h('div', { class: 'aqm-history-tabs', role: 'tablist' });
-    const show = (code) => {
+    const filter = h('div', { class: 'aqm-history-packs', role: 'group', 'aria-label': 'Pack' });
+    const show = () => {
+      if (packList.some((p) => p.key !== UNKNOWN))
+        filter.replaceChildren(
+          ...[{ key: '', name: 'Tous les packs', count: CODES.reduce((n, c) => n + r[c].hits.length, 0) }, ...packList].map((p) =>
+            h(
+              'button',
+              {
+                type: 'button',
+                class: `aqm-history-packbtn${p.key === pack ? ' is-on' : ''}`,
+                'aria-pressed': String(p.key === pack),
+                title: p.key === UNKNOWN ? 'Cartes tirées avant qu’Aquaman retienne le pack (version 1.4.7).' : null,
+                onclick: () => {
+                  pack = p.key;
+                  show();
+                }
+              },
+              p.name,
+              h('span', { class: 'aqm-history-tabcount' }, fmt(p.count))
+            )
+          )
+        );
       tabs.replaceChildren(
         ...CODES.map((c) =>
           h(
             'button',
-            { type: 'button', role: 'tab', class: `aqm-history-tabbtn${c === code ? ' is-on' : ''}`, 'aria-selected': String(c === code), onclick: () => show(c) },
+            {
+              type: 'button',
+              role: 'tab',
+              class: `aqm-history-tabbtn${c === rarity ? ' is-on' : ''}`,
+              'aria-selected': String(c === rarity),
+              onclick: () => {
+                rarity = c;
+                show();
+              }
+            },
             rarityCode(c),
-            h('span', { class: 'aqm-history-tabcount' }, fmt(r[c].hits.length))
+            h('span', { class: 'aqm-history-tabcount' }, fmt(hitsOf(c).length))
           )
         )
       );
-      panel.replaceChildren(...tiles(code));
+      panel.replaceChildren(...tiles(rarity));
     };
-    show(CODES.find((code) => r[code].hits.length) ?? 'SSR');
+    show();
     view.replaceChildren(
       h('p', { class: 'aqm-history-count' }, r.since ? `${boosters(r.opened)} comptés depuis le ${new Date(r.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'Aucun booster compté pour le moment.'),
       h('div', { class: 'aqm-rates' }, CODES.map(rate)),
       strip,
-      h('div', { class: 'aqm-history-box' }, tabs, panel)
+      h('div', { class: 'aqm-history-box' }, filter.childElementCount ? filter : null, tabs, panel)
     );
   }
 

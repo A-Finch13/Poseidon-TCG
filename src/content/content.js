@@ -939,7 +939,7 @@
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters))
-      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [] }).then((report) => {
+      send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
           pityAt = Date.now();
@@ -3782,17 +3782,35 @@
         )
       : null;
 
-    // The cards got for one rarity, as tiles: the picture, how many boosters it took, the day.
+    // The kind of booster each card came from (kept since Aquaman 1.4.7; the older ones are "Pack inconnu").
+    const UNKNOWN = '?';
+    const packKey = (x) => x.pack?.id ?? UNKNOWN;
+    const packName = (x) => x.pack?.name ?? (x.pack?.id === 'classic' ? 'Classique' : x.pack ? 'Autre pack' : 'Pack inconnu');
+    const packs = new Map();
+    for (const code of CODES)
+      for (const x of r[code].hits) {
+        const key = packKey(x);
+        if (!packs.has(key)) packs.set(key, { key, name: packName(x), count: 0 });
+        packs.get(key).count++;
+      }
+    const packList = [...packs.values()].sort((a, b) => (a.key === UNKNOWN) - (b.key === UNKNOWN) || b.count - a.count);
+    let pack = ''; // the pack shown ('' for all)
+    let rarity = CODES.find((code) => r[code].hits.length) ?? 'SSR';
+    const hitsOf = (code) => (pack ? r[code].hits.filter((x) => packKey(x) === pack) : r[code].hits);
+
+    // The cards got for one rarity, as tiles: the picture, how many boosters it took, the pack, the day.
     const tiles = (code) => {
-      const { hits, current } = r[code];
+      const { current } = r[code];
+      const hits = hitsOf(code);
       const full = hits.filter((x) => !x.first).map((x) => x.after);
       const stat = (label, value) => h('div', { class: 'aqm-history-stat' }, h('small', {}, label), h('strong', {}, value));
+      const all = r[code].hits.length;
       return [
         h(
           'div',
           { class: 'aqm-history-stats' },
           stat('Obtenues', fmt(hits.length)),
-          stat('En moyenne', full.length ? boosters(full.reduce((a, b) => a + b, 0) / full.length) : '—'),
+          pack ? stat(`Part de tes ${code}`, all ? pct(hits.length / all) : '—') : stat('En moyenne', full.length ? boosters(full.reduce((a, b) => a + b, 0) / full.length) : '—'),
           stat('Plus rapide', full.length ? boosters(Math.min(...full)) : '—'),
           stat('Plus long', full.length ? boosters(Math.max(...full)) : '—'),
           stat('Depuis la dernière', boosters(current))
@@ -3802,43 +3820,74 @@
               'div',
               { class: 'aqm-history-grid' },
               hits.map((x) => {
-                // Only the card's picture and the boosters it took (its name and day in the tooltip).
+                // The card's picture, the boosters it took and its pack (its name and day in the tooltip).
                 const link = x.card?.id ? { href: `/jeu/carte/${encodeURIComponent(x.card.id)}` } : {};
-                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
+                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, packName(x), day(x.at), x.first ? 'Aquaman a commencé à compter après la précédente' : null].filter(Boolean).join(' · ');
                 return h(
                   x.card?.id ? 'a' : 'div',
                   { class: 'aqm-history-tile', ...link, title: tip },
                   x.card?.image ? h('img', { src: cardImageUrl(x.card.image), alt: x.card.name ?? '', loading: 'lazy', decoding: 'async' }) : h('div', { class: 'aqm-history-blank' }, rarityCode(x.top)),
-                  h('p', { class: 'aqm-history-after' }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after))
+                  h('p', { class: 'aqm-history-after' }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after)),
+                  h('p', { class: `aqm-history-pack${x.pack ? '' : ' is-unknown'}` }, packName(x))
                 );
               })
             )
-          : h('p', { class: 'aqm-history-empty' }, `Aucune ${code} parmi tes ${boosters(r.opened)} comptés.`)
+          : h('p', { class: 'aqm-history-empty' }, pack ? `Aucune ${code} tirée dans ce pack.` : `Aucune ${code} parmi tes ${boosters(r.opened)} comptés.`)
       ];
     };
 
-    // A tab per rarity, the first one with cards open.
+    // A tab per rarity, the first one with cards open; above, a filter per pack (once a card's pack is known).
     const panel = h('div', { class: 'aqm-history-panel' });
     const tabs = h('div', { class: 'aqm-history-tabs', role: 'tablist' });
-    const show = (code) => {
+    const filter = h('div', { class: 'aqm-history-packs', role: 'group', 'aria-label': 'Pack' });
+    const show = () => {
+      if (packList.some((p) => p.key !== UNKNOWN))
+        filter.replaceChildren(
+          ...[{ key: '', name: 'Tous les packs', count: CODES.reduce((n, c) => n + r[c].hits.length, 0) }, ...packList].map((p) =>
+            h(
+              'button',
+              {
+                type: 'button',
+                class: `aqm-history-packbtn${p.key === pack ? ' is-on' : ''}`,
+                'aria-pressed': String(p.key === pack),
+                title: p.key === UNKNOWN ? 'Cartes tirées avant qu’Aquaman retienne le pack (version 1.4.7).' : null,
+                onclick: () => {
+                  pack = p.key;
+                  show();
+                }
+              },
+              p.name,
+              h('span', { class: 'aqm-history-tabcount' }, fmt(p.count))
+            )
+          )
+        );
       tabs.replaceChildren(
         ...CODES.map((c) =>
           h(
             'button',
-            { type: 'button', role: 'tab', class: `aqm-history-tabbtn${c === code ? ' is-on' : ''}`, 'aria-selected': String(c === code), onclick: () => show(c) },
+            {
+              type: 'button',
+              role: 'tab',
+              class: `aqm-history-tabbtn${c === rarity ? ' is-on' : ''}`,
+              'aria-selected': String(c === rarity),
+              onclick: () => {
+                rarity = c;
+                show();
+              }
+            },
             rarityCode(c),
-            h('span', { class: 'aqm-history-tabcount' }, fmt(r[c].hits.length))
+            h('span', { class: 'aqm-history-tabcount' }, fmt(hitsOf(c).length))
           )
         )
       );
-      panel.replaceChildren(...tiles(code));
+      panel.replaceChildren(...tiles(rarity));
     };
-    show(CODES.find((code) => r[code].hits.length) ?? 'SSR');
+    show();
     view.replaceChildren(
       h('p', { class: 'aqm-history-count' }, r.since ? `${boosters(r.opened)} comptés depuis le ${new Date(r.since).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}` : 'Aucun booster compté pour le moment.'),
       h('div', { class: 'aqm-rates' }, CODES.map(rate)),
       strip,
-      h('div', { class: 'aqm-history-box' }, tabs, panel)
+      h('div', { class: 'aqm-history-box' }, filter.childElementCount ? filter : null, tabs, panel)
     );
   }
 

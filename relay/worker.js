@@ -127,11 +127,21 @@ async function pity(env, body) {
   return { events: results.reverse(), sec: { since: sec?.since ?? 0, known: sec?.last != null } };
 }
 
-// The best card of a SSR, UR or SEC opening ({ id, name, image, rarity }), checked, as JSON; null for the others.
+// The best card of a SSR, UR or SEC opening ({ id, name, image, rarity }) and the kind of booster it came from
+// (pack: { id, name }), checked, as JSON; null for the others.
 function pityCard(e) {
+  if (e.top < 4) return null;
   const c = e?.card;
-  if (e.top < 4 || !c || !CARD.test(String(c.id ?? '')) || !RARE.has(c.rarity)) return null;
-  return JSON.stringify({ id: c.id, name: text(c.name, 120), image: text(c.image, 200), rarity: c.rarity });
+  const card = c && CARD.test(String(c.id ?? '')) && RARE.has(c.rarity) ? { id: c.id, name: text(c.name, 120), image: text(c.image, 200), rarity: c.rarity } : {};
+  const p = e?.pack;
+  if (p && KIND.test(String(p.id ?? ''))) card.pack = { id: p.id, name: text(p.name, 60) };
+  return Object.keys(card).length ? JSON.stringify(card) : null;
+}
+
+// The card and the kind of booster kept with an opening (pityCard).
+function readPityCard(raw) {
+  const { pack = null, ...card } = raw ? JSON.parse(raw) : {};
+  return { card: card.id ? card : null, pack };
 }
 
 // All the openings of a player kept (a year), oldest first, with the card of their SSR, UR and SEC when it was kept;
@@ -145,7 +155,7 @@ async function pityAll(env, body) {
     env.DB.prepare('SELECT card_id, card_name, rarity, image, pulled_at FROM pulls WHERE player_id = ?1 ORDER BY pulled_at DESC LIMIT 2000').bind(player).all()
   ]);
   return {
-    events: results.map((r) => ({ id: r.id, at: r.at, top: r.top, card: r.card ? JSON.parse(r.card) : null })),
+    events: results.map((r) => ({ id: r.id, at: r.at, top: r.top, ...readPityCard(r.card) })),
     pulls: pulls.map((p) => ({ id: p.card_id, name: p.card_name, rarity: p.rarity, image: p.image, at: p.pulled_at }))
   };
 }

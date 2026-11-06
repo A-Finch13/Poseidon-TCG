@@ -100,6 +100,10 @@ const TOUR = [
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
   {
+    version: '1.4.7',
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Les cartes tirées avant cette version restent en « Pack inconnu ».']]
+  },
+  {
     version: '1.4.6',
     items: [['Page d’une carte : un bouton « Enchérir » sur chaque enchère en cours, qui ouvre sa page dans le jeu.']]
   },

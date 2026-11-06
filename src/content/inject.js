@@ -316,11 +316,35 @@
   const raritiesOf = (pulls) => pulls.map((p) => p?.card?.rarity ?? p?.rarity).filter((r) => RARITIES.includes(r));
 
   // The boosters of an opening answer: one booster, or several (open-many), each as the pulls of its cards.
-  function openedPulls(body) {
-    if (Array.isArray(body?.pulls)) return [body.pulls];
+  function openedBoosters(body) {
+    if (Array.isArray(body?.pulls)) return [body];
     const list = body?.boosters ?? body?.results ?? body?.opened ?? (Array.isArray(body) ? body : null);
-    if (Array.isArray(list)) return list.filter((b) => Array.isArray(b?.pulls)).map((b) => b.pulls);
-    return [];
+    return Array.isArray(list) ? list.filter((b) => Array.isArray(b?.pulls)) : [];
+  }
+  // The kind of each booster of an opening ({ id, name }, null when unknown): from the answer, else from the booster's
+  // id (in the path or the body of the request) among the waiting ones, else the kind Aquaman shows the game, else
+  // the only kind waiting.
+  function packsOf(boosters, path, init, waiting) {
+    const list = Array.isArray(waiting) ? waiting : [];
+    const named = (id, name) => ({ id: id ?? 'classic', name: name ?? list.find((b) => (b?.kindId ?? 'classic') === (id ?? 'classic'))?.kindName ?? (id && id !== 'classic' ? null : 'Classique') });
+    let asked = [];
+    try {
+      const sent = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+      asked = [sent?.ids, sent?.boosterIds, sent?.boosters].find(Array.isArray) ?? (sent?.boosterId ? [sent.boosterId] : []);
+    } catch {}
+    const inPath = path.match(/\/boosters\/([^/]+)\/open$/)?.[1];
+    if (inPath) asked = [decodeURIComponent(inPath)];
+    const shown = chosenKind();
+    const kinds = new Set(list.map((b) => b?.kindId ?? 'classic'));
+    return boosters.map((b, i) => {
+      const kindId = b?.kindId ?? b?.booster?.kindId;
+      if (kindId) return named(kindId, b?.kindName ?? b?.booster?.kindName);
+      const id = b?.boosterId ?? b?.booster?.id ?? (asked.length === boosters.length ? asked[i]?.id ?? asked[i] : null) ?? b?.id;
+      const known = id != null && list.find((x) => x?.id === id);
+      if (known) return named(known.kindId, known.kindName);
+      if (shown) return named(shown);
+      return kinds.size === 1 ? named([...kinds][0]) : null;
+    });
   }
   // The best card of a booster ({ id, name, image, rarity }), for the history of the pity.
   function bestCard(pulls) {
@@ -416,6 +440,7 @@
 
   async function watch(pending, path, input, init) {
     const self = !!window.__aquamanSelf; // a request of Aquaman itself (userscript)
+    const waiting = fullPending; // the boosters waiting when the request left (an opening: those it opens)
     const res = await pending;
     try {
       const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -514,8 +539,11 @@
               .clone()
               .json()
               .then((body) => {
-                const opened = openedPulls(body).filter((pulls) => raritiesOf(pulls).length);
-                if (opened.length) post({ type: 'opened', boosters: opened.map(raritiesOf), best: opened.map(bestCard) });
+                const all = openedBoosters(body);
+                const packs = packsOf(all, path, init, waiting);
+                const opened = all.map((b, i) => ({ pulls: b.pulls, pack: packs[i] })).filter((b) => raritiesOf(b.pulls).length);
+                if (opened.length)
+                  post({ type: 'opened', boosters: opened.map((b) => raritiesOf(b.pulls)), best: opened.map((b) => bestCard(b.pulls)), packs: opened.map((b) => b.pack) });
               })
               .catch(() => {});
           if (ASSETS.test(path) && res.ok) assetsChanged();

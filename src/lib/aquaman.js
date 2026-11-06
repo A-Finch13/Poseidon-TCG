@@ -570,11 +570,18 @@ function pityReport(mine, rules, sync, chance = null) {
   return out;
 }
 
+// The kind of booster of an opening ({ id, name }), checked; null when unknown.
+function cleanPack(p) {
+  const id = typeof p?.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(p.id) ? p.id : null;
+  return id ? { id, name: typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 60) : null } : null;
+}
+
 // Merges two lists of openings: each booster once, oldest first, the last PITY_EVENTS.
 function mergeEvents(a, b) {
   const byId = new Map();
   for (const e of [...a, ...b])
-    if (e?.id && !byId.has(e.id)) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...(e.card ? { card: e.card } : {}) });
+    if (e?.id && !byId.has(e.id))
+      byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...(e.card ? { card: e.card } : {}), ...(e.pack ? { pack: e.pack } : {}) });
   return [...byId.values()].sort((x, y) => x.at - y.at).slice(-PITY_EVENTS);
 }
 
@@ -629,8 +636,11 @@ export async function pityHistory() {
       for (const e of [...(all.events ?? []), ...events]) {
         if (!e?.id) continue;
         const known = byId.get(e.id);
-        if (!known) byId.set(e.id, { at: Number(e.at) || 0, top: Number(e.top) || 0, card: e.card ?? null });
-        else if (!known.card && e.card) known.card = e.card;
+        if (!known) byId.set(e.id, { at: Number(e.at) || 0, top: Number(e.top) || 0, card: e.card ?? null, pack: e.pack ?? null });
+        else {
+          if (!known.card && e.card) known.card = e.card;
+          if (!known.pack && e.pack) known.pack = e.pack;
+        }
       }
       events = [...byId.values()].sort((a, b) => a.at - b.at);
     } catch {}
@@ -660,7 +670,7 @@ export async function pityHistory() {
     for (const e of events) {
       count++;
       if (e.top !== RANK[code]) continue;
-      hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, after: count, first: !hits.length });
+      hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, pack: e.pack ?? null, after: count, first: !hits.length });
       count = 0;
     }
     out[code] = { hits: hits.reverse(), current: count };
@@ -669,8 +679,8 @@ export async function pityHistory() {
 }
 
 // Records opened boosters, each as the rarities of its cards; every opening gets its own id, sent once to the relay.
-// best: the best card of each booster, kept with the SSR, UR and SEC for the history.
-export async function recordOpening(boosters, best = []) {
+// best: the best card of each booster, and packs: its kind ({ id, name }), kept with the SSR, UR and SEC for the history.
+export async function recordOpening(boosters, best = [], packs = []) {
   const state = await pityState();
   const { mine, rules } = state;
   const now = Date.now();
@@ -678,7 +688,8 @@ export async function recordOpening(boosters, best = []) {
     const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
     const c = best[i];
     const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
-    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}) };
+    const pack = top >= RANK.SSR ? cleanPack(packs[i]) : null;
+    return { id: `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}), ...(pack ? { pack } : {}) };
   });
   mine.events = mergeEvents(mine.events, added);
   // The relay's SEC count goes on with the new openings until the next exchange.
@@ -1473,7 +1484,7 @@ export async function answer(msg) {
       case 'pity':
         return await pity(!!msg.fresh);
       case 'opened':
-        return await recordOpening(msg.boosters ?? [], msg.best ?? []);
+        return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? []);
       case 'pity-rules':
         return await setPityRules(msg.rules);
       case 'favorites':
