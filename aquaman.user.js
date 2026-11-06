@@ -371,11 +371,13 @@ async function ownership() {
   return countCopies(await myShowcase());
 }
 
-// Unique cards, total and completed series of a player.
+// Unique cards, total and completed series of a player, and the value of their collection in Perles (the value the
+// game gives each copy, added up).
 async function playerSummary(id) {
   const sc = await showcase(id);
   if (sc.private) return { id, name: sc.player?.name ?? null, private: true };
-  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+  const value = (sc.copies ?? []).reduce((sum, c) => sum + (typeof c?.value === 'number' && c.value > 0 ? c.value : 0), 0);
+  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0, value };
 }
 
 // The logged-in player and their friends.
@@ -5481,7 +5483,7 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.7',
-    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.'], ['Proposer un échange : à côté de « Doublons », les filtres « Mes recherches » et « Il me manque » dans « Tu demandes », et « Il lui manque » dans « Tu donnes » (avec « Doublons » : tes doublons qu’il n’a pas).']]
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.'], ['Accueil : après un « Tout ouvrir », un bouton « Ouvrir les 10 suivants » à côté de « Fermer » ouvre les boosters suivants du même pack, 10 par 10 (le jeu n’en ouvre pas plus d’un coup). La fenêtre des cartes se ferme toute seule 5 s après la dernière, sur les 10 suivantes s’il en reste : un clic dans la fenêtre l’arrête.'], ['Proposer un échange : à côté de « Doublons », les filtres « Mes recherches » et « Il me manque » dans « Tu demandes », et « Il lui manque » dans « Tu donnes » (avec « Doublons » : tes doublons qu’il n’a pas).'], ['Classement des amis : un onglet « Perles », la valeur de la collection de chacun.']]
   },
   {
     version: '1.4.6',
@@ -6729,7 +6731,7 @@ const CHANGES = [
     menu = h(
       'div',
       { class: 'aqm-root aqm-menu', role: 'menu' },
-      item('Classement des amis', 'Cartes uniques et séries complètes', ICON_TROPHY, openLeaderboard),
+      item('Classement des amis', 'Cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
       item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
@@ -6881,7 +6883,7 @@ const CHANGES = [
   // ---------- friends' leaderboard ----------
 
   async function openLeaderboard() {
-    const body = openOverlay('Classement des amis', 'Toi et tes amis, selon les cartes uniques et les séries complètes.');
+    const body = openOverlay('Classement des amis', 'Toi et tes amis, selon les cartes uniques, les séries complètes et la valeur de la collection en Perles.');
     let sortBy = 'owned';
     let rows = [];
     const tabs = h('div');
@@ -6894,7 +6896,8 @@ const CHANGES = [
         chips(
           [
             ['owned', 'Cartes uniques'],
-            ['albums', 'Séries complètes']
+            ['albums', 'Séries complètes'],
+            ['value', 'Perles']
           ],
           sortBy,
           (v) => {
@@ -6911,6 +6914,7 @@ const CHANGES = [
       });
       let place = 0;
       const topAlbums = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.albums));
+      const topValue = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.value ?? 0));
       list.replaceChildren(
         ...sorted.map((r) => {
           if (r.state === 'ok') place++;
@@ -6929,6 +6933,16 @@ const CHANGES = [
                       h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * share).toFixed(2)}%` }))
                     )
                   ]
+                : sortBy === 'value'
+                  ? [
+                      h(
+                        'div',
+                        { class: 'aqm-stat is-on', title: 'La valeur de chaque carte de sa collection, additionnée' },
+                        h('strong', {}, perles(r.value ?? 0)),
+                        h('small', {}, 'de cartes'),
+                        h('span', { class: 'aqm-bar' }, h('span', { style: `width:${topValue ? ((100 * (r.value ?? 0)) / topValue).toFixed(2) : 0}%` }))
+                      )
+                    ]
                 : [
                     h(
                       'div',
@@ -6959,7 +6973,7 @@ const CHANGES = [
           const p = await ask({ type: 'player', id: row.id });
           row.name ||= p.name;
           if (p.private) row.state = 'private';
-          else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+          else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums, value: p.value ?? 0 });
         } catch {
           row.state = 'error';
         }

@@ -1115,7 +1115,7 @@
     menu = h(
       'div',
       { class: 'aqm-root aqm-menu', role: 'menu' },
-      item('Classement des amis', 'Cartes uniques et séries complètes', ICON_TROPHY, openLeaderboard),
+      item('Classement des amis', 'Cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
       item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
@@ -1267,7 +1267,7 @@
   // ---------- friends' leaderboard ----------
 
   async function openLeaderboard() {
-    const body = openOverlay('Classement des amis', 'Toi et tes amis, selon les cartes uniques et les séries complètes.');
+    const body = openOverlay('Classement des amis', 'Toi et tes amis, selon les cartes uniques, les séries complètes et la valeur de la collection en Perles.');
     let sortBy = 'owned';
     let rows = [];
     const tabs = h('div');
@@ -1280,7 +1280,8 @@
         chips(
           [
             ['owned', 'Cartes uniques'],
-            ['albums', 'Séries complètes']
+            ['albums', 'Séries complètes'],
+            ['value', 'Perles']
           ],
           sortBy,
           (v) => {
@@ -1297,6 +1298,7 @@
       });
       let place = 0;
       const topAlbums = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.albums));
+      const topValue = Math.max(0, ...rows.filter((r) => r.state === 'ok').map((r) => r.value ?? 0));
       list.replaceChildren(
         ...sorted.map((r) => {
           if (r.state === 'ok') place++;
@@ -1315,6 +1317,16 @@
                       h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * share).toFixed(2)}%` }))
                     )
                   ]
+                : sortBy === 'value'
+                  ? [
+                      h(
+                        'div',
+                        { class: 'aqm-stat is-on', title: 'La valeur de chaque carte de sa collection, additionnée' },
+                        h('strong', {}, perles(r.value ?? 0)),
+                        h('small', {}, 'de cartes'),
+                        h('span', { class: 'aqm-bar' }, h('span', { style: `width:${topValue ? ((100 * (r.value ?? 0)) / topValue).toFixed(2) : 0}%` }))
+                      )
+                    ]
                 : [
                     h(
                       'div',
@@ -1345,7 +1357,7 @@
           const p = await ask({ type: 'player', id: row.id });
           row.name ||= p.name;
           if (p.private) row.state = 'private';
-          else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+          else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums, value: p.value ?? 0 });
         } catch {
           row.state = 'error';
         }

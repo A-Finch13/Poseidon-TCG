@@ -221,11 +221,13 @@ export async function ownership() {
   return countCopies(await myShowcase());
 }
 
-// Unique cards, total and completed series of a player.
+// Unique cards, total and completed series of a player, and the value of their collection in Perles (the value the
+// game gives each copy, added up).
 export async function playerSummary(id) {
   const sc = await showcase(id);
   if (sc.private) return { id, name: sc.player?.name ?? null, private: true };
-  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+  const value = (sc.copies ?? []).reduce((sum, c) => sum + (typeof c?.value === 'number' && c.value > 0 ? c.value : 0), 0);
+  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0, value };
 }
 
 // The logged-in player and their friends.
