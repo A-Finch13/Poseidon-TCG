@@ -627,11 +627,29 @@ async function boosterReport(query = '', rarity = '', field = '') {
   const match = q ? (field === 'name' ? inName : field === 'series' ? inSeries : (c) => inName(c) || inSeries(c)) : null;
   const pick = RANK[rarity] ? rarity : '';
   const rows = boosterList(shop).map((b) => ({ b, a: analyse(b, { rarities, catalog, mine, values, match, rarity: pick }) }));
-  // Names (or series) matching what was typed, for the suggestions of the search field.
-  const suggestions =
-    q && catalog
-      ? [...new Set(catalog.filter(field === 'series' ? inSeries : inName).map((c) => (field === 'series' ? c.series?.title : c.name)))].filter(Boolean).slice(0, 8)
-      : [];
+  // Names (or series) matching what was typed, for the suggestions of the search field: { name, image, rarities }
+  // (rarities: the codes of its cards, lowest first; image: a card of it, its base one first, then the rarest).
+  const suggestions = [];
+  if (q && catalog) {
+    const byName = new Map();
+    for (const c of catalog.filter(field === 'series' ? inSeries : inName)) {
+      const name = field === 'series' ? c.series?.title : c.name;
+      if (!name) continue;
+      if (!byName.has(name)) byName.set(name, { name, cards: [] });
+      byName.get(name).cards.push(c);
+    }
+    // (the names starting with what was typed first)
+    const starts = (name) => (fold(name).startsWith(q) ? 0 : 1);
+    for (const { name, cards } of [...byName.values()].sort((a, b) => starts(a.name) - starts(b.name)).slice(0, 8)) {
+      const cover = [...cards].sort((a, b) => a.extra - b.extra || (RANK[b.rarity] ?? 0) - (RANK[a.rarity] ?? 0)).find((c) => c.image);
+      suggestions.push({
+        name,
+        image: cover?.image ?? null,
+        rarities: [...new Set(cards.map((c) => c.rarity))].sort((a, b) => (RANK[a] ?? 0) - (RANK[b] ?? 0)),
+        cards: cards.length
+      });
+    }
+  }
   return {
     rows,
     suggestions,
@@ -3671,6 +3689,74 @@ html.aqm-grabbing * {
 .aqm-pick .aqm-search {
   width: min(520px, 100%);
 }
+/* The suggestions of the search field: the picture of a card, the name, the rarities. */
+.aqm-suggest-box {
+  position: relative;
+  width: min(520px, 100%);
+}
+.aqm-suggest-box .aqm-search {
+  width: 100%;
+}
+.aqm-suggest {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 360px;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--aqm-line);
+  border-radius: 14px;
+  background: var(--aqm-panel);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.aqm-suggest[hidden] {
+  display: none;
+}
+.aqm-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px 6px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.aqm-suggest-item:hover,
+.aqm-suggest-item[aria-selected='true'] {
+  background: rgba(255, 255, 255, 0.07);
+}
+.aqm-suggest-item > img,
+.aqm-suggest-blank {
+  flex-shrink: 0;
+  width: 34px;
+  height: 48px;
+  border-radius: 5px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.05);
+}
+.aqm-suggest-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aqm-suggest-name small {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aqm-dim);
+}
+.aqm-suggest-rarities {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
 .aqm-sentence {
   display: flex;
   flex-wrap: wrap;
@@ -5300,7 +5386,7 @@ const TOUR = [
 const CHANGES = [
   {
     version: '1.4.7',
-    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.']]
+    items: [['Historique des tirages : le pack d’où vient chaque SSR, UR et SEC, sous sa carte, et un filtre par pack. Pour les cartes tirées avant cette version, le pack est déduit de la carte : Halloween pour une carte Halloween, Classique pour les autres.'], ['Boosters rentables : en cherchant un personnage, chaque suggestion montre son image et ses raretés.']]
   },
   {
     version: '1.4.6',
@@ -6868,8 +6954,73 @@ const CHANGES = [
     const sortRow = h('div', { class: 'aqm-sorts' });
     const summary = h('div', { class: 'aqm-verdict' });
     const list = h('ol', { class: 'aqm-ranking' });
-    const suggestions = h('datalist', { id: 'aqm-suggest' });
-    const search = h('input', { type: 'search', class: 'aqm-search', list: 'aqm-suggest', autocomplete: 'off' });
+    // The suggestions under the search field: each name with the picture of one of its cards and its rarities.
+    const suggestions = h('ul', { class: 'aqm-suggest', id: 'aqm-suggest', role: 'listbox', hidden: true });
+    const search = h('input', { type: 'search', class: 'aqm-search', role: 'combobox', 'aria-controls': 'aqm-suggest', 'aria-expanded': 'false', 'aria-autocomplete': 'list', autocomplete: 'off' });
+    const searchBox = h('div', { class: 'aqm-suggest-box' }, search, suggestions);
+    let picked = -1; // the suggestion chosen with the arrows
+    let typing = false; // the list opens only while typing, not once a name is picked
+    const showSuggestions = (open) => {
+      suggestions.hidden = !open || !suggestions.childElementCount;
+      search.setAttribute('aria-expanded', String(!suggestions.hidden));
+    };
+    const pickSuggestion = (name) => {
+      typing = false;
+      search.value = name;
+      clearTimeout(timer);
+      query = name;
+      showSuggestions(false);
+      refresh();
+    };
+    const fillSuggestions = (list) => {
+      picked = -1;
+      suggestions.replaceChildren(
+        ...list.map((s, i) =>
+          h(
+            'li',
+            {
+              id: `aqm-suggest-${i}`,
+              class: 'aqm-suggest-item',
+              'data-name': s.name,
+              role: 'option',
+              'aria-selected': 'false',
+              // (mousedown: before the field loses the focus)
+              onmousedown: (e) => {
+                e.preventDefault();
+                pickSuggestion(s.name);
+              }
+            },
+            s.image ? h('img', { src: cardImageUrl(s.image), alt: '', loading: 'lazy', decoding: 'async' }) : h('span', { class: 'aqm-suggest-blank' }),
+            h('span', { class: 'aqm-suggest-name' }, s.name, goal === 'series' && s.cards ? h('small', {}, `${fmt(s.cards)} carte${s.cards > 1 ? 's' : ''}`) : null),
+            goal === 'series' ? null : h('span', { class: 'aqm-suggest-rarities' }, (s.rarities ?? []).map((code) => rarityCode(code)))
+          )
+        )
+      );
+      showSuggestions(typing && document.activeElement === search && !!search.value.trim());
+    };
+    const movePick = (step) => {
+      const items = [...suggestions.children];
+      if (!items.length) return;
+      showSuggestions(true);
+      picked = (picked + step + items.length) % items.length;
+      items.forEach((li, i) => li.setAttribute('aria-selected', String(i === picked)));
+      items[picked].scrollIntoView({ block: 'nearest' });
+      search.setAttribute('aria-activedescendant', items[picked].id);
+    };
+    search.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        movePick(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === 'Enter' && picked >= 0 && !suggestions.hidden) {
+        e.preventDefault();
+        pickSuggestion(suggestions.children[picked].dataset.name);
+      } else if (e.key === 'Escape' && !suggestions.hidden) {
+        e.stopPropagation();
+        showSuggestions(false);
+      }
+    });
+    search.addEventListener('focus', () => showSuggestions(typing && !!search.value.trim()));
+    search.addEventListener('blur', () => showSuggestions(false));
     const how = h(
       'details',
       { class: 'aqm-how' },
@@ -6886,7 +7037,7 @@ const CHANGES = [
       )
     );
     status.remove();
-    body.append(goalRow, pickRow, sentence, sortRow, summary, list, how, suggestions);
+    body.append(goalRow, pickRow, sentence, sortRow, summary, list, how);
 
     // Asks the numbers again for what was typed.
     let asked = 0;
@@ -6898,11 +7049,12 @@ const CHANGES = [
         const next = await ask({ type: 'boosters', query: field ? query : '', field });
         if (n !== asked) return;
         report = next;
-        suggestions.replaceChildren(...(report.suggestions ?? []).map((s) => h('option', { value: s })));
+        fillSuggestions(report.suggestions ?? []);
         render();
       } catch {}
     }
     search.addEventListener('input', () => {
+      typing = true;
       clearTimeout(timer);
       timer = setTimeout(() => {
         query = search.value.trim();
@@ -7033,7 +7185,7 @@ const CHANGES = [
       else if (goal === 'name' || goal === 'series') {
         search.placeholder = goal === 'name' ? 'Nom d’un personnage…' : 'Nom d’une série…';
         search.setAttribute('aria-label', search.placeholder);
-        if (pickRow.firstChild !== search) pickRow.replaceChildren(search);
+        if (pickRow.firstChild !== searchBox) pickRow.replaceChildren(searchBox);
       } else pickRow.replaceChildren();
 
       const newChips =

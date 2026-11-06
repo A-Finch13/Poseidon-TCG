@@ -477,11 +477,29 @@ export async function boosterReport(query = '', rarity = '', field = '') {
   const match = q ? (field === 'name' ? inName : field === 'series' ? inSeries : (c) => inName(c) || inSeries(c)) : null;
   const pick = RANK[rarity] ? rarity : '';
   const rows = boosterList(shop).map((b) => ({ b, a: analyse(b, { rarities, catalog, mine, values, match, rarity: pick }) }));
-  // Names (or series) matching what was typed, for the suggestions of the search field.
-  const suggestions =
-    q && catalog
-      ? [...new Set(catalog.filter(field === 'series' ? inSeries : inName).map((c) => (field === 'series' ? c.series?.title : c.name)))].filter(Boolean).slice(0, 8)
-      : [];
+  // Names (or series) matching what was typed, for the suggestions of the search field: { name, image, rarities }
+  // (rarities: the codes of its cards, lowest first; image: a card of it, its base one first, then the rarest).
+  const suggestions = [];
+  if (q && catalog) {
+    const byName = new Map();
+    for (const c of catalog.filter(field === 'series' ? inSeries : inName)) {
+      const name = field === 'series' ? c.series?.title : c.name;
+      if (!name) continue;
+      if (!byName.has(name)) byName.set(name, { name, cards: [] });
+      byName.get(name).cards.push(c);
+    }
+    // (the names starting with what was typed first)
+    const starts = (name) => (fold(name).startsWith(q) ? 0 : 1);
+    for (const { name, cards } of [...byName.values()].sort((a, b) => starts(a.name) - starts(b.name)).slice(0, 8)) {
+      const cover = [...cards].sort((a, b) => a.extra - b.extra || (RANK[b.rarity] ?? 0) - (RANK[a.rarity] ?? 0)).find((c) => c.image);
+      suggestions.push({
+        name,
+        image: cover?.image ?? null,
+        rarities: [...new Set(cards.map((c) => c.rarity))].sort((a, b) => (RANK[a] ?? 0) - (RANK[b] ?? 0)),
+        cards: cards.length
+      });
+    }
+  }
   return {
     rows,
     suggestions,

@@ -1435,8 +1435,73 @@
     const sortRow = h('div', { class: 'aqm-sorts' });
     const summary = h('div', { class: 'aqm-verdict' });
     const list = h('ol', { class: 'aqm-ranking' });
-    const suggestions = h('datalist', { id: 'aqm-suggest' });
-    const search = h('input', { type: 'search', class: 'aqm-search', list: 'aqm-suggest', autocomplete: 'off' });
+    // The suggestions under the search field: each name with the picture of one of its cards and its rarities.
+    const suggestions = h('ul', { class: 'aqm-suggest', id: 'aqm-suggest', role: 'listbox', hidden: true });
+    const search = h('input', { type: 'search', class: 'aqm-search', role: 'combobox', 'aria-controls': 'aqm-suggest', 'aria-expanded': 'false', 'aria-autocomplete': 'list', autocomplete: 'off' });
+    const searchBox = h('div', { class: 'aqm-suggest-box' }, search, suggestions);
+    let picked = -1; // the suggestion chosen with the arrows
+    let typing = false; // the list opens only while typing, not once a name is picked
+    const showSuggestions = (open) => {
+      suggestions.hidden = !open || !suggestions.childElementCount;
+      search.setAttribute('aria-expanded', String(!suggestions.hidden));
+    };
+    const pickSuggestion = (name) => {
+      typing = false;
+      search.value = name;
+      clearTimeout(timer);
+      query = name;
+      showSuggestions(false);
+      refresh();
+    };
+    const fillSuggestions = (list) => {
+      picked = -1;
+      suggestions.replaceChildren(
+        ...list.map((s, i) =>
+          h(
+            'li',
+            {
+              id: `aqm-suggest-${i}`,
+              class: 'aqm-suggest-item',
+              'data-name': s.name,
+              role: 'option',
+              'aria-selected': 'false',
+              // (mousedown: before the field loses the focus)
+              onmousedown: (e) => {
+                e.preventDefault();
+                pickSuggestion(s.name);
+              }
+            },
+            s.image ? h('img', { src: cardImageUrl(s.image), alt: '', loading: 'lazy', decoding: 'async' }) : h('span', { class: 'aqm-suggest-blank' }),
+            h('span', { class: 'aqm-suggest-name' }, s.name, goal === 'series' && s.cards ? h('small', {}, `${fmt(s.cards)} carte${s.cards > 1 ? 's' : ''}`) : null),
+            goal === 'series' ? null : h('span', { class: 'aqm-suggest-rarities' }, (s.rarities ?? []).map((code) => rarityCode(code)))
+          )
+        )
+      );
+      showSuggestions(typing && document.activeElement === search && !!search.value.trim());
+    };
+    const movePick = (step) => {
+      const items = [...suggestions.children];
+      if (!items.length) return;
+      showSuggestions(true);
+      picked = (picked + step + items.length) % items.length;
+      items.forEach((li, i) => li.setAttribute('aria-selected', String(i === picked)));
+      items[picked].scrollIntoView({ block: 'nearest' });
+      search.setAttribute('aria-activedescendant', items[picked].id);
+    };
+    search.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        movePick(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === 'Enter' && picked >= 0 && !suggestions.hidden) {
+        e.preventDefault();
+        pickSuggestion(suggestions.children[picked].dataset.name);
+      } else if (e.key === 'Escape' && !suggestions.hidden) {
+        e.stopPropagation();
+        showSuggestions(false);
+      }
+    });
+    search.addEventListener('focus', () => showSuggestions(typing && !!search.value.trim()));
+    search.addEventListener('blur', () => showSuggestions(false));
     const how = h(
       'details',
       { class: 'aqm-how' },
@@ -1453,7 +1518,7 @@
       )
     );
     status.remove();
-    body.append(goalRow, pickRow, sentence, sortRow, summary, list, how, suggestions);
+    body.append(goalRow, pickRow, sentence, sortRow, summary, list, how);
 
     // Asks the numbers again for what was typed.
     let asked = 0;
@@ -1465,11 +1530,12 @@
         const next = await ask({ type: 'boosters', query: field ? query : '', field });
         if (n !== asked) return;
         report = next;
-        suggestions.replaceChildren(...(report.suggestions ?? []).map((s) => h('option', { value: s })));
+        fillSuggestions(report.suggestions ?? []);
         render();
       } catch {}
     }
     search.addEventListener('input', () => {
+      typing = true;
       clearTimeout(timer);
       timer = setTimeout(() => {
         query = search.value.trim();
@@ -1600,7 +1666,7 @@
       else if (goal === 'name' || goal === 'series') {
         search.placeholder = goal === 'name' ? 'Nom d’un personnage…' : 'Nom d’une série…';
         search.setAttribute('aria-label', search.placeholder);
-        if (pickRow.firstChild !== search) pickRow.replaceChildren(search);
+        if (pickRow.firstChild !== searchBox) pickRow.replaceChildren(searchBox);
       } else pickRow.replaceChildren();
 
       const newChips =

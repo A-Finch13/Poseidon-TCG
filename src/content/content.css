@@ -1307,6 +1307,74 @@ html.aqm-grabbing * {
 .aqm-pick .aqm-search {
   width: min(520px, 100%);
 }
+/* The suggestions of the search field: the picture of a card, the name, the rarities. */
+.aqm-suggest-box {
+  position: relative;
+  width: min(520px, 100%);
+}
+.aqm-suggest-box .aqm-search {
+  width: 100%;
+}
+.aqm-suggest {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 360px;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--aqm-line);
+  border-radius: 14px;
+  background: var(--aqm-panel);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.aqm-suggest[hidden] {
+  display: none;
+}
+.aqm-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px 6px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.aqm-suggest-item:hover,
+.aqm-suggest-item[aria-selected='true'] {
+  background: rgba(255, 255, 255, 0.07);
+}
+.aqm-suggest-item > img,
+.aqm-suggest-blank {
+  flex-shrink: 0;
+  width: 34px;
+  height: 48px;
+  border-radius: 5px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.05);
+}
+.aqm-suggest-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aqm-suggest-name small {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aqm-dim);
+}
+.aqm-suggest-rarities {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
 .aqm-sentence {
   display: flex;
   flex-wrap: wrap;
