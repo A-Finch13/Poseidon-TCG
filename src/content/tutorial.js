@@ -50,6 +50,13 @@ const TOUR = [
     target: '.aqm-fav-bar, .aqm-star'
   },
   {
+    id: 'progression',
+    title: 'Ta progression',
+    text: 'À côté de « Ta collection », « Ma progression » montre le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes gagnées chaque jour.',
+    page: '/jeu/collection',
+    target: '.aqm-stats-open'
+  },
+  {
     id: 'tirages',
     title: 'Les beaux tirages',
     text: 'Sur l’accueil, les cartes des beaux tirages des joueurs sont affichées en plus grand.',
@@ -99,6 +106,16 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.4.9',
+    items: [
+      ['Collection : un bouton « Ma progression » à côté de « Ta collection » (aussi dans Plus) : le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes uniques gagnées chaque jour sur les 14 derniers jours.', 'progression'],
+      ['Collection : le bouton « Masquer séries avec badge » cache les séries dont tu as déjà réclamé l’album.', 'series'],
+      ['Classement : les joueurs déjà lus gardent leur place et leurs chiffres ; seuls ceux lus il y a plus d’1 h (et toi) sont relus, sans tout retélécharger. « Actualiser » relit tout le monde.', 'classement'],
+      ['Classement : l’onglet « Perles » est retiré. Aquaman n’envoie plus ton stock de Perles, et celui déjà partagé est effacé du relais.'],
+      ['Collections : Aquaman vérifie que chaque vitrine lue est bien celle du joueur demandé, et oublie tout ce qu’il a lu dès que tu changes de compte : la collection d’un autre joueur n’est jamais prise pour la tienne.']
+    ]
+  },
   {
     version: '1.4.8',
     items: [

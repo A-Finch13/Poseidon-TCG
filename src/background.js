@@ -1,4 +1,4 @@
-import { ORIGIN, REPO, answer, checkUpdate, newer, getSettings, gameStatus, pollFeed } from './lib/aquaman.js';
+import { ORIGIN, REPO, answer, checkUpdate, newer, getSettings, gameStatus, pollFeed, safeHref } from './lib/aquaman.js';
 
 const POLL_ALARM = 'aquaman-poll';
 const UPDATE_ALARM = 'aquaman-update';
@@ -40,7 +40,8 @@ chrome.notifications.onClicked.addListener(async (id) => {
 
 // Opens a page of the site (or any address) in a tab, reusing a tab of the site when there is one.
 async function openSite(href) {
-  const url = href.startsWith('http') ? href : ORIGIN + href;
+  const url = safeHref(href);
+  if (!url) return;
   const [tab] = url.startsWith(ORIGIN) ? await chrome.tabs.query({ url: `${ORIGIN}/*` }).catch(() => []) : [];
   if (tab) {
     await chrome.tabs.update(tab.id, { url, active: true });
@@ -171,7 +172,20 @@ async function handle(msg) {
   }
 }
 
+// Only Aquaman's own pages (its popup) and its scripts in the game's pages: the answers carry what the player's
+// session reads (their collection, their friends…), never given to another sender.
+const trusted = (sender) => {
+  if (sender?.id !== chrome.runtime.id) return false;
+  if (!sender.tab || String(sender.url ?? '').startsWith(chrome.runtime.getURL(''))) return true;
+  try {
+    return new URL(sender.url ?? sender.tab.url ?? '').origin === ORIGIN;
+  } catch {
+    return false;
+  }
+};
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (!trusted(sender)) return void reply({ error: 'forbidden' });
   handle(msg).then(reply, (e) => reply({ error: e?.message || String(e) }));
   return true;
 });

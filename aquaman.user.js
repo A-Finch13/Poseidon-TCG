@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.8
+// @version      1.4.9
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.8';
+const VERSION = '1.4.9';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -157,6 +157,20 @@ const GAME = `${ORIGIN}/api-game/v1`;
 const SOCIAL = `${ORIGIN}/api-social/v1`;
 const RANK = { N: 1, R: 2, SR: 3, SSR: 4, UR: 5, SEC: 6 };
 
+// The only addresses Aquaman opens (its popup, its notifications, the page code's "open"): a page of the game (a path
+// "/…" or a full address of the site), and the GitHub pages of Aquaman (releases, script, installation page).
+// Anything else (another site, "javascript:", "data:"…) gives null.
+const OPEN_HOSTS = new Set(['poseidon-scans.net', 'github.com', 'raw.githubusercontent.com', 'a-finch13.github.io']);
+function safeHref(href) {
+  if (typeof href !== 'string' || !href) return null;
+  try {
+    const url = /^\/(?!\/)/.test(href) ? new URL(href, ORIGIN) : new URL(href);
+    return url.protocol === 'https:' && OPEN_HOSTS.has(url.hostname) && !url.username && !url.password ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- settings ----------
 
 // Every setting, by group: the same list in the extension's popup and in "Plus › Réglages" (extension and script, on
@@ -183,6 +197,7 @@ const SETTINGS = [
       ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
       ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
       ['missingSales', 'Pastille « En vente »', 'Sur les cartes manquantes vendues au marché'],
+      ['collectionStats', 'Ma progression', 'Bouton à côté de « Ta collection » : pourcentage, raretés, séries complètes et cartes gagnées chaque jour'],
       ['cardWho', 'Bouton « Qui a cette carte ? »', 'Sur la page des cartes SSR, UR et SEC : les joueurs qui l’ont']
     ]
   },
@@ -222,8 +237,7 @@ const SETTINGS = [
       ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
       ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
       ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
-      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)'],
-      ['sharePerles', 'Mes Perles au classement', 'Montrer mon stock de Perles dans le classement des autres utilisateurs d’Aquaman']
+      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
     ]
   }
 ];
@@ -284,9 +298,26 @@ function forget(...prefixes) {
   for (const key of [...memo.keys()]) if (prefixes.some((p) => key.startsWith(p))) memo.delete(key);
 }
 
-// Id of the logged-in player (read again after a minute: another account may have logged in meanwhile).
+// Id of the logged-in player (read again after 20 s: another account may have logged in meanwhile). When the account
+// changed, every answer read with the session of the previous one is forgotten (its collection, friends, searches…):
+// nothing of one account is ever shown to another.
+let account = null;
 function myId() {
-  return cached('me-id', 60e3, async () => {
+  return cached('me-id', 20e3, async () => {
+    const id = await readMyId();
+    if (account && account !== id) for (const key of [...memo.keys()]) if (key !== 'me-id') memo.delete(key);
+    if (account !== id) showcases.clear();
+    account = id;
+    return id;
+  });
+}
+
+// A player id as the game writes them; anything else is never put in an address.
+const PLAYER_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const validPlayer = (id) => typeof id === 'string' && PLAYER_ID.test(id);
+
+function readMyId() {
+  return (async () => {
     const ids = [];
     try {
       const a = await getJson(`${ORIGIN}/api/auth/check`);
@@ -304,10 +335,10 @@ function myId() {
         ids.push(s?.user?.id, s?.id);
       } catch {}
     }
-    const id = ids.find((x) => typeof x === 'string' && x);
+    const id = ids.find(validPlayer);
     if (!id) throw new ApiError(401, 'unauthorized', 'Connecte-toi au site pour utiliser Aquaman.');
     return id;
-  });
+  })();
 }
 
 // Game status of the player: boosters waiting to be opened and Perles.
@@ -320,14 +351,25 @@ async function gameStatus() {
 
 const showcases = new Map(); // player id -> last collection read
 
-// Collection of a player: { player, private, cards, copies, albums, owned, total }.
+// The player an answer of the game is about, when it says so.
+const ownerOf = (sc) => [sc?.player?.id, sc?.playerId, sc?.user?.id, sc?.userId].find((x) => typeof x === 'string' && x) ?? null;
+
+// Collection of a player: { player, private, cards, copies, albums, owned, total }. The game reads it with the
+// player's session: an answer about another player than the one asked (a redirection, the logged-in player's own
+// collection given in its place…) is refused, so that a collection is never taken for another one.
 async function readShowcase(id) {
+  if (!validPlayer(id)) throw new ApiError(400, 'bad_player', 'Joueur inconnu.');
   const path = encodeURIComponent(id);
+  let sc;
   try {
-    return await game(`/players/${path}/showcase`);
+    sc = await game(`/players/${path}/showcase`);
   } catch {
-    return game(`/public/players/${path}/showcase`);
+    sc = await game(`/public/players/${path}/showcase`);
   }
+  if (!sc || typeof sc !== 'object' || Array.isArray(sc)) throw new ApiError(502, 'bad_showcase', 'Collection illisible.');
+  const owner = ownerOf(sc);
+  if (owner && owner !== id) throw new ApiError(409, 'wrong_player', 'Le jeu a répondu pour un autre joueur.');
+  return sc;
 }
 
 // The same, kept a while; its copies give the values of the cards.
@@ -338,7 +380,15 @@ function showcase(id, ttl = 5 * 60e3) {
     return sc;
   });
 }
-const myShowcase = async (ttl = 60e3) => showcase(await myId(), ttl);
+
+// The logged-in player's own collection: read for the id of the session, and checked again against it once read (the
+// account may have changed meanwhile).
+async function myShowcase(ttl = 60e3) {
+  const id = await myId();
+  const sc = await showcase(id, ttl);
+  if ((await myId()) !== id) throw new ApiError(409, 'account_changed', 'Le compte connecté a changé : recharge la page.');
+  return sc;
+}
 
 // File name of a card image: the same key as the address of the image shown by the site.
 function imageKey(src) {
@@ -367,40 +417,65 @@ function countCopies(sc) {
   return { byCard, byImage };
 }
 
-// Copies owned by the logged-in player.
+// Copies owned by the logged-in player (me: whose they are).
 async function ownership() {
-  return countCopies(await myShowcase());
+  const sc = await myShowcase();
+  return { me: account, ...countCopies(sc) };
 }
 
 // Unique cards, total and completed series of a player.
-async function playerSummary(id) {
+// (fresh: read again from the game, not from the answers kept a while)
+async function playerSummary(id, fresh = false) {
+  if (!validPlayer(id)) throw new ApiError(400, 'bad_player', 'Joueur inconnu.');
+  if (fresh) forget(`showcase:${id}`);
   const sc = await showcase(id);
-  if (sc.private) return { id, name: sc.player?.name ?? null, private: true };
-  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+  const summary = sc.private
+    ? { id, name: sc.player?.name ?? null, private: true }
+    : { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+  await keepOnBoard(summary);
+  return { ...summary, at: Date.now() };
 }
 
-// The Perles of players who use Aquaman and share them ({ [id]: perles }), from the relay; the player's own from the
-// game, always.
-async function sharedPerles(ids) {
+// ---------- the leaderboard's players already read ----------
+// The summary of each player read for the leaderboard, kept on this device under the logged-in account: the
+// leaderboard shows them at once, in their known places, and reads again only those older than BOARD_FRESH (or all
+// of them on "Actualiser"), instead of downloading every collection at each opening.
+
+const BOARD_FRESH = 3600e3; // a player read less than an hour ago is not read again
+const BOARD_KEEP = 14 * 86400e3; // a player not read for this long is forgotten
+let boardWrites = Promise.resolve(); // (one write at a time: the collections are read 4 at a time)
+
+function keepOnBoard(summary) {
+  const write = boardWrites.then(async () => {
+    const me = await myId();
+    const { board = {} } = await chrome.storage.local.get('board');
+    const now = Date.now();
+    const mine = { ...(board[me] ?? {}), [summary.id]: { ...summary, at: now } };
+    for (const id in mine) if (!(now - mine[id].at < BOARD_KEEP)) delete mine[id];
+    await chrome.storage.local.set({ board: { ...board, [me]: mine } });
+  });
+  boardWrites = write.catch(() => {});
+  return boardWrites;
+}
+
+// The summaries kept for the logged-in account: { [id]: { id, name, private, owned, total, albums, at } }.
+async function boardKnown() {
   const me = await myId();
-  const out = {};
-  const others = [...new Set(ids)].filter((id) => id && id !== me);
-  for (let i = 0; i < others.length; i += 400)
-    try {
-      const res = await fetch(`${RELAY}/perles`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: others.slice(i, i + 400) }) });
-      if (!res.ok) throw new Error(`relay_${res.status}`);
-      for (const p of (await res.json()).players ?? []) out[p.id] = p.perles;
-    } catch {}
-  if (ids.includes(me))
-    try {
-      out[me] = (await gameStatus()).perles;
-    } catch {}
-  return out;
+  const { board = {} } = await chrome.storage.local.get('board');
+  return { me, fresh: BOARD_FRESH, players: board[me] ?? {} };
 }
 
-// The players of the "Global" leaderboard: the player's friends, those the relay saw lately in the "beaux tirages"
-// and those who share their Perles with Aquaman (not every player of the game: the game gives no such list).
-// [{ id, name }]
+// The series whose album the logged-in player claimed (their badge): by id and by slug.
+async function claimedAlbums(fresh = false) {
+  const sc = await myShowcase(fresh ? 0 : 60e3);
+  const series = (sc.albums ?? []).map((a) => a?.series).filter(Boolean);
+  // (the strip of the series shows each one by its cover, /api/covers/<slug>.webp: its slug, and its cover's own name)
+  const covers = series.map((s) => imageKey(s.cover)?.replace(/\.[a-z0-9]+$/i, '')).filter(Boolean);
+  return { ids: series.map((s) => s.id).filter(Boolean), slugs: [...new Set([...series.map((s) => s.slug).filter(Boolean), ...covers])] };
+}
+
+// The players of the "Global" leaderboard: the player's friends and those the relay saw lately in the "beaux tirages"
+// (not every player of the game: the game gives no such list). [{ id, name }]
 async function globalPlayers() {
   const me = await myId();
   const read = async (path) => {
@@ -408,15 +483,14 @@ async function globalPlayers() {
     if (!res.ok) throw new Error(`relay_${res.status}`);
     return (await res.json()).players ?? [];
   };
-  const [mates, seen, rich] = await Promise.all([
+  const [mates, seen] = await Promise.all([
     friends()
       .then((f) => f.friends)
       .catch(() => []),
-    read('/players?limit=150').catch(() => []),
-    read('/perles/top?limit=150').catch(() => [])
+    read('/players?limit=150').catch(() => [])
   ]);
   const byId = new Map();
-  for (const p of [...mates, ...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
+  for (const p of [...mates, ...seen]) if (validPlayer(p?.id) && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
   return { me, players: [...byId.values()] };
 }
 
@@ -426,14 +500,141 @@ async function friends() {
   let list = [];
   let friendsError = null;
   try {
-    list = (await cached('friends', 5 * 60e3, () => social('/friends'))).friends ?? [];
+    list = (await cached(`friends:${me}`, 5 * 60e3, () => social('/friends'))).friends ?? [];
   } catch (e) {
     friendsError = e.message;
   }
   return {
     me,
     friendsError,
-    friends: list.filter((f) => f?.user?.id && f.user.id !== me).map((f) => ({ id: f.user.id, name: f.user.name ?? null }))
+    friends: list.filter((f) => validPlayer(f?.user?.id) && f.user.id !== me).map((f) => ({ id: f.user.id, name: f.user.name ?? null }))
+  };
+}
+
+// ---------- progress of the collection ----------
+// One reading a day of the logged-in player's collection (the first and the last of the day), kept on this device for
+// STATS_DAYS days under their id: the cards gained each day are the difference between two days.
+
+const STATS_DAYS = 120;
+const dayKey = (t = Date.now()) => new Date(t).toLocaleDateString('sv-SE'); // "2026-11-07", local time
+
+// Series complete: those whose every card is owned, from the game's list of series; else the albums claimed.
+const completeSeries = (series, sc) => (Array.isArray(series) && series.length ? series.filter((s) => s.total > 0 && s.owned >= s.total).length : sc?.albums?.length ?? 0);
+
+async function recordDay(id, point) {
+  const { collectionDays = {} } = await chrome.storage.local.get('collectionDays');
+  const days = { ...(collectionDays[id] ?? {}) };
+  const key = dayKey(point.at);
+  days[key] = { first: days[key]?.first ?? point, last: point };
+  collectionDays[id] = Object.fromEntries(
+    Object.keys(days)
+      .sort()
+      .slice(-STATS_DAYS)
+      .map((k) => [k, days[k]])
+  );
+  await chrome.storage.local.set({ collectionDays });
+  return collectionDays[id];
+}
+
+// Reads the player's collection and keeps the reading of the day. { id, sc, series, point, days }
+async function collectionSnapshot() {
+  const id = await myId();
+  const [sc, series] = await Promise.all([myShowcase(), seriesList().catch(() => null)]);
+  const point = { owned: sc.owned ?? 0, total: sc.total ?? 0, complete: completeSeries(series, sc), at: Date.now() };
+  const days = await recordDay(id, point);
+  return { id, sc, series, point, days };
+}
+
+// ---------- cards of each rarity, counted series by series ----------
+// The game's catalogue gives only part of its cards (none of the Commune and Rare ones), and a collection 2 000 copies
+// at most: the cards of each rarity are counted from the cards of each series (/cards?manga=, with the player's
+// copies of each card). Each series' count is kept on this device under the account, and read again only when the
+// game's figures of that series changed (its cards owned or its total) or after RARITY_AGAIN; RARITY_STEP series at
+// most per call, the window asks again until every series is counted.
+
+const RARITY_STEP = 40;
+const RARITY_AGAIN = 24 * 3600e3; // (the copies of a series may change without its cards owned changing)
+let rarityBusy = Promise.resolve();
+
+function rarityCounts(budget = RARITY_STEP) {
+  const run = rarityBusy.then(() => countRarities(budget));
+  rarityBusy = run.catch(() => {});
+  return run;
+}
+
+async function countRarities(budget) {
+  const me = await myId();
+  const series = (await seriesList()).filter((s) => s?.id);
+  const { rarityCache = {} } = await chrome.storage.local.get('rarityCache');
+  const mine = { ...(rarityCache[me] ?? {}) };
+  const now = Date.now();
+  const current = (s) => {
+    const k = mine[s.id];
+    return !!k && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && now - k.at < RARITY_AGAIN;
+  };
+  const todo = series.filter((s) => !current(s));
+  const batch = todo.slice(0, Math.max(0, budget));
+  let failed = 0;
+  for (let i = 0; i < batch.length; i += 3)
+    await Promise.all(
+      batch.slice(i, i + 3).map(async (s) => {
+        try {
+          const cards = (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? [];
+          const by = {}; // rarity -> [unique cards owned, cards, copies]
+          for (const c of cards) {
+            if (!RANK[c?.rarity]) continue;
+            const r = (by[c.rarity] ??= [0, 0, 0]);
+            r[1]++;
+            if (c.owned > 0) {
+              r[0]++;
+              r[2] += c.owned;
+            }
+          }
+          mine[s.id] = { owned: s.owned ?? 0, total: s.total ?? 0, at: Date.now(), by };
+        } catch {
+          failed++;
+        }
+      })
+    );
+  const ids = new Set(series.map((s) => s.id));
+  for (const k in mine) if (!ids.has(k)) delete mine[k]; // (a series the game no longer has)
+  if (batch.length) await chrome.storage.local.set({ rarityCache: { ...rarityCache, [me]: mine } });
+  const byRarity = Object.fromEntries(Object.keys(RANK).map((r) => [r, { owned: 0, total: 0, copies: 0 }]));
+  for (const s of series)
+    for (const [r, [owned, total, copies]] of Object.entries(mine[s.id]?.by ?? {})) {
+      byRarity[r].owned += owned;
+      byRarity[r].total += total;
+      byRarity[r].copies += copies;
+    }
+  const counted = series.filter((s) => mine[s.id]).length;
+  return { byRarity, counted, series: series.length, pending: todo.length - batch.length + failed, failed };
+}
+
+// The player's progress: unique cards and missing ones, series complete, cards of each rarity (as counted so far, see
+// rarityCounts), and the cards gained each day.
+async function collectionStats() {
+  const [{ id, sc, series, point, days }, rarities] = await Promise.all([collectionSnapshot(), rarityCounts(0).catch(() => null)]);
+  const keys = Object.keys(days).sort();
+  const history = keys.map((k, i) => ({
+    day: k,
+    owned: days[k].last.owned,
+    complete: days[k].last.complete,
+    // cards gained that day: since the last reading of the day before it, else since the first reading of the day
+    gain: days[k].last.owned - (i > 0 ? days[keys[i - 1]].last.owned : days[k].first.owned),
+    since: i > 0 ? keys[i - 1] : null
+  }));
+  return {
+    id,
+    name: sc.player?.name ?? null,
+    owned: point.owned,
+    total: point.total,
+    missing: Math.max(0, point.total - point.owned),
+    complete: point.complete,
+    series: Array.isArray(series) ? series.length : null,
+    albums: sc.albums?.length ?? 0,
+    rarities, // { byRarity, counted, series, pending } or null
+    history,
+    today: dayKey()
   };
 }
 
@@ -465,6 +666,7 @@ function collectCards(data) {
           image: v.image,
           rarity: v.rarity,
           types: Array.isArray(v.types) ? v.types : [],
+          owned: typeof v.owned === 'number' ? v.owned : null, // the player's copies, when the catalogue says it
           extra: !!(v.variant || v.seasonId || v.baseId),
           // a card of the Halloween event: its type, its season or its picture say so
           halloween: [v.types, v.seasonId, v.season?.id, v.season?.name, v.season?.slug, v.season?.title, v.event, v.theme, v.image]
@@ -998,9 +1200,12 @@ async function searchedImages() {
 // The copies of another player by image key ({ found, private, byImage }), for the filter "Il lui manque" of the
 // exchanges: by their id, else by their name among the friends, then among the players the relay saw.
 async function playerOwnership({ id, name } = {}) {
-  if (typeof id !== 'string' || !id) id = name ? await playerIdByName(name) : null;
-  if (!id) return { found: false };
+  if (!validPlayer(id)) id = typeof name === 'string' && name ? await playerIdByName(name) : null;
+  // (the partner of an exchange is never the logged-in player: their own collection is not taken for the partner's)
+  if (!validPlayer(id) || id === (await myId())) return { found: false };
   const sc = await showcase(id);
+  // (the collection read must be that of the partner named in the window)
+  if (typeof name === 'string' && name && sc?.player?.name && fold(sc.player.name) !== fold(name)) return { found: false };
   if (sc?.private) return { found: true, private: true };
   return { found: true, private: false, byImage: countCopies(sc).byImage };
 }
@@ -1604,28 +1809,22 @@ const HELLO_EVERY = 9.5 * 60e3; // content.js says hello every 10 minutes while 
 // revoked: the author took Aquaman back from this player; asked again at each start until given back.
 async function sayHello(kind) {
   const id = await myId();
-  const { helloAt = 0, helloKind, helloFor, helloShare, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'helloShare', 'revokedFor']);
+  const { helloAt = 0, helloKind, helloFor, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'revokedFor']);
   const revoked = revokedFor === id;
-  // The Perles of the player go with it when they share them (the leaderboard); a change of the setting is told at once.
-  const share = (await getSettings()).sharePerles !== false;
-  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id && helloShare === share) return { ok: true, skipped: true, revoked };
+  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true, revoked };
   let name = null;
   try {
     name = (await showcase(id)).player?.name ?? null;
   } catch {}
-  let perles = null;
-  if (share)
-    try {
-      perles = (await gameStatus()).perles;
-    } catch {}
+  // "perles: null": the Perles an older version shared for the leaderboard are taken back from the relay.
   const res = await fetch(`${RELAY}/hello`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version, ...(share && perles == null ? {} : { perles }) })
+    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version, perles: null })
   });
   if (!res.ok) return { ok: false, revoked };
   const now = !!(await res.json().catch(() => null))?.revoked;
-  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id, helloShare: share });
+  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
   if (now) await chrome.storage.local.set({ revokedFor: id });
   else if (revoked) await chrome.storage.local.remove('revokedFor');
   return { ok: true, revoked: now };
@@ -1763,8 +1962,15 @@ async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
-      case 'shared-perles':
-        return { perles: await sharedPerles(Array.isArray(msg.ids) ? msg.ids : []) };
+      case 'collection-stats':
+        if (msg.fresh) forget('showcase:', 'series');
+        return await collectionStats();
+      case 'rarity-counts':
+        return await rarityCounts();
+      case 'collection-snapshot': {
+        const { point } = await collectionSnapshot();
+        return { ok: true, owned: point.owned };
+      }
       case 'global-players':
         return await globalPlayers();
       case 'searched-images':
@@ -1776,7 +1982,11 @@ async function answer(msg) {
       case 'friends':
         return await friends();
       case 'player':
-        return await playerSummary(msg.id);
+        return await playerSummary(msg.id, !!msg.fresh);
+      case 'board-known':
+        return await boardKnown();
+      case 'claimed-albums':
+        return await claimedAlbums(!!msg.fresh);
       case 'boosters':
         return await boosterReport(msg.query, msg.rarity, msg.field);
       case 'access':
@@ -1926,9 +2136,13 @@ async function handle(msg) {
       return scriptUpdate();
     case 'install-update':
       return { error: 'userscript' };
-    case 'open':
-      location.assign(msg.href);
+    case 'open': {
+      // (only a page of the game or Aquaman's GitHub pages: never "javascript:" or another site)
+      const url = safeHref(msg.href);
+      if (!url) return { error: 'bad_href' };
+      location.assign(url);
       return { ok: true };
+    }
     default:
       return answer(msg);
   }
@@ -2185,9 +2399,29 @@ async function handle(msg) {
   }
 
   // The copies met in the site's answers (copy id -> { cardId, copyId, name, serial }), and the names of the cards:
-  // the rows of the "Vendre mes doublons" window are found there by their name and number.
+  // the rows of the "Vendre mes doublons" window are found there by their name and number. Only the logged-in
+  // player's own copies: the collection of another player the page reads (a profile, the partner of an exchange…) is
+  // never learnt, so that their copies are never taken for the player's.
   const seenCopies = new Map();
   const cardNames = new Map();
+  let selfId = null; // the logged-in player, from the game's /me answers
+  const idOfMe = (me) => [me?.id, me?.userId, me?.player?.id, me?.user?.id].find((x) => typeof x === 'string' && x) ?? null;
+  function learnSelf(me) {
+    const id = idOfMe(me);
+    if (!id || id === selfId) return;
+    if (selfId) seenCopies.clear(); // another account: the copies of the previous one are forgotten
+    selfId = id;
+  }
+  // True when an answer of this path may hold the player's own copies: not another player's collection.
+  function ownAnswer(path) {
+    const player = path.match(PLAYER_PATH)?.[1];
+    if (!player) return true;
+    try {
+      return !!selfId && decodeURIComponent(player) === selfId;
+    } catch {
+      return false;
+    }
+  }
 
   function learnCopies(body) {
     let left = 300000;
@@ -2432,7 +2666,13 @@ async function handle(msg) {
               })
             );
       }
-      if (path && res.ok && method === 'GET' && !FEED.test(path))
+      if (path && res.ok && method === 'GET' && ME.test(path))
+        res
+          .clone()
+          .json()
+          .then(learnSelf)
+          .catch(() => {});
+      if (path && res.ok && method === 'GET' && !FEED.test(path) && ownAnswer(path))
         res
           .clone()
           .json()
@@ -5469,6 +5709,254 @@ html.aqm-grabbing * {
   font-weight: 800;
   text-decoration: none;
 }
+
+/* ---------- Collection : « Ma progression » ---------- */
+
+/* Le bouton prend les classes du bouton « Ma vitrine » du jeu (et son icône celles de l'icône du jeu). Il est posé à
+   droite du titre « Ta collection », hors du flux de la page : le titre garde sa largeur, les boutons du jeu leur place. */
+[data-aqm-stats-title] {
+  position: relative;
+}
+.aqm-stats-open {
+  position: absolute !important;
+  top: 50% !important;
+  left: 100% !important;
+  margin: 0 0 0 20px !important;
+  transform: translateY(-50%) !important;
+  white-space: nowrap;
+  text-shadow: none;
+  background-clip: border-box;
+  -webkit-background-clip: border-box;
+}
+/* Pas de place à droite du titre : juste en dessous. */
+.aqm-stats-open.is-below {
+  position: static !important;
+  display: flex;
+  width: fit-content;
+  margin: 12px 0 0 !important;
+  transform: none !important;
+}
+/* Pendant le chargement de la page : posé par-dessus, à la même place (coordonnées de la page). */
+.aqm-stats-open.is-early {
+  position: absolute !important;
+  top: var(--aqm-y) !important;
+  left: var(--aqm-x) !important;
+  margin: 0 !important;
+  z-index: 5;
+}
+.aqm-stats-open.is-early.is-below {
+  transform: none !important;
+  width: fit-content;
+}
+.aqm-stats-ico {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.aqm-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.aqm-progress-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 14px;
+  background: var(--aqm-card);
+}
+.aqm-progress-pct {
+  font-size: 40px;
+  font-weight: 900;
+  line-height: 1.1;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-bar.aqm-bar-big {
+  height: 8px;
+  margin-top: 8px;
+}
+.aqm-progress-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+.aqm-progress-tile {
+  padding: 12px 14px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 12px;
+  background: var(--aqm-card);
+}
+.aqm-progress-tile .aqm-label {
+  margin: 0 0 4px;
+}
+.aqm-progress-tile strong {
+  display: block;
+  font-size: 24px;
+  font-weight: 900;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-progress-tile small {
+  font-size: 11px;
+  color: var(--aqm-muted);
+}
+.aqm-progress-h {
+  margin: 6px 0 0;
+  font-size: 14px;
+  font-weight: 900;
+  color: #fff;
+}
+.aqm-progress-rarities {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-progress-rarity {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--aqm-card);
+}
+.aqm-progress-rname {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.aqm-progress-rname small,
+.aqm-progress-rbar small,
+.aqm-progress-copies {
+  font-size: 11px;
+  color: var(--aqm-muted);
+}
+.aqm-progress-rbar p {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-progress-rbar strong {
+  color: #fff;
+  font-weight: 900;
+}
+.aqm-progress-copies {
+  min-width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Couleur de chaque rareté, celle de son code. */
+.aqm-bar-N > span { background: #d4d4d8; }
+.aqm-bar-R > span { background: #60a5fa; }
+.aqm-bar-SR > span { background: #a78bfa; }
+.aqm-bar-SSR > span { background: #facc15; }
+.aqm-bar-UR > span { background: #f472b6; }
+.aqm-bar-SEC > span { background: linear-gradient(90deg, #c4b5fd, #e2e8f0); }
+
+/* Cartes gagnées chaque jour : une barre par jour, la valeur au-dessus, le jour en dessous. */
+.aqm-days {
+  display: grid;
+  grid-template-columns: repeat(14, 1fr);
+  gap: 2px;
+  height: 150px;
+  padding: 12px 8px 8px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 12px;
+  background: var(--aqm-card);
+}
+.aqm-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  border-radius: 6px;
+  outline: none;
+}
+.aqm-day:hover,
+.aqm-day:focus-visible {
+  background: rgba(255, 255, 255, 0.05);
+}
+.aqm-day-val {
+  height: 16px;
+  font-size: 10px;
+  font-weight: 800;
+  color: #e4e4e7;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.aqm-day-col {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex: 1;
+  width: 100%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.aqm-day-fill {
+  display: block;
+  width: min(18px, 70%);
+  border-radius: 4px 4px 0 0;
+  background: #3b82f6;
+}
+.aqm-day.is-today .aqm-day-fill {
+  background: #60a5fa;
+}
+.aqm-day.is-empty .aqm-day-col {
+  border-bottom-style: dashed;
+}
+.aqm-day-name {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--aqm-dim);
+}
+.aqm-day.is-today .aqm-day-name {
+  color: #fff;
+  font-weight: 800;
+}
+
+@media (max-width: 640px) {
+  .aqm-progress-pct {
+    font-size: 32px;
+  }
+  .aqm-progress-rarity {
+    grid-template-columns: 1fr auto;
+  }
+  .aqm-progress-rbar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .aqm-days {
+    height: 130px;
+    padding: 10px 4px 6px;
+  }
+  .aqm-day-val {
+    font-size: 9px;
+  }
+}
+
+/* Classement : ce qui a été gardé, et « Actualiser ». */
+.aqm-board-refresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: -4px 0 10px;
+  font-size: 12px;
+}
+.aqm-board-refresh:empty {
+  display: none;
+}
+.aqm-board-refresh .aqm-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 `;
   document.head.appendChild(style);
   // ---------- 5. src/content/tutorial.js et content.js : visite, nouveautés, puis tout ce qui s'affiche sur le site ----------
@@ -5524,6 +6012,13 @@ const TOUR = [
     target: '.aqm-fav-bar, .aqm-star'
   },
   {
+    id: 'progression',
+    title: 'Ta progression',
+    text: 'À côté de « Ta collection », « Ma progression » montre le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes gagnées chaque jour.',
+    page: '/jeu/collection',
+    target: '.aqm-stats-open'
+  },
+  {
     id: 'tirages',
     title: 'Les beaux tirages',
     text: 'Sur l’accueil, les cartes des beaux tirages des joueurs sont affichées en plus grand.',
@@ -5573,6 +6068,16 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.4.9',
+    items: [
+      ['Collection : un bouton « Ma progression » à côté de « Ta collection » (aussi dans Plus) : le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes uniques gagnées chaque jour sur les 14 derniers jours.', 'progression'],
+      ['Collection : le bouton « Masquer séries avec badge » cache les séries dont tu as déjà réclamé l’album.', 'series'],
+      ['Classement : les joueurs déjà lus gardent leur place et leurs chiffres ; seuls ceux lus il y a plus d’1 h (et toi) sont relus, sans tout retélécharger. « Actualiser » relit tout le monde.', 'classement'],
+      ['Classement : l’onglet « Perles » est retiré. Aquaman n’envoie plus ton stock de Perles, et celui déjà partagé est effacé du relais.'],
+      ['Collections : Aquaman vérifie que chaque vitrine lue est bien celle du joueur demandé, et oublie tout ce qu’il a lu dès que tu changes de compte : la collection d’un autre joueur n’est jamais prise pour la tienne.']
+    ]
+  },
   {
     version: '1.4.8',
     items: [
@@ -5735,6 +6240,8 @@ const CHANGES = [
 
   const ICON_DOTS =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M144,128a16,16,0,1,1-16-16A16,16,0,0,1,144,128ZM60,112a16,16,0,1,0,16,16A16,16,0,0,0,60,112Zm136,0a16,16,0,1,0,16,16A16,16,0,0,0,196,112Z"/></svg>';
+  const ICON_CHART =
+    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M232,208a8,8,0,0,1-8,8H32a8,8,0,0,1-8-8V48a8,8,0,0,1,16,0V156.69l50.34-50.35a8,8,0,0,1,11.32,0L128,132.69,180.69,80H160a8,8,0,0,1,0-16h40a8,8,0,0,1,8,8v40a8,8,0,0,1-16,0V91.31l-58.34,58.35a8,8,0,0,1-11.32,0L96,123.31l-56,56V200H224A8,8,0,0,1,232,208Z"/></svg>';
   const ICON_TROPHY =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M232,64H208V48a8,8,0,0,0-8-8H56a8,8,0,0,0-8,8V64H24A16,16,0,0,0,8,80V96a40,40,0,0,0,40,40h3.65A80.13,80.13,0,0,0,120,191.61V216H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16H136V191.58c31.94-3.23,58.44-25.64,68.08-55.58H208a40,40,0,0,0,40-40V80A16,16,0,0,0,232,64ZM48,120A24,24,0,0,1,24,96V80H48v32q0,4,.39,8Zm144-8.9c0,35.52-28.49,64.64-63.51,64.9H128a64,64,0,0,1-64-64V56H192ZM232,96a24,24,0,0,1-24,24h-.5a81.81,81.81,0,0,0,.5-8.9V80h24Z"/></svg>';
   const ICON_PACK =
@@ -6645,10 +7152,11 @@ const CHANGES = [
 
   // Messages posted by inject.js about the site's own requests.
   function onPageMessage(e) {
-    if (e.source !== window || typeof e.data?.aquaman !== 'string') return;
+    if (e.source !== window || e.origin !== location.origin || typeof e.data?.aquaman !== 'string') return;
     if (e.data.aquaman === 'collection-stale') {
       owned = null;
       send({ type: 'collection-stale' });
+      if (on('collectionStats')) snapCollection(true);
       setTimeout(schedule, 1500);
       setTimeout(() => checkRoom(20e3), 3000); // a card searched may just have been obtained
     } else if (e.data.aquaman === 'sell-refused' && e.data.item?.copyId)
@@ -6662,7 +7170,8 @@ const CHANGES = [
     }
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
-    else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && typeof e.data.name === 'string') playersSeen.set(foldName(e.data.name), e.data.id);
+    else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(e.data.id) && typeof e.data.name === 'string' && e.data.name.trim())
+      playersSeen.set(foldName(e.data.name), e.data.id);
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
       if (batch) batch.opened = e.data.boosters.length;
       send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
@@ -6831,10 +7340,11 @@ const CHANGES = [
     menu = h(
       'div',
       { class: 'aqm-root aqm-menu', role: 'menu' },
-      item('Classement', 'Amis ou global : cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
+      item('Classement', 'Amis ou global : cartes uniques et séries complètes', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
       item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
+      item('Ma progression', 'Ta collection, par rareté et jour par jour', ICON_CHART, openCollectionStats),
       item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
       item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews()),
       item('Réglages', 'Activer ou couper chaque fonction d’Aquaman', ICON_GEAR, openSettings),
@@ -6981,15 +7491,14 @@ const CHANGES = [
     );
 
   // ---------- friends' leaderboard ----------
-  // "Amis": the player and their friends. "Global": the friends too, and the players the relay saw lately in the "beaux tirages" and
-  // those who share their Perles with Aquaman (not every player: the game gives no such list). The collections are read
-  // only for the tabs that need them; the Perles are those the players of Aquaman share (sharePerles).
+  // "Amis": the player and their friends. "Global": the friends too and the players the relay saw lately in the "beaux
+  // tirages" (not every player: the game gives no such list).
 
   async function openLeaderboard() {
-    const body = openOverlay('Classement', 'Toi et tes amis, ou plus largement, selon les cartes uniques, les séries complètes et les Perles.');
+    const body = openOverlay('Classement', 'Toi et tes amis, ou plus largement, selon les cartes uniques et les séries complètes.');
     let scope = 'friends';
     let sortBy = 'owned';
-    const scopes = { friends: null, global: null }; // { rows, note, perlesAsked } of each scope, once read
+    const scopes = { friends: null, global: null }; // { rows, note, collectionsAsked } of each scope, once read
     const scopeRow = h('div');
     const tabs = h('div');
     const status = h('p', { class: 'aqm-note' }, 'Chargement…');
@@ -7019,23 +7528,22 @@ const CHANGES = [
         chips(
           [
             ['owned', 'Cartes uniques'],
-            ['albums', 'Séries complètes'],
-            ['perles', 'Perles']
+            ['albums', 'Séries complètes']
           ],
           sortBy,
           (v) => {
             sortBy = v;
-            load();
             render();
           }
         )
       );
       const s = scopes[scope];
       status.textContent = s?.note ?? 'Chargement…';
+      paintRefresh();
       const rows = s?.rows ?? [];
       // A row counts once its number of the tab is known.
-      const known = (r) => (sortBy === 'perles' ? typeof r.perles === 'number' : r.state === 'ok');
-      const score = (r) => (!known(r) ? [-1, -1] : sortBy === 'perles' ? [r.perles, 0] : [r[sortBy], sortBy === 'owned' ? r.albums : r.owned]);
+      const known = (r) => r.state === 'ok';
+      const score = (r) => (!known(r) ? [-1, -1] : [r[sortBy], sortBy === 'owned' ? r.albums : r.owned]);
       const sorted = [...rows].sort((a, b) => {
         const [a1, a2] = score(a);
         const [b1, b2] = score(b);
@@ -7044,18 +7552,12 @@ const CHANGES = [
       let place = 0;
       const ok = rows.filter((r) => r.state === 'ok');
       const topAlbums = Math.max(0, ...ok.map((r) => r.albums));
-      const topPerles = Math.max(0, ...rows.map((r) => (typeof r.perles === 'number' ? r.perles : 0)));
       const bar = (part) => h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * Math.min(1, part || 0)).toFixed(2)}%` }));
       list.replaceChildren(
         ...sorted.map((r) => {
           if (known(r)) place++;
           let stats;
-          if (sortBy === 'perles')
-            stats =
-              typeof r.perles === 'number'
-                ? h('div', { class: 'aqm-stat is-on' }, h('strong', {}, perles(r.perles)), h('small', {}, 'en stock'), bar(topPerles ? r.perles / topPerles : 0))
-                : h('p', { class: 'aqm-muted', title: 'Seuls les joueurs qui utilisent Aquaman et partagent leurs Perles (réglage « Mes Perles au classement ») ont un montant.' }, r.perles === undefined ? 'Chargement…' : 'Non partagé');
-          else if (r.state !== 'ok') stats = h('p', { class: 'aqm-muted' }, r.state === 'private' ? 'Collection privée' : r.state === 'error' ? 'Collection indisponible' : 'Chargement…');
+          if (r.state !== 'ok') stats = h('p', { class: 'aqm-muted' }, r.state === 'private' ? 'Collection privée' : r.state === 'error' ? 'Collection indisponible' : 'Chargement…');
           else if (sortBy === 'owned')
             stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.owned)), h('small', {}, `/ ${fmt(r.total)} cartes`), bar(r.total ? r.owned / r.total : 0));
           else stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.albums)), h('small', {}, r.albums > 1 ? 'séries complètes' : 'série complète'), bar(topAlbums ? r.albums / topAlbums : 0));
@@ -7071,12 +7573,56 @@ const CHANGES = [
       );
     };
 
-    // The players of a scope, then what the tab shown needs: the Perles shared, or the collections (4 at a time).
-    async function load() {
+    // The players already read (on this device, for this account): shown at once in their places; only those read more
+    // than `fresh` ago (1 h), and the player, are read again. "Actualiser" reads them all again.
+    let board = null; // { fresh, players }
+    const info = new Map(); // player id -> their latest summary ({ private, owned, total, albums, at })
+    async function knownBoard() {
+      if (board) return;
+      try {
+        board = await ask({ type: 'board-known' });
+      } catch {
+        board = { fresh: 3600e3, players: {} };
+      }
+      for (const p of Object.values(board.players ?? {})) if (p?.id && !info.has(p.id)) info.set(p.id, p);
+    }
+    const apply = (row, p) => {
+      row.name ||= p.name;
+      row.at = p.at;
+      if (p.private) row.state = 'private';
+      else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+    };
+    const ago = (t) => {
+      const m = Math.round((Date.now() - t) / 60e3);
+      return m < 1 ? 'à l’instant' : m < 60 ? `il y a ${m} min` : m < 48 * 60 ? `il y a ${Math.round(m / 60)} h` : `il y a ${Math.round(m / 1440)} j`;
+    };
+    const refreshRow = h('div', { class: 'aqm-board-refresh' });
+    status.after(refreshRow);
+    const paintRefresh = () => {
+      const s = scopes[scope];
+      if (!s?.rows.length) return void refreshRow.replaceChildren();
+      const oldest = Math.min(...s.rows.filter((r) => r.at).map((r) => r.at));
+      refreshRow.replaceChildren(
+        h(
+          'span',
+          { class: 'aqm-muted' },
+          s.reading
+            ? `Mise à jour de ${fmt(s.reading)} joueur${s.reading > 1 ? 's' : ''}…`
+            : Number.isFinite(oldest)
+              ? `${s.kept ? `${fmt(s.kept)} joueur${s.kept > 1 ? 's' : ''} gardé${s.kept > 1 ? 's' : ''} sans tout retélécharger · ` : ''}lecture la plus ancienne : ${ago(oldest)}`
+              : ''
+        ),
+        h('button', { type: 'button', class: 'aqm-chip', disabled: s.reading ? true : null, onclick: () => load(true) }, 'Actualiser')
+      );
+    };
+
+    // The players of a scope, then their collections (4 at a time): those not known or too old only, unless force.
+    async function load(force = false) {
       const name = scope;
       let s = scopes[name];
+      if (s && force && !s.reading) s.collectionsAsked = false;
       if (!s) {
-        s = scopes[name] = { rows: [], note: 'Chargement…', perlesAsked: false, collectionsAsked: false };
+        s = scopes[name] = { rows: [], note: 'Chargement…', collectionsAsked: false, kept: 0, reading: 0 };
         try {
           if (name === 'friends') {
             const { me, friends, friendsError: error } = await ask({ type: 'friends' });
@@ -7089,7 +7635,7 @@ const CHANGES = [
           } else {
             const { me, players } = await ask({ type: 'global-players' });
             s.rows = [{ id: me, me: true }, ...players].map((p) => ({ ...p, state: 'idle' }));
-            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement tes amis, les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
+            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement tes amis et les joueurs vus récemment dans les « Beaux tirages ».`;
           }
         } catch (e) {
           s.note = e.message;
@@ -7097,32 +7643,35 @@ const CHANGES = [
         if (!alive()) return;
         later();
       }
-      if (sortBy === 'perles' && !s.perlesAsked) {
-        s.perlesAsked = true;
-        try {
-          const { perles: byId } = await ask({ type: 'shared-perles', ids: s.rows.map((r) => r.id) });
-          for (const r of s.rows) r.perles = typeof byId?.[r.id] === 'number' ? byId[r.id] : null;
-        } catch {
-          for (const r of s.rows) r.perles = null;
-        }
-        if (alive()) later();
-      }
-      if (sortBy !== 'perles' && !s.collectionsAsked) {
+      if (!s.collectionsAsked) {
         s.collectionsAsked = true;
-        for (const r of s.rows) r.state = 'loading';
+        await knownBoard();
+        if (!alive()) return;
+        const fresh = board.fresh ?? 3600e3;
+        const todo = [];
+        for (const r of s.rows) {
+          const p = info.get(r.id);
+          if (p) apply(r, p);
+          else r.state = 'loading';
+          if (force || r.me || !p || !(Date.now() - p.at < fresh)) todo.push(r);
+        }
+        s.kept = s.rows.length - todo.length;
+        s.reading = todo.length;
         later();
-        await eachLimited(s.rows, 4, async (row) => {
+        await eachLimited(todo, 4, async (row) => {
           if (!alive()) return;
           try {
-            const p = await ask({ type: 'player', id: row.id });
-            row.name ||= p.name;
-            if (p.private) row.state = 'private';
-            else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+            const p = await ask({ type: 'player', id: row.id, fresh: force });
+            info.set(row.id, p);
+            apply(row, p);
           } catch {
-            row.state = 'error';
+            if (!info.has(row.id)) row.state = 'error'; // (a player known before keeps their last numbers)
           }
+          s.reading--;
           later();
         });
+        s.reading = 0;
+        if (alive()) later();
       }
     }
 
@@ -8138,9 +8687,22 @@ const CHANGES = [
               strip.scrollTo?.({ left: 0, behavior: 'smooth' });
             },
             title: `Masquer les séries de ${SMALL_SERIES} personnages ou moins`
-          }, `Masquer séries <= ${SMALL_SERIES} persos`)
+          }, `Masquer séries <= ${SMALL_SERIES} persos`),
+          h('button', {
+            type: 'button',
+            class: 'aqm-chip aqm-sort-progress aqm-claimed-series',
+            'aria-pressed': 'false',
+            onclick: () => {
+              setClaimedHidden(!claimedHidden);
+              if (claimedHidden) loadClaimed(true);
+              sortByProgress(strip);
+              strip.scrollTo?.({ left: 0, behavior: 'smooth' });
+            },
+            title: 'Masquer les séries dont tu as déjà le badge (album réclamé)'
+          }, 'Masquer séries avec badge')
         )
       );
+    if (claimedHidden && Date.now() - claimedAt > 2 * 60e3) loadClaimed();
     sortByProgress(strip);
     keepStripPlace(strip);
     if (!seriesBySlug) return;
@@ -8204,6 +8766,40 @@ const CHANGES = [
       on ? sessionStorage.setItem(SMALL_ONLY_KEY, '1') : sessionStorage.removeItem(SMALL_ONLY_KEY);
     } catch {}
   }
+  // "Masquer séries avec badge": the series whose album the player claimed are hidden (kept for the tab too). Their
+  // slugs come from the player's collection (its albums), matched with the cover of each series of the strip.
+  const CLAIMED_KEY = 'aqm-hide-claimed';
+  let claimedHidden = (() => {
+    try {
+      return sessionStorage.getItem(CLAIMED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  })();
+  function setClaimedHidden(on) {
+    claimedHidden = on;
+    try {
+      on ? sessionStorage.setItem(CLAIMED_KEY, '1') : sessionStorage.removeItem(CLAIMED_KEY);
+    } catch {}
+  }
+  let claimedSlugs = null; // Set of the slugs of the series with a badge, once read
+  let claimedAt = 0;
+  async function loadClaimed(fresh = false) {
+    claimedAt = Date.now();
+    const res = await send({ type: 'claimed-albums', fresh });
+    if (!res || res.error || !Array.isArray(res.slugs)) return;
+    claimedSlugs = new Set(res.slugs);
+    const strip = seriesStrip();
+    if (strip) sortByProgress(strip);
+  }
+  const coverSlug = (el) => {
+    const src = el.querySelector('img[src*="/api/covers/"]')?.getAttribute('src');
+    try {
+      return src ? decodeURIComponent(src.match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? '') : '';
+    } catch {
+      return '';
+    }
+  };
   function setByProgress(on) {
     byProgress = on;
     try {
@@ -8308,9 +8904,15 @@ const CHANGES = [
     const small = strip.previousElementSibling?.querySelector('.aqm-small-series');
     small?.classList.toggle('is-on', smallOnly);
     small?.setAttribute('aria-pressed', String(smallOnly));
-    // Hidden: the small series. "Toutes les séries", the series shown and those without a count stay.
+    const claimedChip = strip.previousElementSibling?.querySelector('.aqm-claimed-series');
+    claimedChip?.classList.toggle('is-on', claimedHidden);
+    claimedChip?.setAttribute('aria-pressed', String(claimedHidden));
+    // Hidden: the small series, the series with a badge. "Toutes les séries", the series shown and those without a
+    // count stay.
     for (const { el, c, all } of rows) {
-      const hide = smallOnly && !all && c && c.total <= SMALL_SERIES && el.getAttribute('aria-checked') !== 'true' && !el.querySelector('[aria-checked="true"]');
+      const picked = el.getAttribute('aria-checked') === 'true' || !!el.querySelector('[aria-checked="true"]');
+      const claimed = claimedHidden && !!claimedSlugs && !all && !picked && claimedSlugs.has(coverSlug(el));
+      const hide = claimed || (smallOnly && !all && c && c.total <= SMALL_SERIES && !picked);
       const display = hide ? 'none' : '';
       if (el.style.display !== display) el.style.display = display;
     }
@@ -8794,6 +9396,284 @@ const CHANGES = [
     // (no progress of the waiting cards here: drawn again at each series, it made the page jump; it stays at the
     // bottom of the screen and in "Séries favorites")
     box.replaceChildren(fav, want, note);
+  }
+
+  // ---------- collection: "Ma progression" beside the "Ta collection" title ----------
+
+  // The button sits at the right of the game's title, out of the page's flow (absolute, inside the title): the title
+  // keeps its width and the game's buttons ("Ma vitrine"…) their place. It has the look of "Ma vitrine" (its classes,
+  // its icon's, and the text styles the title would otherwise give it). Where there is no room at the right of the
+  // title (a narrow screen, the game's buttons in the way), it goes under the title instead.
+  const statsTitle = () => [...document.querySelectorAll('main h1, h1')].find((el) => !el.closest('.aqm-root, .aqm-overlay') && /^\s*ta\s+collection/i.test(el.textContent));
+  const vitrineButton = () => [...document.querySelectorAll('main button, main a')].find((b) => !b.closest('.aqm-root, .aqm-overlay, .aqm-stats-open') && /^\s*ma vitrine\s*$/i.test(b.textContent));
+
+  function markCollectionStats() {
+    if (!location.pathname.startsWith('/jeu/collection')) return;
+    const shown = document.querySelector('.aqm-stats-open');
+    // (placed again only when the title or the game's buttons change size: see watchStatsPlace, no measure here)
+    if (shown?.isConnected && !shown.classList.contains('is-early')) return;
+    const title = statsTitle();
+    const vitrine = vitrineButton();
+    if (!title || !vitrine) return;
+    // The button shown over the page while it loaded (earlyStatsButton) goes into the title, at the same place.
+    const btn = shown?.isConnected ? shown : statsButton(vitrine);
+    stopEarlyStats();
+    btn.classList.remove('is-early');
+    btn.style.removeProperty('--aqm-x');
+    btn.style.removeProperty('--aqm-y');
+    title.setAttribute('data-aqm-stats-title', '');
+    title.append(btn);
+    placeStatsButton();
+    watchStatsPlace(title);
+  }
+
+  // The button is placed again when the title or the row of the game's buttons changes size (fonts loaded, a narrower
+  // window…), and only then.
+  let statsWatch = null;
+  function watchStatsPlace(title) {
+    statsWatch?.disconnect();
+    statsWatch = new ResizeObserver(() => placeStatsButton());
+    statsWatch.observe(title);
+    const row = vitrineButton()?.parentElement;
+    if (row) statsWatch.observe(row);
+  }
+
+  // The button, with the look of the game's "Ma vitrine".
+  function statsButton(vitrine) {
+    const gameIcon = vitrine.querySelector('svg');
+    const icon = h('span', { html: ICON_CHART }).firstElementChild;
+    icon.setAttribute('class', gameIcon?.getAttribute('class') || 'aqm-stats-ico');
+    const btn = h(
+      'button',
+      {
+        type: 'button',
+        class: `${vitrine.className} aqm-stats-open`,
+        title: 'Ta progression : pourcentage de la collection, cartes par rareté, séries complètes et cartes gagnées chaque jour',
+        onclick: openCollectionStats
+      },
+      icon,
+      'Ma progression'
+    );
+    // (inside the title, the button would take its big italic font: it gets the text styles of "Ma vitrine")
+    const cs = getComputedStyle(vitrine);
+    for (const p of ['font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing', 'line-height', 'text-transform', 'color'])
+      btn.style.setProperty(p, cs.getPropertyValue(p));
+    btn.style.setProperty('-webkit-text-fill-color', cs.getPropertyValue('color'));
+    return btn;
+  }
+
+  // While the page loads, Aquaman changes nothing inside it (React would not find what it expects: error #418): the
+  // button is shown at once over the page (at the end of <body>, which React leaves alone), at the place it will
+  // have beside the title, and follows the title until markCollectionStats puts it in.
+  let earlyTimer = 0;
+  let earlyWatch = null;
+  function stopEarlyStats() {
+    clearInterval(earlyTimer);
+    earlyTimer = 0;
+    earlyWatch?.disconnect();
+    earlyWatch = null;
+  }
+  function earlyStatsButton() {
+    if (!location.pathname.startsWith('/jeu/collection') || !on('collectionStats')) return;
+    const since = Date.now();
+    const look = () => {
+      if (stopped || document.querySelector('.aqm-stats-open')) return;
+      const title = statsTitle();
+      const vitrine = vitrineButton();
+      if (!title || !vitrine || !document.body) return void (Date.now() - since < 15e3 && setTimeout(look, 80));
+      const btn = statsButton(vitrine);
+      btn.classList.add('aqm-root', 'is-early');
+      document.body.append(btn);
+      const follow = () => (btn.isConnected && btn.classList.contains('is-early') ? placeEarly(btn, title) : stopEarlyStats());
+      follow();
+      earlyWatch = new ResizeObserver(follow);
+      earlyWatch.observe(title);
+      earlyTimer = setInterval(follow, 250); // (the page's layout moves while it loads: fonts, pictures)
+    };
+    look();
+  }
+  // In page coordinates: at the right of the title, vertically centred, else under it (as placeStatsButton).
+  function placeEarly(btn, title) {
+    if (!title.isConnected) return void btn.remove();
+    const t = title.getBoundingClientRect();
+    const set = (x, y, below) => {
+      btn.style.setProperty('--aqm-x', `${Math.round(x + scrollX)}px`);
+      btn.style.setProperty('--aqm-y', `${Math.round(y + scrollY)}px`);
+      btn.classList.toggle('is-below', below);
+    };
+    set(t.right + 20, t.top + t.height / 2, false);
+    const b = btn.getBoundingClientRect();
+    const row = vitrineButton()?.parentElement?.getBoundingClientRect();
+    const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
+    if (blocked || b.right > document.documentElement.clientWidth - 8) set(t.left, t.bottom + 12, true);
+  }
+
+  // At the right of the title when it fits there, else under it.
+  function placeStatsButton() {
+    const btn = document.querySelector('.aqm-stats-open');
+    if (!btn?.isConnected || btn.classList.contains('is-early')) return;
+    btn.classList.remove('is-below');
+    const b = btn.getBoundingClientRect();
+    const row = vitrineButton()?.parentElement?.getBoundingClientRect();
+    const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
+    if (blocked || b.right > document.documentElement.clientWidth - 8) btn.classList.add('is-below');
+  }
+  let statsResize = 0;
+  addEventListener('resize', () => {
+    clearTimeout(statsResize);
+    statsResize = setTimeout(placeStatsButton, 150);
+  });
+
+  // One reading of the collection every 30 minutes on the game's pages, and soon after it changed (a booster opened, a
+  // purchase…): the cards gained each day are counted even when the window is never opened.
+  let snapAt = 0;
+  let snapTimer = 0;
+  function snapCollection(soon = false) {
+    if (soon) {
+      clearTimeout(snapTimer);
+      snapTimer = setTimeout(() => {
+        // (5 min at most between two: a reading downloads the whole collection, over 1 MB for a big one)
+        if (stopped || !on('collectionStats') || Date.now() - snapAt < 5 * 60e3) return;
+        snapAt = Date.now();
+        send({ type: 'collection-snapshot' });
+      }, 10e3);
+      return;
+    }
+    if (Date.now() - snapAt < 30 * 60e3) return;
+    snapAt = Date.now();
+    send({ type: 'collection-snapshot' });
+  }
+
+  const DAY_MS = 86400e3;
+  const dayOf = (t) => new Date(t).toLocaleDateString('sv-SE');
+  const dayLabel = (key, long = false) =>
+    new Date(`${key}T12:00:00`).toLocaleDateString('fr-FR', long ? { weekday: 'long', day: 'numeric', month: 'long' } : { day: 'numeric', month: 'short' });
+  const signed = (n) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : '0');
+
+  async function openCollectionStats() {
+    const body = openOverlay('Ma progression', 'Ta collection sur le total du jeu, carte par rareté, et les cartes que tu gagnes chaque jour.');
+    body.parentElement.classList.add('aqm-panel-wide');
+    const view = h('div', { class: 'aqm-progress' }, h('p', { class: 'aqm-note' }, 'Lecture de ta collection…'));
+    body.append(view);
+    let s;
+    try {
+      s = await ask({ type: 'collection-stats', fresh: true });
+    } catch (e) {
+      if (view.isConnected) view.replaceChildren(h('p', { class: 'aqm-note' }, e.message));
+      return;
+    }
+    if (!view.isConnected) return;
+    snapAt = Date.now();
+    const share = s.total ? s.owned / s.total : 0;
+    const bar = (part, cls = '') => h('span', { class: `aqm-bar${cls}` }, h('span', { style: `width:${(100 * Math.min(1, Math.max(0, part || 0))).toFixed(2)}%` }));
+    const byDay = new Map(s.history.map((d) => [d.day, d]));
+    const todayGain = byDay.get(s.today)?.gain ?? 0;
+    const tile = (label, value, sub) => h('div', { class: 'aqm-progress-tile' }, h('p', { class: 'aqm-label' }, label), h('strong', {}, value), sub ? h('small', {}, sub) : null);
+
+    // The headline: the share of the game's cards the player has.
+    const hero = h(
+      'div',
+      { class: 'aqm-progress-hero' },
+      h('div', {}, h('strong', { class: 'aqm-progress-pct' }, pct(share)), h('p', { class: 'aqm-muted' }, `${fmt(s.owned)} cartes uniques sur ${fmt(s.total)}`)),
+      bar(share, ' aqm-bar-big')
+    );
+    const tiles = h(
+      'div',
+      { class: 'aqm-progress-tiles' },
+      tile('Cartes manquantes', fmt(s.missing), s.total ? `${pct(s.missing / s.total)} du jeu` : null),
+      tile('Séries complètes', fmt(s.complete), s.series ? `sur ${fmt(s.series)} séries · ${fmt(s.albums)} album${s.albums > 1 ? 's' : ''} réclamé${s.albums > 1 ? 's' : ''}` : `${fmt(s.albums)} album${s.albums > 1 ? 's' : ''} réclamé${s.albums > 1 ? 's' : ''}`),
+      tile('Aujourd’hui', signed(todayGain), todayGain === 1 || todayGain === -1 ? 'carte unique' : 'cartes uniques')
+    );
+
+    // Cards of each rarity: unique cards owned on the game's total of that rarity, and the copies. Counted series by
+    // series (the first time, a few hundred series: the rows fill in while the window is open).
+    const rarityList = h('ul', { class: 'aqm-progress-rarities' });
+    const rarityNote = h('p', { class: 'aqm-note' });
+    const paintRarities = (counts) => {
+      const rows = counts ? Object.entries(counts.byRarity).filter(([, r]) => r.total || r.owned) : [];
+      const counting = !counts || counts.pending > 0;
+      rarityList.replaceChildren(
+        ...rows.map(([code, r]) =>
+          h(
+            'li',
+            { class: 'aqm-progress-rarity' },
+            h('span', { class: 'aqm-progress-rname' }, rarityCode(code), h('small', {}, RARITY_NAMES[code] ?? code)),
+            h(
+              'div',
+              { class: 'aqm-progress-rbar' },
+              h('p', {}, h('strong', {}, fmt(r.owned)), r.total ? h('small', {}, ` / ${fmt(r.total)} · ${pct(r.owned / r.total)}`) : null),
+              bar(r.total ? r.owned / r.total : 0, ` aqm-bar-${code}`)
+            ),
+            h('span', { class: 'aqm-progress-copies', title: 'Exemplaires de cette rareté (doublons compris)' }, `${fmt(r.copies)} ex.`)
+          )
+        )
+      );
+      rarityNote.textContent = !counts
+        ? 'Comptage des cartes par rareté…'
+        : counting
+          ? `Comptage des cartes par rareté : ${fmt(counts.counted)} séries sur ${fmt(counts.series)}… (la première fois seulement ; ensuite, seules les séries qui ont changé sont relues)`
+          : '';
+      rarityNote.hidden = !rarityNote.textContent;
+    };
+    paintRarities(s.rarities);
+    // The series not counted yet, RARITY_STEP at a time, while the window is open.
+    const countRest = async () => {
+      let counts = s.rarities;
+      for (let tries = 0; view.isConnected && (!counts || counts.pending > 0) && tries < 100; tries++) {
+        const before = counts?.counted ?? -1;
+        try {
+          counts = await ask({ type: 'rarity-counts' });
+        } catch {
+          break;
+        }
+        if (!view.isConnected) return;
+        paintRarities(counts);
+        if (counts.counted === before && counts.failed) break; // (the game refuses: tried again at the next opening)
+      }
+      if (view.isConnected && counts?.pending > 0) rarityNote.textContent = `Comptage arrêté à ${fmt(counts.counted)} séries sur ${fmt(counts.series)} : il reprendra à la prochaine ouverture.`;
+    };
+
+    // The cards gained each of the last 14 days (one bar a day; a day without a reading has none).
+    const days = [];
+    for (let i = 13; i >= 0; i--) days.push(dayOf(Date.now() - i * DAY_MS));
+    const top = Math.max(1, ...days.map((d) => byDay.get(d)?.gain ?? 0));
+    const chart = h(
+      'div',
+      { class: 'aqm-days', role: 'img', 'aria-label': 'Cartes uniques gagnées chaque jour, sur les 14 derniers jours' },
+      days.map((d) => {
+        const r = byDay.get(d);
+        const tip = r
+          ? `${dayLabel(d, true)} : ${signed(r.gain)} carte${Math.abs(r.gain) > 1 ? 's' : ''} unique${Math.abs(r.gain) > 1 ? 's' : ''}${r.since && r.since !== dayOf(new Date(`${d}T12:00:00`).getTime() - DAY_MS) ? ` (depuis le ${dayLabel(r.since)})` : ''} · ${fmt(r.owned)} au total`
+          : `${dayLabel(d, true)} : pas de relevé (Aquaman n’a pas été ouvert ce jour-là)`;
+        const gain = r?.gain ?? 0;
+        return h(
+          'div',
+          { class: `aqm-day${r ? '' : ' is-empty'}${d === s.today ? ' is-today' : ''}`, title: tip, tabindex: '0', 'aria-label': tip },
+          h('span', { class: 'aqm-day-val' }, r && gain ? signed(gain) : ''),
+          h('span', { class: 'aqm-day-col' }, h('span', { class: 'aqm-day-fill', style: `height:${r && gain > 0 ? Math.max(4, (100 * gain) / top).toFixed(1) : 0}%` })),
+          h('span', { class: 'aqm-day-name' }, d === s.today ? 'Auj.' : new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric' }))
+        );
+      })
+    );
+    const recorded = s.history.filter((d) => days.includes(d.day));
+    const twoWeeks = recorded.reduce((n, d) => n + d.gain, 0);
+    const first = s.history[0];
+    const fromStart = first ? s.owned - (first.owned - first.gain) : 0; // since the first reading kept
+    const daysNote = s.history.length <= 1
+      ? 'Aquaman relève ta collection chaque jour où tu joues : la courbe se remplit à partir d’aujourd’hui.'
+      : `${signed(twoWeeks)} cartes uniques sur les 14 derniers jours · ${signed(fromStart)} depuis le ${dayLabel(first.day)}, premier relevé.`;
+
+    view.replaceChildren(
+      hero,
+      tiles,
+      h('h3', { class: 'aqm-progress-h' }, 'Par rareté'),
+      rarityList,
+      rarityNote,
+      h('h3', { class: 'aqm-progress-h' }, 'Progression journalière'),
+      chart,
+      h('p', { class: 'aqm-note' }, daysNote)
+    );
+    countRest();
   }
 
   async function openFavorites() {
@@ -11192,6 +12072,8 @@ const CHANGES = [
     [markAlbum, 'albumButtons'],
     [markMissingTab, 'missingTab'],
     [markMissingSales, 'missingSales'],
+    [markCollectionStats, 'collectionStats'],
+    [snapCollection, 'collectionStats'],
     [markCardWho, 'cardWho'],
     [markCardListings, 'cardListings'],
     [markSellDialog, 'sellTools'],
@@ -11218,7 +12100,7 @@ const CHANGES = [
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
       if (!inGame && step !== markTrades && step !== checkAccess) continue;
       try {
@@ -11455,6 +12337,8 @@ const CHANGES = [
     if (e.source === window && e.data?.aquaman === 'boosters-refreshed') onBoostersRefreshed(e.data.id, !!e.data.ok);
   });
   Promise.all([loadShotStore(), featReady]).then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
+  // "Ma progression" beside the title of the Collection as soon as the page shows it (see earlyStatsButton).
+  featReady.then(() => !stopped && earlyStatsButton());
   // The series and favourites are read as soon as the script starts, in any page of the game: the stars of the
   // Collection come with its strip, even when it is the first page opened.
   featReady.then(() => {

@@ -1,4 +1,4 @@
-import { ORIGIN, REPO, SETTINGS, getSettings, setSettings } from '../lib/aquaman.js';
+import { ORIGIN, REPO, SETTINGS, getSettings, setSettings, safeHref } from '../lib/aquaman.js';
 
 const $ = (s) => document.querySelector(s);
 const FIREFOX = navigator.userAgent.includes('Firefox');
@@ -13,7 +13,9 @@ document.addEventListener('click', async (e) => {
   if (!link) return;
   e.preventDefault();
   const href = link.dataset.open;
-  if (href.startsWith('http')) chrome.tabs.create({ url: href });
+  const url = safeHref(href);
+  if (!url) return;
+  if (!url.startsWith(`${ORIGIN}/`)) chrome.tabs.create({ url });
   else await chrome.runtime.sendMessage({ type: 'open', href });
   window.close();
 });

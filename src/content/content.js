@@ -19,6 +19,8 @@
 
   const ICON_DOTS =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M144,128a16,16,0,1,1-16-16A16,16,0,0,1,144,128ZM60,112a16,16,0,1,0,16,16A16,16,0,0,0,60,112Zm136,0a16,16,0,1,0,16,16A16,16,0,0,0,196,112Z"/></svg>';
+  const ICON_CHART =
+    '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M232,208a8,8,0,0,1-8,8H32a8,8,0,0,1-8-8V48a8,8,0,0,1,16,0V156.69l50.34-50.35a8,8,0,0,1,11.32,0L128,132.69,180.69,80H160a8,8,0,0,1,0-16h40a8,8,0,0,1,8,8v40a8,8,0,0,1-16,0V91.31l-58.34,58.35a8,8,0,0,1-11.32,0L96,123.31l-56,56V200H224A8,8,0,0,1,232,208Z"/></svg>';
   const ICON_TROPHY =
     '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M232,64H208V48a8,8,0,0,0-8-8H56a8,8,0,0,0-8,8V64H24A16,16,0,0,0,8,80V96a40,40,0,0,0,40,40h3.65A80.13,80.13,0,0,0,120,191.61V216H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16H136V191.58c31.94-3.23,58.44-25.64,68.08-55.58H208a40,40,0,0,0,40-40V80A16,16,0,0,0,232,64ZM48,120A24,24,0,0,1,24,96V80H48v32q0,4,.39,8Zm144-8.9c0,35.52-28.49,64.64-63.51,64.9H128a64,64,0,0,1-64-64V56H192ZM232,96a24,24,0,0,1-24,24h-.5a81.81,81.81,0,0,0,.5-8.9V80h24Z"/></svg>';
   const ICON_PACK =
@@ -929,10 +931,11 @@
 
   // Messages posted by inject.js about the site's own requests.
   function onPageMessage(e) {
-    if (e.source !== window || typeof e.data?.aquaman !== 'string') return;
+    if (e.source !== window || e.origin !== location.origin || typeof e.data?.aquaman !== 'string') return;
     if (e.data.aquaman === 'collection-stale') {
       owned = null;
       send({ type: 'collection-stale' });
+      if (on('collectionStats')) snapCollection(true);
       setTimeout(schedule, 1500);
       setTimeout(() => checkRoom(20e3), 3000); // a card searched may just have been obtained
     } else if (e.data.aquaman === 'sell-refused' && e.data.item?.copyId)
@@ -946,7 +949,8 @@
     }
     else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
     else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
-    else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && typeof e.data.name === 'string') playersSeen.set(foldName(e.data.name), e.data.id);
+    else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(e.data.id) && typeof e.data.name === 'string' && e.data.name.trim())
+      playersSeen.set(foldName(e.data.name), e.data.id);
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
       if (batch) batch.opened = e.data.boosters.length;
       send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
@@ -1115,10 +1119,11 @@
     menu = h(
       'div',
       { class: 'aqm-root aqm-menu', role: 'menu' },
-      item('Classement', 'Amis ou global : cartes uniques, séries complètes et Perles', ICON_TROPHY, openLeaderboard),
+      item('Classement', 'Amis ou global : cartes uniques et séries complètes', ICON_TROPHY, openLeaderboard),
       item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
       item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
       item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
+      item('Ma progression', 'Ta collection, par rareté et jour par jour', ICON_CHART, openCollectionStats),
       item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
       item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews()),
       item('Réglages', 'Activer ou couper chaque fonction d’Aquaman', ICON_GEAR, openSettings),
@@ -1265,15 +1270,14 @@
     );
 
   // ---------- friends' leaderboard ----------
-  // "Amis": the player and their friends. "Global": the friends too, and the players the relay saw lately in the "beaux tirages" and
-  // those who share their Perles with Aquaman (not every player: the game gives no such list). The collections are read
-  // only for the tabs that need them; the Perles are those the players of Aquaman share (sharePerles).
+  // "Amis": the player and their friends. "Global": the friends too and the players the relay saw lately in the "beaux
+  // tirages" (not every player: the game gives no such list).
 
   async function openLeaderboard() {
-    const body = openOverlay('Classement', 'Toi et tes amis, ou plus largement, selon les cartes uniques, les séries complètes et les Perles.');
+    const body = openOverlay('Classement', 'Toi et tes amis, ou plus largement, selon les cartes uniques et les séries complètes.');
     let scope = 'friends';
     let sortBy = 'owned';
-    const scopes = { friends: null, global: null }; // { rows, note, perlesAsked } of each scope, once read
+    const scopes = { friends: null, global: null }; // { rows, note, collectionsAsked } of each scope, once read
     const scopeRow = h('div');
     const tabs = h('div');
     const status = h('p', { class: 'aqm-note' }, 'Chargement…');
@@ -1303,23 +1307,22 @@
         chips(
           [
             ['owned', 'Cartes uniques'],
-            ['albums', 'Séries complètes'],
-            ['perles', 'Perles']
+            ['albums', 'Séries complètes']
           ],
           sortBy,
           (v) => {
             sortBy = v;
-            load();
             render();
           }
         )
       );
       const s = scopes[scope];
       status.textContent = s?.note ?? 'Chargement…';
+      paintRefresh();
       const rows = s?.rows ?? [];
       // A row counts once its number of the tab is known.
-      const known = (r) => (sortBy === 'perles' ? typeof r.perles === 'number' : r.state === 'ok');
-      const score = (r) => (!known(r) ? [-1, -1] : sortBy === 'perles' ? [r.perles, 0] : [r[sortBy], sortBy === 'owned' ? r.albums : r.owned]);
+      const known = (r) => r.state === 'ok';
+      const score = (r) => (!known(r) ? [-1, -1] : [r[sortBy], sortBy === 'owned' ? r.albums : r.owned]);
       const sorted = [...rows].sort((a, b) => {
         const [a1, a2] = score(a);
         const [b1, b2] = score(b);
@@ -1328,18 +1331,12 @@
       let place = 0;
       const ok = rows.filter((r) => r.state === 'ok');
       const topAlbums = Math.max(0, ...ok.map((r) => r.albums));
-      const topPerles = Math.max(0, ...rows.map((r) => (typeof r.perles === 'number' ? r.perles : 0)));
       const bar = (part) => h('span', { class: 'aqm-bar' }, h('span', { style: `width:${(100 * Math.min(1, part || 0)).toFixed(2)}%` }));
       list.replaceChildren(
         ...sorted.map((r) => {
           if (known(r)) place++;
           let stats;
-          if (sortBy === 'perles')
-            stats =
-              typeof r.perles === 'number'
-                ? h('div', { class: 'aqm-stat is-on' }, h('strong', {}, perles(r.perles)), h('small', {}, 'en stock'), bar(topPerles ? r.perles / topPerles : 0))
-                : h('p', { class: 'aqm-muted', title: 'Seuls les joueurs qui utilisent Aquaman et partagent leurs Perles (réglage « Mes Perles au classement ») ont un montant.' }, r.perles === undefined ? 'Chargement…' : 'Non partagé');
-          else if (r.state !== 'ok') stats = h('p', { class: 'aqm-muted' }, r.state === 'private' ? 'Collection privée' : r.state === 'error' ? 'Collection indisponible' : 'Chargement…');
+          if (r.state !== 'ok') stats = h('p', { class: 'aqm-muted' }, r.state === 'private' ? 'Collection privée' : r.state === 'error' ? 'Collection indisponible' : 'Chargement…');
           else if (sortBy === 'owned')
             stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.owned)), h('small', {}, `/ ${fmt(r.total)} cartes`), bar(r.total ? r.owned / r.total : 0));
           else stats = h('div', { class: 'aqm-stat is-on' }, h('strong', {}, fmt(r.albums)), h('small', {}, r.albums > 1 ? 'séries complètes' : 'série complète'), bar(topAlbums ? r.albums / topAlbums : 0));
@@ -1355,12 +1352,56 @@
       );
     };
 
-    // The players of a scope, then what the tab shown needs: the Perles shared, or the collections (4 at a time).
-    async function load() {
+    // The players already read (on this device, for this account): shown at once in their places; only those read more
+    // than `fresh` ago (1 h), and the player, are read again. "Actualiser" reads them all again.
+    let board = null; // { fresh, players }
+    const info = new Map(); // player id -> their latest summary ({ private, owned, total, albums, at })
+    async function knownBoard() {
+      if (board) return;
+      try {
+        board = await ask({ type: 'board-known' });
+      } catch {
+        board = { fresh: 3600e3, players: {} };
+      }
+      for (const p of Object.values(board.players ?? {})) if (p?.id && !info.has(p.id)) info.set(p.id, p);
+    }
+    const apply = (row, p) => {
+      row.name ||= p.name;
+      row.at = p.at;
+      if (p.private) row.state = 'private';
+      else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+    };
+    const ago = (t) => {
+      const m = Math.round((Date.now() - t) / 60e3);
+      return m < 1 ? 'à l’instant' : m < 60 ? `il y a ${m} min` : m < 48 * 60 ? `il y a ${Math.round(m / 60)} h` : `il y a ${Math.round(m / 1440)} j`;
+    };
+    const refreshRow = h('div', { class: 'aqm-board-refresh' });
+    status.after(refreshRow);
+    const paintRefresh = () => {
+      const s = scopes[scope];
+      if (!s?.rows.length) return void refreshRow.replaceChildren();
+      const oldest = Math.min(...s.rows.filter((r) => r.at).map((r) => r.at));
+      refreshRow.replaceChildren(
+        h(
+          'span',
+          { class: 'aqm-muted' },
+          s.reading
+            ? `Mise à jour de ${fmt(s.reading)} joueur${s.reading > 1 ? 's' : ''}…`
+            : Number.isFinite(oldest)
+              ? `${s.kept ? `${fmt(s.kept)} joueur${s.kept > 1 ? 's' : ''} gardé${s.kept > 1 ? 's' : ''} sans tout retélécharger · ` : ''}lecture la plus ancienne : ${ago(oldest)}`
+              : ''
+        ),
+        h('button', { type: 'button', class: 'aqm-chip', disabled: s.reading ? true : null, onclick: () => load(true) }, 'Actualiser')
+      );
+    };
+
+    // The players of a scope, then their collections (4 at a time): those not known or too old only, unless force.
+    async function load(force = false) {
       const name = scope;
       let s = scopes[name];
+      if (s && force && !s.reading) s.collectionsAsked = false;
       if (!s) {
-        s = scopes[name] = { rows: [], note: 'Chargement…', perlesAsked: false, collectionsAsked: false };
+        s = scopes[name] = { rows: [], note: 'Chargement…', collectionsAsked: false, kept: 0, reading: 0 };
         try {
           if (name === 'friends') {
             const { me, friends, friendsError: error } = await ask({ type: 'friends' });
@@ -1373,7 +1414,7 @@
           } else {
             const { me, players } = await ask({ type: 'global-players' });
             s.rows = [{ id: me, me: true }, ...players].map((p) => ({ ...p, state: 'idle' }));
-            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement tes amis, les joueurs vus récemment dans les « Beaux tirages » et ceux qui partagent leurs Perles avec Aquaman.`;
+            s.note = `${fmt(players.length + 1)} joueurs · ce n’est pas la liste complète du jeu : seulement tes amis et les joueurs vus récemment dans les « Beaux tirages ».`;
           }
         } catch (e) {
           s.note = e.message;
@@ -1381,32 +1422,35 @@
         if (!alive()) return;
         later();
       }
-      if (sortBy === 'perles' && !s.perlesAsked) {
-        s.perlesAsked = true;
-        try {
-          const { perles: byId } = await ask({ type: 'shared-perles', ids: s.rows.map((r) => r.id) });
-          for (const r of s.rows) r.perles = typeof byId?.[r.id] === 'number' ? byId[r.id] : null;
-        } catch {
-          for (const r of s.rows) r.perles = null;
-        }
-        if (alive()) later();
-      }
-      if (sortBy !== 'perles' && !s.collectionsAsked) {
+      if (!s.collectionsAsked) {
         s.collectionsAsked = true;
-        for (const r of s.rows) r.state = 'loading';
+        await knownBoard();
+        if (!alive()) return;
+        const fresh = board.fresh ?? 3600e3;
+        const todo = [];
+        for (const r of s.rows) {
+          const p = info.get(r.id);
+          if (p) apply(r, p);
+          else r.state = 'loading';
+          if (force || r.me || !p || !(Date.now() - p.at < fresh)) todo.push(r);
+        }
+        s.kept = s.rows.length - todo.length;
+        s.reading = todo.length;
         later();
-        await eachLimited(s.rows, 4, async (row) => {
+        await eachLimited(todo, 4, async (row) => {
           if (!alive()) return;
           try {
-            const p = await ask({ type: 'player', id: row.id });
-            row.name ||= p.name;
-            if (p.private) row.state = 'private';
-            else Object.assign(row, { state: 'ok', owned: p.owned, total: p.total, albums: p.albums });
+            const p = await ask({ type: 'player', id: row.id, fresh: force });
+            info.set(row.id, p);
+            apply(row, p);
           } catch {
-            row.state = 'error';
+            if (!info.has(row.id)) row.state = 'error'; // (a player known before keeps their last numbers)
           }
+          s.reading--;
           later();
         });
+        s.reading = 0;
+        if (alive()) later();
       }
     }
 
@@ -2422,9 +2466,22 @@
               strip.scrollTo?.({ left: 0, behavior: 'smooth' });
             },
             title: `Masquer les séries de ${SMALL_SERIES} personnages ou moins`
-          }, `Masquer séries <= ${SMALL_SERIES} persos`)
+          }, `Masquer séries <= ${SMALL_SERIES} persos`),
+          h('button', {
+            type: 'button',
+            class: 'aqm-chip aqm-sort-progress aqm-claimed-series',
+            'aria-pressed': 'false',
+            onclick: () => {
+              setClaimedHidden(!claimedHidden);
+              if (claimedHidden) loadClaimed(true);
+              sortByProgress(strip);
+              strip.scrollTo?.({ left: 0, behavior: 'smooth' });
+            },
+            title: 'Masquer les séries dont tu as déjà le badge (album réclamé)'
+          }, 'Masquer séries avec badge')
         )
       );
+    if (claimedHidden && Date.now() - claimedAt > 2 * 60e3) loadClaimed();
     sortByProgress(strip);
     keepStripPlace(strip);
     if (!seriesBySlug) return;
@@ -2488,6 +2545,40 @@
       on ? sessionStorage.setItem(SMALL_ONLY_KEY, '1') : sessionStorage.removeItem(SMALL_ONLY_KEY);
     } catch {}
   }
+  // "Masquer séries avec badge": the series whose album the player claimed are hidden (kept for the tab too). Their
+  // slugs come from the player's collection (its albums), matched with the cover of each series of the strip.
+  const CLAIMED_KEY = 'aqm-hide-claimed';
+  let claimedHidden = (() => {
+    try {
+      return sessionStorage.getItem(CLAIMED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  })();
+  function setClaimedHidden(on) {
+    claimedHidden = on;
+    try {
+      on ? sessionStorage.setItem(CLAIMED_KEY, '1') : sessionStorage.removeItem(CLAIMED_KEY);
+    } catch {}
+  }
+  let claimedSlugs = null; // Set of the slugs of the series with a badge, once read
+  let claimedAt = 0;
+  async function loadClaimed(fresh = false) {
+    claimedAt = Date.now();
+    const res = await send({ type: 'claimed-albums', fresh });
+    if (!res || res.error || !Array.isArray(res.slugs)) return;
+    claimedSlugs = new Set(res.slugs);
+    const strip = seriesStrip();
+    if (strip) sortByProgress(strip);
+  }
+  const coverSlug = (el) => {
+    const src = el.querySelector('img[src*="/api/covers/"]')?.getAttribute('src');
+    try {
+      return src ? decodeURIComponent(src.match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? '') : '';
+    } catch {
+      return '';
+    }
+  };
   function setByProgress(on) {
     byProgress = on;
     try {
@@ -2592,9 +2683,15 @@
     const small = strip.previousElementSibling?.querySelector('.aqm-small-series');
     small?.classList.toggle('is-on', smallOnly);
     small?.setAttribute('aria-pressed', String(smallOnly));
-    // Hidden: the small series. "Toutes les séries", the series shown and those without a count stay.
+    const claimedChip = strip.previousElementSibling?.querySelector('.aqm-claimed-series');
+    claimedChip?.classList.toggle('is-on', claimedHidden);
+    claimedChip?.setAttribute('aria-pressed', String(claimedHidden));
+    // Hidden: the small series, the series with a badge. "Toutes les séries", the series shown and those without a
+    // count stay.
     for (const { el, c, all } of rows) {
-      const hide = smallOnly && !all && c && c.total <= SMALL_SERIES && el.getAttribute('aria-checked') !== 'true' && !el.querySelector('[aria-checked="true"]');
+      const picked = el.getAttribute('aria-checked') === 'true' || !!el.querySelector('[aria-checked="true"]');
+      const claimed = claimedHidden && !!claimedSlugs && !all && !picked && claimedSlugs.has(coverSlug(el));
+      const hide = claimed || (smallOnly && !all && c && c.total <= SMALL_SERIES && !picked);
       const display = hide ? 'none' : '';
       if (el.style.display !== display) el.style.display = display;
     }
@@ -3078,6 +3175,284 @@
     // (no progress of the waiting cards here: drawn again at each series, it made the page jump; it stays at the
     // bottom of the screen and in "Séries favorites")
     box.replaceChildren(fav, want, note);
+  }
+
+  // ---------- collection: "Ma progression" beside the "Ta collection" title ----------
+
+  // The button sits at the right of the game's title, out of the page's flow (absolute, inside the title): the title
+  // keeps its width and the game's buttons ("Ma vitrine"…) their place. It has the look of "Ma vitrine" (its classes,
+  // its icon's, and the text styles the title would otherwise give it). Where there is no room at the right of the
+  // title (a narrow screen, the game's buttons in the way), it goes under the title instead.
+  const statsTitle = () => [...document.querySelectorAll('main h1, h1')].find((el) => !el.closest('.aqm-root, .aqm-overlay') && /^\s*ta\s+collection/i.test(el.textContent));
+  const vitrineButton = () => [...document.querySelectorAll('main button, main a')].find((b) => !b.closest('.aqm-root, .aqm-overlay, .aqm-stats-open') && /^\s*ma vitrine\s*$/i.test(b.textContent));
+
+  function markCollectionStats() {
+    if (!location.pathname.startsWith('/jeu/collection')) return;
+    const shown = document.querySelector('.aqm-stats-open');
+    // (placed again only when the title or the game's buttons change size: see watchStatsPlace, no measure here)
+    if (shown?.isConnected && !shown.classList.contains('is-early')) return;
+    const title = statsTitle();
+    const vitrine = vitrineButton();
+    if (!title || !vitrine) return;
+    // The button shown over the page while it loaded (earlyStatsButton) goes into the title, at the same place.
+    const btn = shown?.isConnected ? shown : statsButton(vitrine);
+    stopEarlyStats();
+    btn.classList.remove('is-early');
+    btn.style.removeProperty('--aqm-x');
+    btn.style.removeProperty('--aqm-y');
+    title.setAttribute('data-aqm-stats-title', '');
+    title.append(btn);
+    placeStatsButton();
+    watchStatsPlace(title);
+  }
+
+  // The button is placed again when the title or the row of the game's buttons changes size (fonts loaded, a narrower
+  // window…), and only then.
+  let statsWatch = null;
+  function watchStatsPlace(title) {
+    statsWatch?.disconnect();
+    statsWatch = new ResizeObserver(() => placeStatsButton());
+    statsWatch.observe(title);
+    const row = vitrineButton()?.parentElement;
+    if (row) statsWatch.observe(row);
+  }
+
+  // The button, with the look of the game's "Ma vitrine".
+  function statsButton(vitrine) {
+    const gameIcon = vitrine.querySelector('svg');
+    const icon = h('span', { html: ICON_CHART }).firstElementChild;
+    icon.setAttribute('class', gameIcon?.getAttribute('class') || 'aqm-stats-ico');
+    const btn = h(
+      'button',
+      {
+        type: 'button',
+        class: `${vitrine.className} aqm-stats-open`,
+        title: 'Ta progression : pourcentage de la collection, cartes par rareté, séries complètes et cartes gagnées chaque jour',
+        onclick: openCollectionStats
+      },
+      icon,
+      'Ma progression'
+    );
+    // (inside the title, the button would take its big italic font: it gets the text styles of "Ma vitrine")
+    const cs = getComputedStyle(vitrine);
+    for (const p of ['font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing', 'line-height', 'text-transform', 'color'])
+      btn.style.setProperty(p, cs.getPropertyValue(p));
+    btn.style.setProperty('-webkit-text-fill-color', cs.getPropertyValue('color'));
+    return btn;
+  }
+
+  // While the page loads, Aquaman changes nothing inside it (React would not find what it expects: error #418): the
+  // button is shown at once over the page (at the end of <body>, which React leaves alone), at the place it will
+  // have beside the title, and follows the title until markCollectionStats puts it in.
+  let earlyTimer = 0;
+  let earlyWatch = null;
+  function stopEarlyStats() {
+    clearInterval(earlyTimer);
+    earlyTimer = 0;
+    earlyWatch?.disconnect();
+    earlyWatch = null;
+  }
+  function earlyStatsButton() {
+    if (!location.pathname.startsWith('/jeu/collection') || !on('collectionStats')) return;
+    const since = Date.now();
+    const look = () => {
+      if (stopped || document.querySelector('.aqm-stats-open')) return;
+      const title = statsTitle();
+      const vitrine = vitrineButton();
+      if (!title || !vitrine || !document.body) return void (Date.now() - since < 15e3 && setTimeout(look, 80));
+      const btn = statsButton(vitrine);
+      btn.classList.add('aqm-root', 'is-early');
+      document.body.append(btn);
+      const follow = () => (btn.isConnected && btn.classList.contains('is-early') ? placeEarly(btn, title) : stopEarlyStats());
+      follow();
+      earlyWatch = new ResizeObserver(follow);
+      earlyWatch.observe(title);
+      earlyTimer = setInterval(follow, 250); // (the page's layout moves while it loads: fonts, pictures)
+    };
+    look();
+  }
+  // In page coordinates: at the right of the title, vertically centred, else under it (as placeStatsButton).
+  function placeEarly(btn, title) {
+    if (!title.isConnected) return void btn.remove();
+    const t = title.getBoundingClientRect();
+    const set = (x, y, below) => {
+      btn.style.setProperty('--aqm-x', `${Math.round(x + scrollX)}px`);
+      btn.style.setProperty('--aqm-y', `${Math.round(y + scrollY)}px`);
+      btn.classList.toggle('is-below', below);
+    };
+    set(t.right + 20, t.top + t.height / 2, false);
+    const b = btn.getBoundingClientRect();
+    const row = vitrineButton()?.parentElement?.getBoundingClientRect();
+    const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
+    if (blocked || b.right > document.documentElement.clientWidth - 8) set(t.left, t.bottom + 12, true);
+  }
+
+  // At the right of the title when it fits there, else under it.
+  function placeStatsButton() {
+    const btn = document.querySelector('.aqm-stats-open');
+    if (!btn?.isConnected || btn.classList.contains('is-early')) return;
+    btn.classList.remove('is-below');
+    const b = btn.getBoundingClientRect();
+    const row = vitrineButton()?.parentElement?.getBoundingClientRect();
+    const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
+    if (blocked || b.right > document.documentElement.clientWidth - 8) btn.classList.add('is-below');
+  }
+  let statsResize = 0;
+  addEventListener('resize', () => {
+    clearTimeout(statsResize);
+    statsResize = setTimeout(placeStatsButton, 150);
+  });
+
+  // One reading of the collection every 30 minutes on the game's pages, and soon after it changed (a booster opened, a
+  // purchase…): the cards gained each day are counted even when the window is never opened.
+  let snapAt = 0;
+  let snapTimer = 0;
+  function snapCollection(soon = false) {
+    if (soon) {
+      clearTimeout(snapTimer);
+      snapTimer = setTimeout(() => {
+        // (5 min at most between two: a reading downloads the whole collection, over 1 MB for a big one)
+        if (stopped || !on('collectionStats') || Date.now() - snapAt < 5 * 60e3) return;
+        snapAt = Date.now();
+        send({ type: 'collection-snapshot' });
+      }, 10e3);
+      return;
+    }
+    if (Date.now() - snapAt < 30 * 60e3) return;
+    snapAt = Date.now();
+    send({ type: 'collection-snapshot' });
+  }
+
+  const DAY_MS = 86400e3;
+  const dayOf = (t) => new Date(t).toLocaleDateString('sv-SE');
+  const dayLabel = (key, long = false) =>
+    new Date(`${key}T12:00:00`).toLocaleDateString('fr-FR', long ? { weekday: 'long', day: 'numeric', month: 'long' } : { day: 'numeric', month: 'short' });
+  const signed = (n) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : '0');
+
+  async function openCollectionStats() {
+    const body = openOverlay('Ma progression', 'Ta collection sur le total du jeu, carte par rareté, et les cartes que tu gagnes chaque jour.');
+    body.parentElement.classList.add('aqm-panel-wide');
+    const view = h('div', { class: 'aqm-progress' }, h('p', { class: 'aqm-note' }, 'Lecture de ta collection…'));
+    body.append(view);
+    let s;
+    try {
+      s = await ask({ type: 'collection-stats', fresh: true });
+    } catch (e) {
+      if (view.isConnected) view.replaceChildren(h('p', { class: 'aqm-note' }, e.message));
+      return;
+    }
+    if (!view.isConnected) return;
+    snapAt = Date.now();
+    const share = s.total ? s.owned / s.total : 0;
+    const bar = (part, cls = '') => h('span', { class: `aqm-bar${cls}` }, h('span', { style: `width:${(100 * Math.min(1, Math.max(0, part || 0))).toFixed(2)}%` }));
+    const byDay = new Map(s.history.map((d) => [d.day, d]));
+    const todayGain = byDay.get(s.today)?.gain ?? 0;
+    const tile = (label, value, sub) => h('div', { class: 'aqm-progress-tile' }, h('p', { class: 'aqm-label' }, label), h('strong', {}, value), sub ? h('small', {}, sub) : null);
+
+    // The headline: the share of the game's cards the player has.
+    const hero = h(
+      'div',
+      { class: 'aqm-progress-hero' },
+      h('div', {}, h('strong', { class: 'aqm-progress-pct' }, pct(share)), h('p', { class: 'aqm-muted' }, `${fmt(s.owned)} cartes uniques sur ${fmt(s.total)}`)),
+      bar(share, ' aqm-bar-big')
+    );
+    const tiles = h(
+      'div',
+      { class: 'aqm-progress-tiles' },
+      tile('Cartes manquantes', fmt(s.missing), s.total ? `${pct(s.missing / s.total)} du jeu` : null),
+      tile('Séries complètes', fmt(s.complete), s.series ? `sur ${fmt(s.series)} séries · ${fmt(s.albums)} album${s.albums > 1 ? 's' : ''} réclamé${s.albums > 1 ? 's' : ''}` : `${fmt(s.albums)} album${s.albums > 1 ? 's' : ''} réclamé${s.albums > 1 ? 's' : ''}`),
+      tile('Aujourd’hui', signed(todayGain), todayGain === 1 || todayGain === -1 ? 'carte unique' : 'cartes uniques')
+    );
+
+    // Cards of each rarity: unique cards owned on the game's total of that rarity, and the copies. Counted series by
+    // series (the first time, a few hundred series: the rows fill in while the window is open).
+    const rarityList = h('ul', { class: 'aqm-progress-rarities' });
+    const rarityNote = h('p', { class: 'aqm-note' });
+    const paintRarities = (counts) => {
+      const rows = counts ? Object.entries(counts.byRarity).filter(([, r]) => r.total || r.owned) : [];
+      const counting = !counts || counts.pending > 0;
+      rarityList.replaceChildren(
+        ...rows.map(([code, r]) =>
+          h(
+            'li',
+            { class: 'aqm-progress-rarity' },
+            h('span', { class: 'aqm-progress-rname' }, rarityCode(code), h('small', {}, RARITY_NAMES[code] ?? code)),
+            h(
+              'div',
+              { class: 'aqm-progress-rbar' },
+              h('p', {}, h('strong', {}, fmt(r.owned)), r.total ? h('small', {}, ` / ${fmt(r.total)} · ${pct(r.owned / r.total)}`) : null),
+              bar(r.total ? r.owned / r.total : 0, ` aqm-bar-${code}`)
+            ),
+            h('span', { class: 'aqm-progress-copies', title: 'Exemplaires de cette rareté (doublons compris)' }, `${fmt(r.copies)} ex.`)
+          )
+        )
+      );
+      rarityNote.textContent = !counts
+        ? 'Comptage des cartes par rareté…'
+        : counting
+          ? `Comptage des cartes par rareté : ${fmt(counts.counted)} séries sur ${fmt(counts.series)}… (la première fois seulement ; ensuite, seules les séries qui ont changé sont relues)`
+          : '';
+      rarityNote.hidden = !rarityNote.textContent;
+    };
+    paintRarities(s.rarities);
+    // The series not counted yet, RARITY_STEP at a time, while the window is open.
+    const countRest = async () => {
+      let counts = s.rarities;
+      for (let tries = 0; view.isConnected && (!counts || counts.pending > 0) && tries < 100; tries++) {
+        const before = counts?.counted ?? -1;
+        try {
+          counts = await ask({ type: 'rarity-counts' });
+        } catch {
+          break;
+        }
+        if (!view.isConnected) return;
+        paintRarities(counts);
+        if (counts.counted === before && counts.failed) break; // (the game refuses: tried again at the next opening)
+      }
+      if (view.isConnected && counts?.pending > 0) rarityNote.textContent = `Comptage arrêté à ${fmt(counts.counted)} séries sur ${fmt(counts.series)} : il reprendra à la prochaine ouverture.`;
+    };
+
+    // The cards gained each of the last 14 days (one bar a day; a day without a reading has none).
+    const days = [];
+    for (let i = 13; i >= 0; i--) days.push(dayOf(Date.now() - i * DAY_MS));
+    const top = Math.max(1, ...days.map((d) => byDay.get(d)?.gain ?? 0));
+    const chart = h(
+      'div',
+      { class: 'aqm-days', role: 'img', 'aria-label': 'Cartes uniques gagnées chaque jour, sur les 14 derniers jours' },
+      days.map((d) => {
+        const r = byDay.get(d);
+        const tip = r
+          ? `${dayLabel(d, true)} : ${signed(r.gain)} carte${Math.abs(r.gain) > 1 ? 's' : ''} unique${Math.abs(r.gain) > 1 ? 's' : ''}${r.since && r.since !== dayOf(new Date(`${d}T12:00:00`).getTime() - DAY_MS) ? ` (depuis le ${dayLabel(r.since)})` : ''} · ${fmt(r.owned)} au total`
+          : `${dayLabel(d, true)} : pas de relevé (Aquaman n’a pas été ouvert ce jour-là)`;
+        const gain = r?.gain ?? 0;
+        return h(
+          'div',
+          { class: `aqm-day${r ? '' : ' is-empty'}${d === s.today ? ' is-today' : ''}`, title: tip, tabindex: '0', 'aria-label': tip },
+          h('span', { class: 'aqm-day-val' }, r && gain ? signed(gain) : ''),
+          h('span', { class: 'aqm-day-col' }, h('span', { class: 'aqm-day-fill', style: `height:${r && gain > 0 ? Math.max(4, (100 * gain) / top).toFixed(1) : 0}%` })),
+          h('span', { class: 'aqm-day-name' }, d === s.today ? 'Auj.' : new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric' }))
+        );
+      })
+    );
+    const recorded = s.history.filter((d) => days.includes(d.day));
+    const twoWeeks = recorded.reduce((n, d) => n + d.gain, 0);
+    const first = s.history[0];
+    const fromStart = first ? s.owned - (first.owned - first.gain) : 0; // since the first reading kept
+    const daysNote = s.history.length <= 1
+      ? 'Aquaman relève ta collection chaque jour où tu joues : la courbe se remplit à partir d’aujourd’hui.'
+      : `${signed(twoWeeks)} cartes uniques sur les 14 derniers jours · ${signed(fromStart)} depuis le ${dayLabel(first.day)}, premier relevé.`;
+
+    view.replaceChildren(
+      hero,
+      tiles,
+      h('h3', { class: 'aqm-progress-h' }, 'Par rareté'),
+      rarityList,
+      rarityNote,
+      h('h3', { class: 'aqm-progress-h' }, 'Progression journalière'),
+      chart,
+      h('p', { class: 'aqm-note' }, daysNote)
+    );
+    countRest();
   }
 
   async function openFavorites() {
@@ -5476,6 +5851,8 @@
     [markAlbum, 'albumButtons'],
     [markMissingTab, 'missingTab'],
     [markMissingSales, 'missingSales'],
+    [markCollectionStats, 'collectionStats'],
+    [snapCollection, 'collectionStats'],
     [markCardWho, 'cardWho'],
     [markCardListings, 'cardListings'],
     [markSellDialog, 'sellTools'],
@@ -5502,7 +5879,7 @@
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
       if (!inGame && step !== markTrades && step !== checkAccess) continue;
       try {
@@ -5739,6 +6116,8 @@
     if (e.source === window && e.data?.aquaman === 'boosters-refreshed') onBoostersRefreshed(e.data.id, !!e.data.ok);
   });
   Promise.all([loadShotStore(), featReady]).then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
+  // "Ma progression" beside the title of the Collection as soon as the page shows it (see earlyStatsButton).
+  featReady.then(() => !stopped && earlyStatsButton());
   // The series and favourites are read as soon as the script starts, in any page of the game: the stars of the
   // Collection come with its strip, even when it is the first page opened.
   featReady.then(() => {

@@ -7,6 +7,20 @@ const GAME = `${ORIGIN}/api-game/v1`;
 const SOCIAL = `${ORIGIN}/api-social/v1`;
 export const RANK = { N: 1, R: 2, SR: 3, SSR: 4, UR: 5, SEC: 6 };
 
+// The only addresses Aquaman opens (its popup, its notifications, the page code's "open"): a page of the game (a path
+// "/…" or a full address of the site), and the GitHub pages of Aquaman (releases, script, installation page).
+// Anything else (another site, "javascript:", "data:"…) gives null.
+const OPEN_HOSTS = new Set(['poseidon-scans.net', 'github.com', 'raw.githubusercontent.com', 'a-finch13.github.io']);
+export function safeHref(href) {
+  if (typeof href !== 'string' || !href) return null;
+  try {
+    const url = /^\/(?!\/)/.test(href) ? new URL(href, ORIGIN) : new URL(href);
+    return url.protocol === 'https:' && OPEN_HOSTS.has(url.hostname) && !url.username && !url.password ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- settings ----------
 
 // Every setting, by group: the same list in the extension's popup and in "Plus › Réglages" (extension and script, on
@@ -33,6 +47,7 @@ export const SETTINGS = [
       ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
       ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
       ['missingSales', 'Pastille « En vente »', 'Sur les cartes manquantes vendues au marché'],
+      ['collectionStats', 'Ma progression', 'Bouton à côté de « Ta collection » : pourcentage, raretés, séries complètes et cartes gagnées chaque jour'],
       ['cardWho', 'Bouton « Qui a cette carte ? »', 'Sur la page des cartes SSR, UR et SEC : les joueurs qui l’ont']
     ]
   },
@@ -72,8 +87,7 @@ export const SETTINGS = [
       ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
       ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
       ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
-      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)'],
-      ['sharePerles', 'Mes Perles au classement', 'Montrer mon stock de Perles dans le classement des autres utilisateurs d’Aquaman']
+      ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
     ]
   }
 ];
@@ -134,9 +148,26 @@ function forget(...prefixes) {
   for (const key of [...memo.keys()]) if (prefixes.some((p) => key.startsWith(p))) memo.delete(key);
 }
 
-// Id of the logged-in player (read again after a minute: another account may have logged in meanwhile).
+// Id of the logged-in player (read again after 20 s: another account may have logged in meanwhile). When the account
+// changed, every answer read with the session of the previous one is forgotten (its collection, friends, searches…):
+// nothing of one account is ever shown to another.
+let account = null;
 export function myId() {
-  return cached('me-id', 60e3, async () => {
+  return cached('me-id', 20e3, async () => {
+    const id = await readMyId();
+    if (account && account !== id) for (const key of [...memo.keys()]) if (key !== 'me-id') memo.delete(key);
+    if (account !== id) showcases.clear();
+    account = id;
+    return id;
+  });
+}
+
+// A player id as the game writes them; anything else is never put in an address.
+export const PLAYER_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const validPlayer = (id) => typeof id === 'string' && PLAYER_ID.test(id);
+
+function readMyId() {
+  return (async () => {
     const ids = [];
     try {
       const a = await getJson(`${ORIGIN}/api/auth/check`);
@@ -154,10 +185,10 @@ export function myId() {
         ids.push(s?.user?.id, s?.id);
       } catch {}
     }
-    const id = ids.find((x) => typeof x === 'string' && x);
+    const id = ids.find(validPlayer);
     if (!id) throw new ApiError(401, 'unauthorized', 'Connecte-toi au site pour utiliser Aquaman.');
     return id;
-  });
+  })();
 }
 
 // Game status of the player: boosters waiting to be opened and Perles.
@@ -170,14 +201,25 @@ export async function gameStatus() {
 
 const showcases = new Map(); // player id -> last collection read
 
-// Collection of a player: { player, private, cards, copies, albums, owned, total }.
+// The player an answer of the game is about, when it says so.
+const ownerOf = (sc) => [sc?.player?.id, sc?.playerId, sc?.user?.id, sc?.userId].find((x) => typeof x === 'string' && x) ?? null;
+
+// Collection of a player: { player, private, cards, copies, albums, owned, total }. The game reads it with the
+// player's session: an answer about another player than the one asked (a redirection, the logged-in player's own
+// collection given in its place…) is refused, so that a collection is never taken for another one.
 async function readShowcase(id) {
+  if (!validPlayer(id)) throw new ApiError(400, 'bad_player', 'Joueur inconnu.');
   const path = encodeURIComponent(id);
+  let sc;
   try {
-    return await game(`/players/${path}/showcase`);
+    sc = await game(`/players/${path}/showcase`);
   } catch {
-    return game(`/public/players/${path}/showcase`);
+    sc = await game(`/public/players/${path}/showcase`);
   }
+  if (!sc || typeof sc !== 'object' || Array.isArray(sc)) throw new ApiError(502, 'bad_showcase', 'Collection illisible.');
+  const owner = ownerOf(sc);
+  if (owner && owner !== id) throw new ApiError(409, 'wrong_player', 'Le jeu a répondu pour un autre joueur.');
+  return sc;
 }
 
 // The same, kept a while; its copies give the values of the cards.
@@ -188,7 +230,15 @@ function showcase(id, ttl = 5 * 60e3) {
     return sc;
   });
 }
-const myShowcase = async (ttl = 60e3) => showcase(await myId(), ttl);
+
+// The logged-in player's own collection: read for the id of the session, and checked again against it once read (the
+// account may have changed meanwhile).
+async function myShowcase(ttl = 60e3) {
+  const id = await myId();
+  const sc = await showcase(id, ttl);
+  if ((await myId()) !== id) throw new ApiError(409, 'account_changed', 'Le compte connecté a changé : recharge la page.');
+  return sc;
+}
 
 // File name of a card image: the same key as the address of the image shown by the site.
 export function imageKey(src) {
@@ -217,40 +267,65 @@ function countCopies(sc) {
   return { byCard, byImage };
 }
 
-// Copies owned by the logged-in player.
+// Copies owned by the logged-in player (me: whose they are).
 export async function ownership() {
-  return countCopies(await myShowcase());
+  const sc = await myShowcase();
+  return { me: account, ...countCopies(sc) };
 }
 
 // Unique cards, total and completed series of a player.
-export async function playerSummary(id) {
+// (fresh: read again from the game, not from the answers kept a while)
+export async function playerSummary(id, fresh = false) {
+  if (!validPlayer(id)) throw new ApiError(400, 'bad_player', 'Joueur inconnu.');
+  if (fresh) forget(`showcase:${id}`);
   const sc = await showcase(id);
-  if (sc.private) return { id, name: sc.player?.name ?? null, private: true };
-  return { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+  const summary = sc.private
+    ? { id, name: sc.player?.name ?? null, private: true }
+    : { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0 };
+  await keepOnBoard(summary);
+  return { ...summary, at: Date.now() };
 }
 
-// The Perles of players who use Aquaman and share them ({ [id]: perles }), from the relay; the player's own from the
-// game, always.
-export async function sharedPerles(ids) {
+// ---------- the leaderboard's players already read ----------
+// The summary of each player read for the leaderboard, kept on this device under the logged-in account: the
+// leaderboard shows them at once, in their known places, and reads again only those older than BOARD_FRESH (or all
+// of them on "Actualiser"), instead of downloading every collection at each opening.
+
+export const BOARD_FRESH = 3600e3; // a player read less than an hour ago is not read again
+const BOARD_KEEP = 14 * 86400e3; // a player not read for this long is forgotten
+let boardWrites = Promise.resolve(); // (one write at a time: the collections are read 4 at a time)
+
+function keepOnBoard(summary) {
+  const write = boardWrites.then(async () => {
+    const me = await myId();
+    const { board = {} } = await chrome.storage.local.get('board');
+    const now = Date.now();
+    const mine = { ...(board[me] ?? {}), [summary.id]: { ...summary, at: now } };
+    for (const id in mine) if (!(now - mine[id].at < BOARD_KEEP)) delete mine[id];
+    await chrome.storage.local.set({ board: { ...board, [me]: mine } });
+  });
+  boardWrites = write.catch(() => {});
+  return boardWrites;
+}
+
+// The summaries kept for the logged-in account: { [id]: { id, name, private, owned, total, albums, at } }.
+async function boardKnown() {
   const me = await myId();
-  const out = {};
-  const others = [...new Set(ids)].filter((id) => id && id !== me);
-  for (let i = 0; i < others.length; i += 400)
-    try {
-      const res = await fetch(`${RELAY}/perles`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: others.slice(i, i + 400) }) });
-      if (!res.ok) throw new Error(`relay_${res.status}`);
-      for (const p of (await res.json()).players ?? []) out[p.id] = p.perles;
-    } catch {}
-  if (ids.includes(me))
-    try {
-      out[me] = (await gameStatus()).perles;
-    } catch {}
-  return out;
+  const { board = {} } = await chrome.storage.local.get('board');
+  return { me, fresh: BOARD_FRESH, players: board[me] ?? {} };
 }
 
-// The players of the "Global" leaderboard: the player's friends, those the relay saw lately in the "beaux tirages"
-// and those who share their Perles with Aquaman (not every player of the game: the game gives no such list).
-// [{ id, name }]
+// The series whose album the logged-in player claimed (their badge): by id and by slug.
+async function claimedAlbums(fresh = false) {
+  const sc = await myShowcase(fresh ? 0 : 60e3);
+  const series = (sc.albums ?? []).map((a) => a?.series).filter(Boolean);
+  // (the strip of the series shows each one by its cover, /api/covers/<slug>.webp: its slug, and its cover's own name)
+  const covers = series.map((s) => imageKey(s.cover)?.replace(/\.[a-z0-9]+$/i, '')).filter(Boolean);
+  return { ids: series.map((s) => s.id).filter(Boolean), slugs: [...new Set([...series.map((s) => s.slug).filter(Boolean), ...covers])] };
+}
+
+// The players of the "Global" leaderboard: the player's friends and those the relay saw lately in the "beaux tirages"
+// (not every player of the game: the game gives no such list). [{ id, name }]
 export async function globalPlayers() {
   const me = await myId();
   const read = async (path) => {
@@ -258,15 +333,14 @@ export async function globalPlayers() {
     if (!res.ok) throw new Error(`relay_${res.status}`);
     return (await res.json()).players ?? [];
   };
-  const [mates, seen, rich] = await Promise.all([
+  const [mates, seen] = await Promise.all([
     friends()
       .then((f) => f.friends)
       .catch(() => []),
-    read('/players?limit=150').catch(() => []),
-    read('/perles/top?limit=150').catch(() => [])
+    read('/players?limit=150').catch(() => [])
   ]);
   const byId = new Map();
-  for (const p of [...mates, ...rich, ...seen]) if (p?.id && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
+  for (const p of [...mates, ...seen]) if (validPlayer(p?.id) && p.id !== me && !byId.has(p.id)) byId.set(p.id, { id: p.id, name: p.name ?? null });
   return { me, players: [...byId.values()] };
 }
 
@@ -276,14 +350,141 @@ export async function friends() {
   let list = [];
   let friendsError = null;
   try {
-    list = (await cached('friends', 5 * 60e3, () => social('/friends'))).friends ?? [];
+    list = (await cached(`friends:${me}`, 5 * 60e3, () => social('/friends'))).friends ?? [];
   } catch (e) {
     friendsError = e.message;
   }
   return {
     me,
     friendsError,
-    friends: list.filter((f) => f?.user?.id && f.user.id !== me).map((f) => ({ id: f.user.id, name: f.user.name ?? null }))
+    friends: list.filter((f) => validPlayer(f?.user?.id) && f.user.id !== me).map((f) => ({ id: f.user.id, name: f.user.name ?? null }))
+  };
+}
+
+// ---------- progress of the collection ----------
+// One reading a day of the logged-in player's collection (the first and the last of the day), kept on this device for
+// STATS_DAYS days under their id: the cards gained each day are the difference between two days.
+
+const STATS_DAYS = 120;
+const dayKey = (t = Date.now()) => new Date(t).toLocaleDateString('sv-SE'); // "2026-11-07", local time
+
+// Series complete: those whose every card is owned, from the game's list of series; else the albums claimed.
+const completeSeries = (series, sc) => (Array.isArray(series) && series.length ? series.filter((s) => s.total > 0 && s.owned >= s.total).length : sc?.albums?.length ?? 0);
+
+async function recordDay(id, point) {
+  const { collectionDays = {} } = await chrome.storage.local.get('collectionDays');
+  const days = { ...(collectionDays[id] ?? {}) };
+  const key = dayKey(point.at);
+  days[key] = { first: days[key]?.first ?? point, last: point };
+  collectionDays[id] = Object.fromEntries(
+    Object.keys(days)
+      .sort()
+      .slice(-STATS_DAYS)
+      .map((k) => [k, days[k]])
+  );
+  await chrome.storage.local.set({ collectionDays });
+  return collectionDays[id];
+}
+
+// Reads the player's collection and keeps the reading of the day. { id, sc, series, point, days }
+export async function collectionSnapshot() {
+  const id = await myId();
+  const [sc, series] = await Promise.all([myShowcase(), seriesList().catch(() => null)]);
+  const point = { owned: sc.owned ?? 0, total: sc.total ?? 0, complete: completeSeries(series, sc), at: Date.now() };
+  const days = await recordDay(id, point);
+  return { id, sc, series, point, days };
+}
+
+// ---------- cards of each rarity, counted series by series ----------
+// The game's catalogue gives only part of its cards (none of the Commune and Rare ones), and a collection 2 000 copies
+// at most: the cards of each rarity are counted from the cards of each series (/cards?manga=, with the player's
+// copies of each card). Each series' count is kept on this device under the account, and read again only when the
+// game's figures of that series changed (its cards owned or its total) or after RARITY_AGAIN; RARITY_STEP series at
+// most per call, the window asks again until every series is counted.
+
+const RARITY_STEP = 40;
+const RARITY_AGAIN = 24 * 3600e3; // (the copies of a series may change without its cards owned changing)
+let rarityBusy = Promise.resolve();
+
+export function rarityCounts(budget = RARITY_STEP) {
+  const run = rarityBusy.then(() => countRarities(budget));
+  rarityBusy = run.catch(() => {});
+  return run;
+}
+
+async function countRarities(budget) {
+  const me = await myId();
+  const series = (await seriesList()).filter((s) => s?.id);
+  const { rarityCache = {} } = await chrome.storage.local.get('rarityCache');
+  const mine = { ...(rarityCache[me] ?? {}) };
+  const now = Date.now();
+  const current = (s) => {
+    const k = mine[s.id];
+    return !!k && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && now - k.at < RARITY_AGAIN;
+  };
+  const todo = series.filter((s) => !current(s));
+  const batch = todo.slice(0, Math.max(0, budget));
+  let failed = 0;
+  for (let i = 0; i < batch.length; i += 3)
+    await Promise.all(
+      batch.slice(i, i + 3).map(async (s) => {
+        try {
+          const cards = (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? [];
+          const by = {}; // rarity -> [unique cards owned, cards, copies]
+          for (const c of cards) {
+            if (!RANK[c?.rarity]) continue;
+            const r = (by[c.rarity] ??= [0, 0, 0]);
+            r[1]++;
+            if (c.owned > 0) {
+              r[0]++;
+              r[2] += c.owned;
+            }
+          }
+          mine[s.id] = { owned: s.owned ?? 0, total: s.total ?? 0, at: Date.now(), by };
+        } catch {
+          failed++;
+        }
+      })
+    );
+  const ids = new Set(series.map((s) => s.id));
+  for (const k in mine) if (!ids.has(k)) delete mine[k]; // (a series the game no longer has)
+  if (batch.length) await chrome.storage.local.set({ rarityCache: { ...rarityCache, [me]: mine } });
+  const byRarity = Object.fromEntries(Object.keys(RANK).map((r) => [r, { owned: 0, total: 0, copies: 0 }]));
+  for (const s of series)
+    for (const [r, [owned, total, copies]] of Object.entries(mine[s.id]?.by ?? {})) {
+      byRarity[r].owned += owned;
+      byRarity[r].total += total;
+      byRarity[r].copies += copies;
+    }
+  const counted = series.filter((s) => mine[s.id]).length;
+  return { byRarity, counted, series: series.length, pending: todo.length - batch.length + failed, failed };
+}
+
+// The player's progress: unique cards and missing ones, series complete, cards of each rarity (as counted so far, see
+// rarityCounts), and the cards gained each day.
+export async function collectionStats() {
+  const [{ id, sc, series, point, days }, rarities] = await Promise.all([collectionSnapshot(), rarityCounts(0).catch(() => null)]);
+  const keys = Object.keys(days).sort();
+  const history = keys.map((k, i) => ({
+    day: k,
+    owned: days[k].last.owned,
+    complete: days[k].last.complete,
+    // cards gained that day: since the last reading of the day before it, else since the first reading of the day
+    gain: days[k].last.owned - (i > 0 ? days[keys[i - 1]].last.owned : days[k].first.owned),
+    since: i > 0 ? keys[i - 1] : null
+  }));
+  return {
+    id,
+    name: sc.player?.name ?? null,
+    owned: point.owned,
+    total: point.total,
+    missing: Math.max(0, point.total - point.owned),
+    complete: point.complete,
+    series: Array.isArray(series) ? series.length : null,
+    albums: sc.albums?.length ?? 0,
+    rarities, // { byRarity, counted, series, pending } or null
+    history,
+    today: dayKey()
   };
 }
 
@@ -315,6 +516,7 @@ function collectCards(data) {
           image: v.image,
           rarity: v.rarity,
           types: Array.isArray(v.types) ? v.types : [],
+          owned: typeof v.owned === 'number' ? v.owned : null, // the player's copies, when the catalogue says it
           extra: !!(v.variant || v.seasonId || v.baseId),
           // a card of the Halloween event: its type, its season or its picture say so
           halloween: [v.types, v.seasonId, v.season?.id, v.season?.name, v.season?.slug, v.season?.title, v.event, v.theme, v.image]
@@ -848,9 +1050,12 @@ async function searchedImages() {
 // The copies of another player by image key ({ found, private, byImage }), for the filter "Il lui manque" of the
 // exchanges: by their id, else by their name among the friends, then among the players the relay saw.
 async function playerOwnership({ id, name } = {}) {
-  if (typeof id !== 'string' || !id) id = name ? await playerIdByName(name) : null;
-  if (!id) return { found: false };
+  if (!validPlayer(id)) id = typeof name === 'string' && name ? await playerIdByName(name) : null;
+  // (the partner of an exchange is never the logged-in player: their own collection is not taken for the partner's)
+  if (!validPlayer(id) || id === (await myId())) return { found: false };
   const sc = await showcase(id);
+  // (the collection read must be that of the partner named in the window)
+  if (typeof name === 'string' && name && sc?.player?.name && fold(sc.player.name) !== fold(name)) return { found: false };
   if (sc?.private) return { found: true, private: true };
   return { found: true, private: false, byImage: countCopies(sc).byImage };
 }
@@ -1454,28 +1659,22 @@ const HELLO_EVERY = 9.5 * 60e3; // content.js says hello every 10 minutes while 
 // revoked: the author took Aquaman back from this player; asked again at each start until given back.
 export async function sayHello(kind) {
   const id = await myId();
-  const { helloAt = 0, helloKind, helloFor, helloShare, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'helloShare', 'revokedFor']);
+  const { helloAt = 0, helloKind, helloFor, revokedFor } = await chrome.storage.local.get(['helloAt', 'helloKind', 'helloFor', 'revokedFor']);
   const revoked = revokedFor === id;
-  // The Perles of the player go with it when they share them (the leaderboard); a change of the setting is told at once.
-  const share = (await getSettings()).sharePerles !== false;
-  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id && helloShare === share) return { ok: true, skipped: true, revoked };
+  if (!revoked && Date.now() - helloAt < HELLO_EVERY && helloKind === kind && helloFor === id) return { ok: true, skipped: true, revoked };
   let name = null;
   try {
     name = (await showcase(id)).player?.name ?? null;
   } catch {}
-  let perles = null;
-  if (share)
-    try {
-      perles = (await gameStatus()).perles;
-    } catch {}
+  // "perles: null": the Perles an older version shared for the leaderboard are taken back from the relay.
   const res = await fetch(`${RELAY}/hello`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version, ...(share && perles == null ? {} : { perles }) })
+    body: JSON.stringify({ player: id, name, kind, version: chrome.runtime.getManifest().version, perles: null })
   });
   if (!res.ok) return { ok: false, revoked };
   const now = !!(await res.json().catch(() => null))?.revoked;
-  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id, helloShare: share });
+  await chrome.storage.local.set({ helloAt: Date.now(), helloKind: kind, helloFor: id });
   if (now) await chrome.storage.local.set({ revokedFor: id });
   else if (revoked) await chrome.storage.local.remove('revokedFor');
   return { ok: true, revoked: now };
@@ -1613,8 +1812,15 @@ export async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
-      case 'shared-perles':
-        return { perles: await sharedPerles(Array.isArray(msg.ids) ? msg.ids : []) };
+      case 'collection-stats':
+        if (msg.fresh) forget('showcase:', 'series');
+        return await collectionStats();
+      case 'rarity-counts':
+        return await rarityCounts();
+      case 'collection-snapshot': {
+        const { point } = await collectionSnapshot();
+        return { ok: true, owned: point.owned };
+      }
       case 'global-players':
         return await globalPlayers();
       case 'searched-images':
@@ -1626,7 +1832,11 @@ export async function answer(msg) {
       case 'friends':
         return await friends();
       case 'player':
-        return await playerSummary(msg.id);
+        return await playerSummary(msg.id, !!msg.fresh);
+      case 'board-known':
+        return await boardKnown();
+      case 'claimed-albums':
+        return await claimedAlbums(!!msg.fresh);
       case 'boosters':
         return await boosterReport(msg.query, msg.rarity, msg.field);
       case 'access':

@@ -24,9 +24,13 @@ async function handle(msg) {
       return scriptUpdate();
     case 'install-update':
       return { error: 'userscript' };
-    case 'open':
-      location.assign(msg.href);
+    case 'open': {
+      // (only a page of the game or Aquaman's GitHub pages: never "javascript:" or another site)
+      const url = safeHref(msg.href);
+      if (!url) return { error: 'bad_href' };
+      location.assign(url);
       return { ok: true };
+    }
     default:
       return answer(msg);
   }

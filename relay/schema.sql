@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS users (
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL,
   revoked INTEGER, -- when the author took Aquaman back from the player (null: allowed)
-  perles INTEGER, -- the Perles the player has, when they share them (the friends' leaderboard); null: not shared
+  perles INTEGER, -- no longer used (the leaderboard by Perles is gone): emptied at the player's next hello
   perles_at INTEGER
 );
 -- On a database made before it: ALTER TABLE users ADD COLUMN revoked INTEGER;

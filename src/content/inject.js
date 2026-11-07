@@ -248,9 +248,29 @@
   }
 
   // The copies met in the site's answers (copy id -> { cardId, copyId, name, serial }), and the names of the cards:
-  // the rows of the "Vendre mes doublons" window are found there by their name and number.
+  // the rows of the "Vendre mes doublons" window are found there by their name and number. Only the logged-in
+  // player's own copies: the collection of another player the page reads (a profile, the partner of an exchange…) is
+  // never learnt, so that their copies are never taken for the player's.
   const seenCopies = new Map();
   const cardNames = new Map();
+  let selfId = null; // the logged-in player, from the game's /me answers
+  const idOfMe = (me) => [me?.id, me?.userId, me?.player?.id, me?.user?.id].find((x) => typeof x === 'string' && x) ?? null;
+  function learnSelf(me) {
+    const id = idOfMe(me);
+    if (!id || id === selfId) return;
+    if (selfId) seenCopies.clear(); // another account: the copies of the previous one are forgotten
+    selfId = id;
+  }
+  // True when an answer of this path may hold the player's own copies: not another player's collection.
+  function ownAnswer(path) {
+    const player = path.match(PLAYER_PATH)?.[1];
+    if (!player) return true;
+    try {
+      return !!selfId && decodeURIComponent(player) === selfId;
+    } catch {
+      return false;
+    }
+  }
 
   function learnCopies(body) {
     let left = 300000;
@@ -495,7 +515,13 @@
               })
             );
       }
-      if (path && res.ok && method === 'GET' && !FEED.test(path))
+      if (path && res.ok && method === 'GET' && ME.test(path))
+        res
+          .clone()
+          .json()
+          .then(learnSelf)
+          .catch(() => {});
+      if (path && res.ok && method === 'GET' && !FEED.test(path) && ownAnswer(path))
         res
           .clone()
           .json()
