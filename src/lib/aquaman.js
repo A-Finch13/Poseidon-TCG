@@ -33,6 +33,8 @@ export const SETTINGS = [
     items: [
       ['boosterWheel', 'Boosters par catégorie', 'Classique, Magie, Action… côte à côte, avec le compte de chacun'],
       ['openMore', 'Ouvrir les 10 suivants', 'Après un « Tout ouvrir », un bouton ouvre les boosters suivants du même pack, 10 par 10'],
+      ['recycleSpares', 'Recycler les doublons du tirage', 'Dans la fenêtre des cartes, un bouton recycle en Perles les doublons des cartes tirées (le plus petit numéro est gardé)'],
+      ['autoRecycle', 'Recyclage automatique', 'Désactivé au départ. Après chaque ouverture, les doublons N, R et SR des cartes tirées sont recyclés tout seuls, sans clic (le plus petit numéro est gardé ; SSR, UR et SEC restent au bouton)'],
       ['openMoreAuto', 'Fermeture automatique', 'Après un « Tout ouvrir », la fenêtre des cartes se ferme 5 s après la dernière (sur les 10 suivantes s’il en reste)'],
       ['packGlow', 'Lueur du pack', 'La lueur derrière le booster prend la couleur de son pack'],
       ['pity', 'Garantie anti-malchance', 'Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages'],
@@ -44,7 +46,7 @@ export const SETTINGS = [
     icon: '🗂️',
     items: [
       ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites, tri « Les plus avancées » et bouton « Masquer séries <= 5 persos »'],
-      ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
+      ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris », « Rechercher les manquantes » et « Verrouiller les uniques »'],
       ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
       ['missingSales', 'Pastille « En vente »', 'Sur les cartes manquantes vendues au marché'],
       ['collectionStats', 'Ma progression', 'Bouton à côté de « Ta collection » : pourcentage, raretés, séries complètes et cartes gagnées chaque jour'],
@@ -87,12 +89,15 @@ export const SETTINGS = [
       ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
       ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
       ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
+      ['syncProgress', 'Ma progression', 'Les cartes gagnées chaque jour et le compte par rareté'],
       ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
     ]
   }
 ];
 
-export const DEFAULTS = Object.fromEntries(SETTINGS.flatMap((g) => g.items.map(([key]) => [key, true])));
+// Every feature is on at first, except those that change the player's cards on their own.
+const OFF_AT_FIRST = new Set(['autoRecycle']);
+export const DEFAULTS = Object.fromEntries(SETTINGS.flatMap((g) => g.items.map(([key]) => [key, !OFF_AT_FIRST.has(key)])));
 
 // Settings with their default values.
 export async function getSettings() {
@@ -391,8 +396,86 @@ export async function collectionSnapshot() {
   const id = await myId();
   const [sc, series] = await Promise.all([myShowcase(), seriesList().catch(() => null)]);
   const point = { owned: sc.owned ?? 0, total: sc.total ?? 0, complete: completeSeries(series, sc), at: Date.now() };
-  const days = await recordDay(id, point);
+  let days = await recordDay(id, point);
+  if (await syncProgress(id).catch(() => false)) days = (await chrome.storage.local.get('collectionDays')).collectionDays?.[id] ?? days;
   return { id, sc, series, point, days };
+}
+
+// ---------- Ma progression, the same on every device ----------
+// The days of each device and the counts of each series are joined on the relay (lists "days" and "rarities"): of a
+// day, the earliest first reading and the latest last one; of a series, its most recent count. Once every
+// PROGRESS_PULL at most (the window of Ma progression asks at once).
+
+const PROGRESS_PULL = 10 * 60e3;
+let progressSyncedAt = 0;
+let progressBusy = null;
+
+const joinDays = (a, b) => {
+  const all = { ...a };
+  for (const [k, d] of Object.entries(b ?? {})) {
+    const o = all[k];
+    all[k] = o ? { first: o.first.at <= d.first.at ? o.first : d.first, last: o.last.at >= d.last.at ? o.last : d.last } : d;
+  }
+  return Object.fromEntries(
+    Object.keys(all)
+      .sort()
+      .slice(-STATS_DAYS)
+      .map((k) => [k, all[k]])
+  );
+};
+const joinCounts = (a, b) => {
+  const all = { ...a };
+  for (const [k, s] of Object.entries(b ?? {})) if (!all[k] || s.at > all[k].at) all[k] = s;
+  return all;
+};
+
+// One list of the relay joined with this device's: true when this device's changed.
+async function syncProgressList(player, name, key, toList, fromList, join) {
+  const remote = await postList({ player, name });
+  const theirs = fromList(Array.isArray(remote?.data) ? remote.data : []);
+  const store = (await chrome.storage.local.get(key))[key] ?? {};
+  const mine = store[player] ?? {};
+  const all = join(mine, theirs);
+  const same = (x) => JSON.stringify(toList(x)) === JSON.stringify(toList(all));
+  if (!same(theirs)) await postList({ player, name, data: toList(all), at: Math.max(Date.now(), (Number(remote?.at) || 0) + 1) });
+  if (same(mine)) return false;
+  // (a reading made here meanwhile stays: joined again with what is stored now)
+  const now = (await chrome.storage.local.get(key))[key] ?? {};
+  await chrome.storage.local.set({ [key]: { ...now, [player]: join(now[player] ?? {}, all) } });
+  return true;
+}
+
+export function syncProgress(player, fresh = false) {
+  if (progressBusy) return progressBusy;
+  progressBusy = (async () => {
+    if (!(await getSettings()).syncProgress || (!fresh && Date.now() - progressSyncedAt < PROGRESS_PULL)) return false;
+    progressSyncedAt = Date.now();
+    try {
+      const days = await syncProgressList(
+        player,
+        'days',
+        'collectionDays',
+        (d) => Object.keys(d).sort().map((day) => ({ day, ...d[day] })),
+        (list) => Object.fromEntries(list.filter((x) => x?.day && x.first && x.last).map((x) => [x.day, { first: x.first, last: x.last }])),
+        joinDays
+      );
+      const counts = await syncProgressList(
+        player,
+        'rarities',
+        'rarityCache',
+        (c) => Object.keys(c).sort().map((id) => ({ id, ...c[id] })),
+        (list) => Object.fromEntries(list.filter((x) => x?.id).map(({ id, ...s }) => [id, s])),
+        joinCounts
+      );
+      return days || counts;
+    } catch {
+      progressSyncedAt = 0;
+      return false;
+    } finally {
+      progressBusy = null;
+    }
+  })();
+  return progressBusy;
 }
 
 // ---------- cards of each rarity, counted series by series ----------
@@ -463,6 +546,7 @@ async function countRarities(budget) {
 // The player's progress: unique cards and missing ones, series complete, cards of each rarity (as counted so far, see
 // rarityCounts), and the cards gained each day.
 export async function collectionStats() {
+  await syncProgress(await myId(), true).catch(() => false);
   const [{ id, sc, series, point, days }, rarities] = await Promise.all([collectionSnapshot(), rarityCounts(0).catch(() => null)]);
   const keys = Object.keys(days).sort();
   const history = keys.map((k, i) => ({
@@ -1197,7 +1281,36 @@ export async function seriesStatus(id) {
   const [cards, wanted, favorites] = await Promise.all([seriesCards(id), searchedIds(), favoriteIds()]);
   const missing = cards.filter((c) => !(c.owned > 0));
   const toWant = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
-  return { missing: missing.length, toWant: toWant.length, toWantIds: toWant, favorite: favorites.includes(id) };
+  const guarded = await guardedSeries();
+  return {
+    missing: missing.length,
+    toWant: toWant.length,
+    toWantIds: toWant,
+    favorite: favorites.includes(id),
+    cardIds: cards.map((c) => c.id).filter(Boolean),
+    guarded: Object.hasOwn(guarded, id)
+  };
+}
+
+// ---------- series kept locked: their cards with a single copy are locked (protected) ----------
+// Under the player's account, on this device: { seriesId: [card ids] }. The locking itself is done from the page (the
+// game takes changes from its own pages only); the cards of a series are kept to watch them without reading it again.
+
+export async function guardedSeries() {
+  const me = await myId();
+  const { guardedSeries: all = {} } = await chrome.storage.local.get('guardedSeries');
+  return all[me] ?? {};
+}
+
+export async function setGuarded(id, cardIds, on) {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(id))) throw new Error('bad_series');
+  const me = await myId();
+  const { guardedSeries: all = {} } = await chrome.storage.local.get('guardedSeries');
+  const mine = { ...(all[me] ?? {}) };
+  if (on) mine[id] = (Array.isArray(cardIds) ? cardIds : []).filter((c) => typeof c === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(c)).slice(0, 2000);
+  else delete mine[id];
+  await chrome.storage.local.set({ guardedSeries: { ...all, [me]: mine } });
+  return mine;
 }
 
 // ---------- the cards waiting in Aquaman, shared between the player's devices ----------
@@ -1865,6 +1978,10 @@ export async function answer(msg) {
         return { favorites: await setFavorite(msg.id, !!msg.on) };
       case 'series-status':
         return await seriesStatus(msg.id);
+      case 'guarded-series':
+        return { series: await guardedSeries() };
+      case 'set-guarded':
+        return { series: await setGuarded(msg.id, msg.cardIds, !!msg.on) };
       case 'wants-changed':
         forget('wants', 'series');
         return { ok: true };

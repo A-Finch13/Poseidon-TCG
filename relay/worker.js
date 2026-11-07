@@ -67,7 +67,7 @@ export default {
       if (req.method === 'POST' && pathname === '/pity/all') return json(await pityAll(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/wants') return json(await wants(env, await readBody(req)));
-      if (req.method === 'POST' && pathname === '/lists') return json(await playerList(env, await readBody(req)));
+      if (req.method === 'POST' && pathname === '/lists') return json(await playerList(env, await readBody(req, HOLDINGS_BODY))); // (Ma progression: a count for each series)
       if (req.method === 'GET' && pathname === '/packs') return shared(await packDesigns(env));
       if (req.method === 'POST' && pathname === '/holdings') return json(await saveHoldings(env, await readBody(req, HOLDINGS_BODY)));
       if (req.method === 'GET' && pathname === '/holdings') return json(await findHoldings(env, url.searchParams));
@@ -218,8 +218,38 @@ async function wants(env, body) {
 
 // ---------- other lists of a player, the same on all their devices ----------
 
+// A reading of the collection (Ma progression): whole numbers and a time.
+const count = (v) => Number.isInteger(v) && v >= 0 && v < 1e7;
+const reading = (p) =>
+  p && count(p.owned) && count(p.total) && count(p.complete) && Number.isFinite(p.at) && p.at > 0 && p.at < Date.now() + 86400e3
+    ? { owned: p.owned, total: p.total, complete: p.complete, at: Math.round(p.at) }
+    : null;
+const RARITY_CODES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
+
 // Each list, and what one item of it may be: anything else is dropped.
 const LISTS = {
+  // Ma progression: the first and the last reading of each day { day: "2026-11-07", first, last }
+  days: {
+    max: 120,
+    item: (v) => {
+      const first = reading(v?.first);
+      const last = reading(v?.last);
+      return /^\d{4}-\d{2}-\d{2}$/.test(String(v?.day ?? '')) && first && last ? { day: v.day, first, last } : null;
+    }
+  },
+  // Ma progression: the cards of each rarity of each series { id, owned, total, at, by: { N: [owned, cards, copies] } }
+  rarities: {
+    max: 600,
+    item: (v) => {
+      if (!CARD.test(String(v?.id ?? '')) || !count(v.owned) || !count(v.total) || !Number.isFinite(v.at) || v.at <= 0) return null;
+      const by = {};
+      for (const r of RARITY_CODES) {
+        const x = v.by?.[r];
+        if (Array.isArray(x) && x.length === 3 && x.every(count)) by[r] = x;
+      }
+      return { id: v.id, owned: v.owned, total: v.total, at: Math.round(v.at), by };
+    }
+  },
   // the cards bought on the market: "rarity|name" (or a name alone), in lower case
   bought: { max: 3000, item: (v) => (typeof v === 'string' && v.length <= 160 && !/[<>]/.test(v) ? v : null) },
   // the copies waiting for a place on the market: { cardId, copyId, price, name }

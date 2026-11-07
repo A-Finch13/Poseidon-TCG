@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.4.9
+// @version      1.5.0
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -46,7 +46,7 @@
 'use strict';
 if (window.__aquamanUserscript) return;
 window.__aquamanUserscript = true;
-const VERSION = '1.4.9';
+const VERSION = '1.5.0';
 
 // ---------- 1. src/userscript/shim.js : stockage et messages, à la place des fonctions d'extension ----------
 // Userscript: the extension APIs used by the page code, rebuilt in the page.
@@ -183,6 +183,8 @@ const SETTINGS = [
     items: [
       ['boosterWheel', 'Boosters par catégorie', 'Classique, Magie, Action… côte à côte, avec le compte de chacun'],
       ['openMore', 'Ouvrir les 10 suivants', 'Après un « Tout ouvrir », un bouton ouvre les boosters suivants du même pack, 10 par 10'],
+      ['recycleSpares', 'Recycler les doublons du tirage', 'Dans la fenêtre des cartes, un bouton recycle en Perles les doublons des cartes tirées (le plus petit numéro est gardé)'],
+      ['autoRecycle', 'Recyclage automatique', 'Désactivé au départ. Après chaque ouverture, les doublons N, R et SR des cartes tirées sont recyclés tout seuls, sans clic (le plus petit numéro est gardé ; SSR, UR et SEC restent au bouton)'],
       ['openMoreAuto', 'Fermeture automatique', 'Après un « Tout ouvrir », la fenêtre des cartes se ferme 5 s après la dernière (sur les 10 suivantes s’il en reste)'],
       ['packGlow', 'Lueur du pack', 'La lueur derrière le booster prend la couleur de son pack'],
       ['pity', 'Garantie anti-malchance', 'Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages'],
@@ -194,7 +196,7 @@ const SETTINGS = [
     icon: '🗂️',
     items: [
       ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites, tri « Les plus avancées » et bouton « Masquer séries <= 5 persos »'],
-      ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris » et « Rechercher les manquantes »'],
+      ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris », « Rechercher les manquantes » et « Verrouiller les uniques »'],
       ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
       ['missingSales', 'Pastille « En vente »', 'Sur les cartes manquantes vendues au marché'],
       ['collectionStats', 'Ma progression', 'Bouton à côté de « Ta collection » : pourcentage, raretés, séries complètes et cartes gagnées chaque jour'],
@@ -237,12 +239,15 @@ const SETTINGS = [
       ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
       ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
       ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
+      ['syncProgress', 'Ma progression', 'Les cartes gagnées chaque jour et le compte par rareté'],
       ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
     ]
   }
 ];
 
-const DEFAULTS = Object.fromEntries(SETTINGS.flatMap((g) => g.items.map(([key]) => [key, true])));
+// Every feature is on at first, except those that change the player's cards on their own.
+const OFF_AT_FIRST = new Set(['autoRecycle']);
+const DEFAULTS = Object.fromEntries(SETTINGS.flatMap((g) => g.items.map(([key]) => [key, !OFF_AT_FIRST.has(key)])));
 
 // Settings with their default values.
 async function getSettings() {
@@ -541,8 +546,86 @@ async function collectionSnapshot() {
   const id = await myId();
   const [sc, series] = await Promise.all([myShowcase(), seriesList().catch(() => null)]);
   const point = { owned: sc.owned ?? 0, total: sc.total ?? 0, complete: completeSeries(series, sc), at: Date.now() };
-  const days = await recordDay(id, point);
+  let days = await recordDay(id, point);
+  if (await syncProgress(id).catch(() => false)) days = (await chrome.storage.local.get('collectionDays')).collectionDays?.[id] ?? days;
   return { id, sc, series, point, days };
+}
+
+// ---------- Ma progression, the same on every device ----------
+// The days of each device and the counts of each series are joined on the relay (lists "days" and "rarities"): of a
+// day, the earliest first reading and the latest last one; of a series, its most recent count. Once every
+// PROGRESS_PULL at most (the window of Ma progression asks at once).
+
+const PROGRESS_PULL = 10 * 60e3;
+let progressSyncedAt = 0;
+let progressBusy = null;
+
+const joinDays = (a, b) => {
+  const all = { ...a };
+  for (const [k, d] of Object.entries(b ?? {})) {
+    const o = all[k];
+    all[k] = o ? { first: o.first.at <= d.first.at ? o.first : d.first, last: o.last.at >= d.last.at ? o.last : d.last } : d;
+  }
+  return Object.fromEntries(
+    Object.keys(all)
+      .sort()
+      .slice(-STATS_DAYS)
+      .map((k) => [k, all[k]])
+  );
+};
+const joinCounts = (a, b) => {
+  const all = { ...a };
+  for (const [k, s] of Object.entries(b ?? {})) if (!all[k] || s.at > all[k].at) all[k] = s;
+  return all;
+};
+
+// One list of the relay joined with this device's: true when this device's changed.
+async function syncProgressList(player, name, key, toList, fromList, join) {
+  const remote = await postList({ player, name });
+  const theirs = fromList(Array.isArray(remote?.data) ? remote.data : []);
+  const store = (await chrome.storage.local.get(key))[key] ?? {};
+  const mine = store[player] ?? {};
+  const all = join(mine, theirs);
+  const same = (x) => JSON.stringify(toList(x)) === JSON.stringify(toList(all));
+  if (!same(theirs)) await postList({ player, name, data: toList(all), at: Math.max(Date.now(), (Number(remote?.at) || 0) + 1) });
+  if (same(mine)) return false;
+  // (a reading made here meanwhile stays: joined again with what is stored now)
+  const now = (await chrome.storage.local.get(key))[key] ?? {};
+  await chrome.storage.local.set({ [key]: { ...now, [player]: join(now[player] ?? {}, all) } });
+  return true;
+}
+
+function syncProgress(player, fresh = false) {
+  if (progressBusy) return progressBusy;
+  progressBusy = (async () => {
+    if (!(await getSettings()).syncProgress || (!fresh && Date.now() - progressSyncedAt < PROGRESS_PULL)) return false;
+    progressSyncedAt = Date.now();
+    try {
+      const days = await syncProgressList(
+        player,
+        'days',
+        'collectionDays',
+        (d) => Object.keys(d).sort().map((day) => ({ day, ...d[day] })),
+        (list) => Object.fromEntries(list.filter((x) => x?.day && x.first && x.last).map((x) => [x.day, { first: x.first, last: x.last }])),
+        joinDays
+      );
+      const counts = await syncProgressList(
+        player,
+        'rarities',
+        'rarityCache',
+        (c) => Object.keys(c).sort().map((id) => ({ id, ...c[id] })),
+        (list) => Object.fromEntries(list.filter((x) => x?.id).map(({ id, ...s }) => [id, s])),
+        joinCounts
+      );
+      return days || counts;
+    } catch {
+      progressSyncedAt = 0;
+      return false;
+    } finally {
+      progressBusy = null;
+    }
+  })();
+  return progressBusy;
 }
 
 // ---------- cards of each rarity, counted series by series ----------
@@ -613,6 +696,7 @@ async function countRarities(budget) {
 // The player's progress: unique cards and missing ones, series complete, cards of each rarity (as counted so far, see
 // rarityCounts), and the cards gained each day.
 async function collectionStats() {
+  await syncProgress(await myId(), true).catch(() => false);
   const [{ id, sc, series, point, days }, rarities] = await Promise.all([collectionSnapshot(), rarityCounts(0).catch(() => null)]);
   const keys = Object.keys(days).sort();
   const history = keys.map((k, i) => ({
@@ -1347,7 +1431,36 @@ async function seriesStatus(id) {
   const [cards, wanted, favorites] = await Promise.all([seriesCards(id), searchedIds(), favoriteIds()]);
   const missing = cards.filter((c) => !(c.owned > 0));
   const toWant = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
-  return { missing: missing.length, toWant: toWant.length, toWantIds: toWant, favorite: favorites.includes(id) };
+  const guarded = await guardedSeries();
+  return {
+    missing: missing.length,
+    toWant: toWant.length,
+    toWantIds: toWant,
+    favorite: favorites.includes(id),
+    cardIds: cards.map((c) => c.id).filter(Boolean),
+    guarded: Object.hasOwn(guarded, id)
+  };
+}
+
+// ---------- series kept locked: their cards with a single copy are locked (protected) ----------
+// Under the player's account, on this device: { seriesId: [card ids] }. The locking itself is done from the page (the
+// game takes changes from its own pages only); the cards of a series are kept to watch them without reading it again.
+
+async function guardedSeries() {
+  const me = await myId();
+  const { guardedSeries: all = {} } = await chrome.storage.local.get('guardedSeries');
+  return all[me] ?? {};
+}
+
+async function setGuarded(id, cardIds, on) {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(id))) throw new Error('bad_series');
+  const me = await myId();
+  const { guardedSeries: all = {} } = await chrome.storage.local.get('guardedSeries');
+  const mine = { ...(all[me] ?? {}) };
+  if (on) mine[id] = (Array.isArray(cardIds) ? cardIds : []).filter((c) => typeof c === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(c)).slice(0, 2000);
+  else delete mine[id];
+  await chrome.storage.local.set({ guardedSeries: { ...all, [me]: mine } });
+  return mine;
 }
 
 // ---------- the cards waiting in Aquaman, shared between the player's devices ----------
@@ -2015,6 +2128,10 @@ async function answer(msg) {
         return { favorites: await setFavorite(msg.id, !!msg.on) };
       case 'series-status':
         return await seriesStatus(msg.id);
+      case 'guarded-series':
+        return { series: await guardedSeries() };
+      case 'set-guarded':
+        return { series: await setGuarded(msg.id, msg.cardIds, !!msg.on) };
       case 'wants-changed':
         forget('wants', 'series');
         return { ok: true };
@@ -2176,7 +2293,7 @@ async function handle(msg) {
   const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
   // The card of each sale the market last showed (listing id -> { name, rarity }), for the card of a purchase.
   const listingCards = new Map();
-  const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
+  const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?|recycle)$/;
   const RARITIES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
   const original = window.fetch;
 
@@ -2278,19 +2395,47 @@ async function handle(msg) {
       [...document.querySelectorAll('main p, main span, main h2, main h3')].find((el) => /^mes exemplaires$/i.test(el.textContent.trim())) ??
       document.querySelector('main *');
     const key = start && Object.keys(start).find((k) => k.startsWith('__reactFiber$'));
+    const { card: _card, ...around } = fresh.card ? fresh : {};
     let done = false;
     for (let fiber = key ? start[key] : null; fiber; fiber = fiber.return) {
       for (let hook = typeof fiber.memoizedState === 'object' ? fiber.memoizedState : null; hook && 'next' in hook; hook = hook.next) {
         const s = hook.memoizedState;
         const dispatch = hook.queue?.dispatch;
-        if (typeof dispatch !== 'function' || !s || typeof s !== 'object') continue;
-        if (s.id === id && 'copies' in s) dispatch(card);
-        else if (s.card?.id === id) dispatch({ ...s, ...(fresh.card ? fresh : { card }) });
+        if (typeof dispatch !== 'function' || !s || typeof s !== 'object' || Array.isArray(s) || !plainState(hook.queue)) continue;
+        // (the page's state keeps its shape: only the fields of the same kind are changed, none is lost)
+        if (s.id === id && 'copies' in s) dispatch(sameShape(s, { ...card, ...around }));
+        else if (s.card?.id === id && s.card && typeof s.card === 'object') dispatch({ ...sameShape(s, around), card: sameShape(s.card, card) });
         else continue;
         done = true;
       }
     }
     return done;
+  }
+
+  // A useState of the page (its reducer gives back what it is given), never a useReducer: an object given to a
+  // reducer that waits for an action would break the page (a black page after a purchase).
+  function plainState(queue) {
+    const reducer = queue?.lastRenderedReducer;
+    if (typeof reducer !== 'function') return false;
+    const probe = {};
+    try {
+      return reducer(null, probe) === probe;
+    } catch {
+      return false;
+    }
+  }
+
+  // old with the fields of fresh that have the same kind (an array stays an array, an object an object, nothing
+  // turns empty), and the new fields: the game's page never meets a value it can't draw.
+  function sameShape(old, fresh) {
+    const next = { ...old };
+    for (const [k, v] of Object.entries(fresh ?? {})) {
+      if (!(k in old)) next[k] = v;
+      else if (old[k] == null) next[k] = v;
+      else if (v == null || Array.isArray(v) !== Array.isArray(old[k]) || typeof v !== typeof old[k]) continue;
+      else next[k] = v;
+    }
+    return next;
   }
 
   // After a change of Perles or cards, the game's status (/me: Perles…) and the card of the page are read again from
@@ -2323,6 +2468,15 @@ async function handle(msg) {
       const store = await gameStore();
       if (typeof perles === 'number') store?.setPerles?.(perles); // the Perles the purchase answered, at once
       await store?.load().catch(() => {}); // then the game's status read again from /me
+    } catch {}
+  });
+
+  // content.js gives the game the Perles a change answered (a recycling from the window of cards): only the count is
+  // changed, the status isn't read again (it would draw the pile of boosters again behind the window).
+  window.addEventListener('message', async (e) => {
+    if (e.source !== window || e.data?.aquamanCmd !== 'set-perles' || typeof e.data.perles !== 'number') return;
+    try {
+      (await gameStore())?.setPerles?.(e.data.perles);
     } catch {}
   });
 
@@ -2750,7 +2904,9 @@ async function handle(msg) {
                     boosters: opened.map((b) => raritiesOf(b.pulls)),
                     best: opened.map((b) => bestCard(b.pulls)),
                     packs: opened.map((b) => b.pack),
-                    ids: opened.map((b) => b.id)
+                    ids: opened.map((b) => b.id),
+                    // (the cards pulled: their duplicates can be recycled from the window of cards)
+                    cards: opened.map((b) => (Array.isArray(b.pulls) ? b.pulls : []).map((p) => (p?.card ?? p)?.id).filter((id) => typeof id === 'string'))
                   });
               })
               .catch(() => {});
@@ -4690,11 +4846,21 @@ html.aqm-grabbing * {
 .aqm-star.is-on {
   color: #facc15;
 }
+/* Une seule ligne : sur téléphone, elle défile de côté comme la bande des séries (jamais sur deux lignes par-dessus). */
 .aqm-fav-bar {
   display: flex;
+  gap: 8px;
   margin-bottom: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.aqm-fav-bar::-webkit-scrollbar {
+  display: none;
 }
 .aqm-fav-bar .aqm-chip {
+  flex: 0 0 auto;
+  white-space: nowrap;
   height: 32px;
   text-transform: none;
   letter-spacing: 0;
@@ -5480,9 +5646,6 @@ html.aqm-grabbing * {
 
 /* ---------- Collection : séries les plus avancées ---------- */
 
-.aqm-fav-bar .aqm-sort-progress {
-  margin-left: 8px;
-}
 .aqm-sort-progress.is-on {
   border-color: #3b82f6;
   background: rgba(59, 130, 246, 0.2);
@@ -5539,6 +5702,23 @@ html.aqm-grabbing * {
   display: flex;
   justify-content: flex-end;
   margin: 0 0 8px;
+}
+
+/* Fenêtre des cartes : « Recycler les doublons » du tirage (2e clic = confirmation) */
+.aqm-recycle-spares.is-confirm {
+  background: #f59e0b !important;
+  color: #111 !important;
+}
+.aqm-recycle-note {
+  align-self: center;
+  color: #86efac;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.aqm-recycle-spares:disabled {
+  opacity: 0.75;
+  cursor: default;
 }
 
 /* ---------- Joueurs avec Aquaman (auteur) ---------- */
@@ -5734,6 +5914,12 @@ html.aqm-grabbing * {
   display: flex;
   width: fit-content;
   margin: 12px 0 0 !important;
+  transform: none !important;
+}
+/* Téléphone : au bout de la rangée des boutons du jeu (Ma vitrine, Vendre, Recycler). */
+.aqm-stats-open.is-in-row {
+  position: static !important;
+  margin: 0 !important;
   transform: none !important;
 }
 /* Pendant le chargement de la page : posé par-dessus, à la même place (coordonnées de la page). */
@@ -6068,6 +6254,17 @@ const TOUR = [
 
 // What's new in each version, the most recent first. An item is ['text'] or ['text', 'id of a tour step'].
 const CHANGES = [
+  {
+    version: '1.5.0',
+    items: [
+      ['Collection : dans « Album de la série », « 🔒 Verrouiller les uniques » verrouille les cartes de la série dont tu n’as qu’un exemplaire, puis celles qui descendent à un seul exemplaire (vente, échange, recyclage). Un 2e clic arrête la surveillance.'],
+      ['Ma progression : les cartes gagnées chaque jour et le compte par rareté sont les mêmes sur tous tes appareils (réglage « Partage entre mes appareils › Ma progression »).', 'progression'],
+      ['Boosters : après l’ouverture d’un ou plusieurs boosters, un bouton « ♻ Recycler les doublons » dans la fenêtre des cartes recycle en Perles les doublons des cartes tirées. Un 2e clic confirme ; le plus petit numéro de chaque carte est gardé, les cartes en vente ou verrouillées ne sont pas touchées.'],
+      ['Réglages : « Recyclage automatique » (désactivé au départ) recycle tout seuls, sans clic, les doublons N, R et SR des cartes tirées à la fin de chaque ouverture ; les SSR, UR et SEC restent au bouton.'],
+      ['Marché : l’écran noir après l’achat d’une carte depuis sa page (« Son prix au marché ») est corrigé. « Masquer ce que je viens d’acheter » et le filtre « ★ Favoris » ne touchent plus que la liste du marché, jamais le reste d’une page.'],
+      ['Téléphone : sur la page Collection, les filtres des séries restent sur une ligne qui défile (ils ne débordent plus sur les séries), et « Ma progression » se range avec les boutons du jeu.']
+    ]
+  },
   {
     version: '1.4.9',
     items: [
@@ -6880,6 +7077,9 @@ const CHANGES = [
   // The market: once a card is bought, its other sales are hidden for good (the player has it now), kept in
   // Aquaman's storage.
   const BOUGHT_KEY = 'marketBought';
+  // (the market's list only: /jeu/marche/{card} shows the sales of one card under its title, all of them would go)
+  const onMarket = () => /^\/jeu\/marche\/?$/.test(location.pathname);
+  const PAGE_PARTS = 'main, nav, header, footer, h1, [role="dialog"], [role="alertdialog"], dialog';
   // The cards bought: "rarity|name" in lower case (the rarity's code: n, r, sr, ssr, ur, sec), the same character in
   // another rarity stays shown. (A name alone: kept by the first days of this, any rarity.)
   const boughtNames = new Set();
@@ -6902,13 +7102,17 @@ const CHANGES = [
   // The sales shown by the market: each is the highest box around its "Acheter" holding no other sale, with its texts
   // in lower case (the card's name, its series, its rarity as the game writes it: "N" and "Commune").
   // (the boxes are counted in one pass, the texts read only for the tiles that need them)
+  // Only on the market's page, never in a window (the game's "Confirmer"), and a tile never climbs to a box that holds
+  // the page's title, menu or main part: on a card's page, a lone "Acheter" made the whole page a "sale", hidden once
+  // that card was bought (a black page).
   function marketTiles() {
-    const buys = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root') && BUY_BUTTON.test(b.textContent.trim()));
+    if (!onMarket()) return [];
+    const buys = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root, [role="dialog"], [role="alertdialog"], dialog') && BUY_BUTTON.test(b.textContent.trim()));
     const held = new Map();
     for (const b of buys) for (let el = b.parentElement; el && el !== document.body; el = el.parentElement) held.set(el, (held.get(el) ?? 0) + 1);
     return buys.map((b) => {
       let tile = b;
-      while (tile.parentElement && tile.parentElement !== document.body && held.get(tile.parentElement) === 1) tile = tile.parentElement;
+      while (tile.parentElement && tile.parentElement !== document.body && held.get(tile.parentElement) === 1 && !tile.parentElement.matches(PAGE_PARTS) && !tile.parentElement.querySelector(PAGE_PARTS)) tile = tile.parentElement;
       let texts = null;
       return {
         tile,
@@ -6920,10 +7124,12 @@ const CHANGES = [
   }
 
   function hideBoughtCards() {
-    if (!on('hideBought') || !boughtNames.size || !location.pathname.startsWith('/jeu')) return;
+    // (the sales hidden on a page left are shown again: the game may keep its boxes from one page to the next)
+    if (!onMarket()) return void document.querySelectorAll('[data-aqm-bought]').forEach((el) => el.removeAttribute('data-aqm-bought'));
+    if (!on('hideBought') || !boughtNames.size) return;
     for (const t of marketTiles()) {
       const { tile } = t;
-      if (tile.hasAttribute('data-aqm-bought')) continue;
+      if (tile.hasAttribute('data-aqm-bought') || tile.matches(PAGE_PARTS) || tile.querySelector(PAGE_PARTS)) continue;
       const { texts } = t;
       const rarity = RANKED.find((code) => texts.has(code.toLowerCase()) || texts.has(RARITY_NAMES[code].toLowerCase()))?.toLowerCase();
       const hidden = [...texts].some((t) => boughtNames.has(t) || (rarity && boughtNames.has(`${rarity}|${t}`)));
@@ -6944,7 +7150,7 @@ const CHANGES = [
     }
   };
   function markMarketFavorites() {
-    if (!location.pathname.startsWith('/jeu')) return;
+    if (!onMarket()) return void document.querySelectorAll('[data-aqm-unfav]').forEach((el) => el.removeAttribute('data-aqm-unfav'));
     const mine = [...document.querySelectorAll('button')].find((b) => !b.closest('.aqm-root') && /^mes recherches$/i.test(b.textContent.trim()));
     if (!mine) return;
     const on = marketFavOn();
@@ -6979,7 +7185,7 @@ const CHANGES = [
       return;
     }
     const titles = new Set(on ? [...favIds].map((id) => seriesTitles.get(id)).filter(Boolean) : []);
-    for (const { tile, texts } of marketTiles()) tile.toggleAttribute('data-aqm-unfav', on && ![...texts].some((t) => titles.has(t)));
+    for (const { tile, texts } of marketTiles()) tile.toggleAttribute('data-aqm-unfav', on && !tile.matches(PAGE_PARTS) && !tile.querySelector(PAGE_PARTS) && ![...texts].some((t) => titles.has(t)));
   }
 
   // Beside the game's "Vendre une carte" (the market): a button that withdraws every fixed-price sale of the player at
@@ -7109,7 +7315,9 @@ const CHANGES = [
     // A feature turned on or off elsewhere (the extension's popup, another tab): offered to load the page again.
     if (changes.settings && !settingsOpen) {
       const now = changes.settings.newValue ?? {};
-      const STEPS = new Set(STEP_SETTING.values()).add('packGlow');
+      const STEPS = new Set(STEP_SETTING.values()).add('packGlow').add('recycleSpares');
+      // (off at first: missing means off)
+      if ((now.autoRecycle === true) !== (feat.autoRecycle === true)) offerReload();
       if ([...STEPS].some((key) => (now[key] !== false) !== on(key))) offerReload();
     }
     if (changes[QUEUE]) {
@@ -7156,6 +7364,7 @@ const CHANGES = [
     if (e.data.aquaman === 'collection-stale') {
       owned = null;
       send({ type: 'collection-stale' });
+      guardSoon();
       if (on('collectionStats')) snapCollection(true);
       setTimeout(schedule, 1500);
       setTimeout(() => checkRoom(20e3), 3000); // a card searched may just have been obtained
@@ -7174,6 +7383,8 @@ const CHANGES = [
       playersSeen.set(foldName(e.data.name), e.data.id);
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
       if (batch) batch.opened = e.data.boosters.length;
+      pulledCards = new Set((Array.isArray(e.data.cards) ? e.data.cards.flat() : []).filter((id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)));
+      spareOffer = null;
       send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
@@ -8665,7 +8876,7 @@ const CHANGES = [
         h(
           'div',
           { class: 'aqm-root aqm-fav-bar' },
-          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, favIds ? String(favIds.size) : '…')),
+          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris', h('b', {}, favIds ? String(favIds.size) : '…')),
           h('button', {
             type: 'button',
             class: 'aqm-chip aqm-sort-progress',
@@ -9393,9 +9604,132 @@ const CHANGES = [
       note.textContent = wantsNote(r, 'tu peux changer de page ou ouvrir des boosters');
     });
     paintWant();
+    // "Verrouiller les uniques": the cards of the series with a single copy are locked, and the series is watched (a
+    // card that goes down to one copy is locked then). A second click stops the watch (nothing is unlocked).
+    const guard = h('button', { type: 'button', class: 'aqm-album-btn aqm-guard' });
+    const paintGuard = () => {
+      guard.classList.toggle('is-on', !!st.guarded);
+      guard.textContent = st.guarded ? '🔒 Uniques verrouillées' : '🔒 Verrouiller les uniques';
+      guard.title = st.guarded
+        ? 'Les cartes de cette série dont tu n’as qu’un exemplaire sont verrouillées, et celles qui descendent à un seul le seront aussi. Clique pour arrêter (rien n’est déverrouillé).'
+        : 'Verrouille les cartes de cette série dont tu n’as qu’un exemplaire (ni vente, ni échange, ni recyclage), puis celles qui descendront à un seul exemplaire';
+    };
+    guard.addEventListener('click', async () => {
+      guard.disabled = true;
+      try {
+        if (st.guarded) {
+          await ask({ type: 'set-guarded', id, on: false });
+          st.guarded = false;
+          note.textContent = 'Cette série n’est plus surveillée. Les cartes déjà verrouillées le restent.';
+        } else {
+          guard.textContent = '🔒 Verrouillage…';
+          const r = await lockSingles(new Set(st.cardIds ?? []));
+          await ask({ type: 'set-guarded', id, cardIds: st.cardIds ?? [], on: true });
+          st.guarded = true;
+          note.textContent = guardNote(r);
+        }
+      } catch (e) {
+        note.textContent = `Verrouillage impossible : ${e.message}`;
+      }
+      guard.disabled = false;
+      paintGuard();
+    });
+    paintGuard();
     // (no progress of the waiting cards here: drawn again at each series, it made the page jump; it stays at the
     // bottom of the screen and in "Séries favorites")
-    box.replaceChildren(fav, want, note);
+    box.replaceChildren(fav, want, guard, note);
+  }
+
+  const guardNote = (r) =>
+    [
+      r.locked ? `🔒 ${fmt(r.locked)} carte${r.locked > 1 ? 's' : ''} verrouillée${r.locked > 1 ? 's' : ''}` : 'Aucune carte à verrouiller pour le moment',
+      r.already ? `${fmt(r.already)} déjà verrouillée${r.already > 1 ? 's' : ''}` : null,
+      r.onSale ? `${fmt(r.onSale)} en vente (verrouillée${r.onSale > 1 ? 's' : ''} si elle${r.onSale > 1 ? 's' : ''} revien${r.onSale > 1 ? 'nent' : 't'})` : null,
+      r.failed ? `${fmt(r.failed)} refusée${r.failed > 1 ? 's' : ''} par le jeu${r.error ? ` (« ${r.error} »)` : ''}` : null
+    ]
+      .filter(Boolean)
+      .join(' · ') + '. Les cartes qui descendront à un seul exemplaire seront verrouillées aussi.';
+
+  // Locks the single copy of each card of the set (cards: ids); a card on sale (locked by the market) is left, it is
+  // locked when it comes back. One request at a time, at the pace the game accepts.
+  let locking = Promise.resolve();
+  function lockSingles(cards) {
+    const run = locking.then(async () => {
+      const r = { locked: 0, already: 0, onSale: 0, failed: 0, error: null };
+      if (!cards.size) return r;
+      const { copies } = (await gameWrite('/copies', 'GET')) ?? {};
+      const byCard = new Map();
+      for (const c of Array.isArray(copies) ? copies : []) {
+        const id = c?.card?.id;
+        if (!id || !cards.has(id)) continue;
+        if (!byCard.has(id)) byCard.set(id, []);
+        byCard.get(id).push(c);
+      }
+      for (const list of byCard.values()) {
+        if (list.length !== 1) continue;
+        const [c] = list;
+        if (c.protected) {
+          r.already++;
+          continue;
+        }
+        if (c.locked) {
+          r.onSale++;
+          continue;
+        }
+        // (GET /copies gives each copy's id as copyId, the id PUT /copies/{id}/protect takes)
+        const { copyId } = c;
+        if (typeof copyId !== 'string' || !copyId) {
+          r.failed++;
+          r.error ??= 'exemplaire sans identifiant';
+          continue;
+        }
+        for (let tries = 0; ; tries++) {
+          try {
+            await gameWrite(`/copies/${encodeURIComponent(copyId)}/protect`, 'PUT');
+            r.locked++;
+            break;
+          } catch (e) {
+            if (!e.slowDown || tries >= 3) {
+              r.failed++;
+              r.error ??= e.message;
+              break;
+            }
+            await pause(e.wait || 3000);
+          }
+        }
+      }
+      return r;
+    });
+    locking = run.catch(() => {});
+    return run;
+  }
+
+  // The series watched: after a change of cards (a sale, a trade, a recycling…) and every 10 minutes on the game's
+  // pages, their cards down to a single copy are locked.
+  let guardTimer = 0;
+  let guardAt = 0;
+  function guardSoon(delay = 8000) {
+    clearTimeout(guardTimer);
+    guardTimer = setTimeout(guardSeries, delay);
+  }
+  async function guardSeries() {
+    if (stopped || !on('albumButtons')) return;
+    // (not while the window of cards is open: a lock makes the game read its status again, its pile drawn again)
+    if (cardsWindowRow() || opening || drawing) return void guardSoon(5000);
+    guardAt = Date.now();
+    try {
+      const { series } = await ask({ type: 'guarded-series' });
+      const cards = new Set(Object.values(series ?? {}).flat());
+      if (!cards.size) return;
+      const r = await lockSingles(cards);
+      if (r.locked) {
+        const box = document.querySelector('.aqm-album .aqm-album-note');
+        if (box) box.textContent = `🔒 ${fmt(r.locked)} carte${r.locked > 1 ? 's' : ''} descendue${r.locked > 1 ? 's' : ''} à un exemplaire, verrouillée${r.locked > 1 ? 's' : ''}.`;
+      }
+    } catch {}
+  }
+  function watchGuards() {
+    if (Date.now() - guardAt >= 10 * 60e3) guardSoon(1000);
   }
 
   // ---------- collection: "Ma progression" beside the "Ta collection" title ----------
@@ -9505,18 +9839,41 @@ const CHANGES = [
     const b = btn.getBoundingClientRect();
     const row = vitrineButton()?.parentElement?.getBoundingClientRect();
     const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
-    if (blocked || b.right > document.documentElement.clientWidth - 8) set(t.left, t.bottom + 12, true);
+    // (no room at the right of the title, a phone: the button goes into the game's row once the page is ready, and
+    // shows nothing before, never over the page's text)
+    if (blocked || b.right > document.documentElement.clientWidth - 8) {
+      stopEarlyStats();
+      btn.remove();
+    }
   }
 
   // At the right of the title when it fits there, else under it.
+  // At the right of the title when it fits there; else (a phone) at the end of the game's row of buttons, beside
+  // "Recycler mes doublons". The place is worked out from the sizes alone, and the button moves only when it changes:
+  // its move changes the row's size, which asks again (the same answer, no loop).
   function placeStatsButton() {
     const btn = document.querySelector('.aqm-stats-open');
     if (!btn?.isConnected || btn.classList.contains('is-early')) return;
-    btn.classList.remove('is-below');
-    const b = btn.getBoundingClientRect();
-    const row = vitrineButton()?.parentElement?.getBoundingClientRect();
-    const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
-    if (blocked || b.right > document.documentElement.clientWidth - 8) btn.classList.add('is-below');
+    const title = document.querySelector('[data-aqm-stats-title]');
+    const row = vitrineButton()?.parentElement;
+    if (!title) return;
+    const t = title.getBoundingClientRect();
+    const w = btn.offsetWidth;
+    const hgt = btn.offsetHeight;
+    const left = t.right + 20;
+    const top = t.top + t.height / 2 - hgt / 2;
+    const r = row?.getBoundingClientRect();
+    const blocked = r && left + w + 8 > r.left && left < r.right && top < r.bottom && top + hgt > r.top;
+    const fits = !blocked && left + w <= document.documentElement.clientWidth - 8;
+    if (fits || !row) {
+      if (btn.parentElement !== title) title.append(btn);
+      btn.classList.remove('is-in-row');
+      btn.classList.toggle('is-below', !fits);
+    } else {
+      if (btn.parentElement !== row) row.append(btn);
+      btn.classList.remove('is-below');
+      btn.classList.add('is-in-row');
+    }
   }
   let statsResize = 0;
   addEventListener('resize', () => {
@@ -11578,6 +11935,179 @@ const CHANGES = [
     }
   }
 
+  // ---------- the window of cards: "Recycler les doublons" of the cards just pulled ----------
+  // Beside "Voir ma collection": the copies of the cards pulled that the player has more than once, recycled as the
+  // game's "Recycler mes doublons" does: the smallest number of each card is kept, the cards on sale (locked) or locked
+  // by the player (protected) are never touched. Two clicks: the count and the Perles first, then the recycling.
+  // With "Recyclage automatique" (off at first), the N, R and SR ones go at once, without a click; the SSR, UR and SEC
+  // ones stay on the button.
+  const AUTO_RARITIES = new Set(['N', 'R', 'SR']);
+  let pulledCards = new Set(); // the cards of the last boosters opened
+  let spareOffer = null; // { cards, state: loading|unread|ready|none|confirm|busy|done|failed, ids, perles, text, note }
+
+  // The copies to recycle among those of the cards pulled ({ id, rarity, perles }), the smallest number kept.
+  async function loadSpares(cards) {
+    const [mine, rarities] = await Promise.all([gameWrite('/copies', 'GET'), gameWrite('/rarities', 'GET').catch(() => null)]);
+    const list = Array.isArray(rarities) ? rarities : rarities?.rarities ?? [];
+    const value = new Map(list.filter((r) => r?.code).map((r) => [r.code, Number(r.recycleValue) || 0]));
+    const byCard = new Map();
+    for (const c of Array.isArray(mine?.copies) ? mine.copies : []) {
+      const id = c?.card?.id;
+      if (!id || !cards.has(id) || c.locked) continue;
+      if (!byCard.has(id)) byCard.set(id, []);
+      byCard.get(id).push(c);
+    }
+    return [...byCard.values()]
+      .flatMap((all) =>
+        [...all]
+          .sort((a, b) => Number(!!b.protected) - Number(!!a.protected) || (Number(a.serial) || 0) - (Number(b.serial) || 0))
+          .slice(1)
+          .filter((c) => !c.protected)
+      )
+      .map((c) => ({ id: c.copyId, rarity: c.card?.rarity ?? null, perles: value.get(c.card?.rarity) ?? 0 }))
+      .filter((c) => typeof c.id === 'string' && c.id);
+  }
+
+  // Recycles the copies (200 at most per request, as the game sends them); the game's Perles change at once.
+  async function recycleCopies(ids) {
+    let gained = 0;
+    let done = 0;
+    let error = null;
+    try {
+      for (let i = 0; i < ids.length; i += 200) {
+        const res = await gameWrite('/recycle', 'POST', { copyIds: ids.slice(i, i + 200) });
+        done = Math.min(ids.length, i + 200);
+        gained += Number(res?.gained) || 0;
+        if (typeof res?.perles === 'number') window.postMessage({ aquamanCmd: 'set-perles', perles: res.perles }, location.origin);
+      }
+    } catch (e) {
+      error = e;
+    }
+    if (done) {
+      owned = null;
+      send({ type: 'collection-stale' });
+      guardSoon();
+    }
+    return { done, gained, error };
+  }
+  const recycledText = (done, gained) => `♻ ${fmt(done)} recyclée${done > 1 ? 's' : ''} · +${fmt(gained)} Perles`;
+
+  // The copies read: the automatic recycling first (setting), then the button for what is left.
+  async function offerSpares(offer) {
+    let spares;
+    try {
+      spares = await loadSpares(offer.cards);
+    } catch (e) {
+      // (shown on the button: a click reads the copies again)
+      console.warn('[Aquaman] doublons du tirage', e);
+      return Object.assign(offer, { state: 'unread', text: '♻ Doublons : réessayer', error: e?.message || String(e) });
+    }
+    if (feat.autoRecycle === true) {
+      const auto = spares.filter((c) => AUTO_RARITIES.has(c.rarity));
+      if (auto.length) {
+        offer.state = 'busy';
+        markRecycleSpares();
+        const r = await recycleCopies(auto.map((c) => c.id));
+        offer.note = r.done ? `${recycledText(r.done, r.gained)} (auto)` : `Recyclage automatique refusé : ${r.error?.message ?? ''}`;
+        const gone = new Set(auto.slice(0, r.done).map((c) => c.id));
+        spares = spares.filter((c) => !gone.has(c.id));
+      }
+    }
+    const left = on('recycleSpares') ? spares : [];
+    Object.assign(offer, { ids: left.map((c) => c.id), perles: left.reduce((n, c) => n + c.perles, 0), state: left.length ? 'ready' : 'none' });
+  }
+
+  // The window of cards: the row of its "Voir ma collection" (a link to /jeu/collection, not a button) and "Fermer" (the
+  // page may have other "Fermer", hidden).
+  function cardsWindowRow() {
+    for (const close of document.querySelectorAll('button')) {
+      if (close.closest('.aqm-root') || !/^fermer$/i.test(close.textContent.trim())) continue;
+      const row = close.parentElement;
+      const mine = row && [...row.children].find((b) => (b.tagName === 'A' || b.tagName === 'BUTTON') && !b.classList.contains('aqm-recycle-spares') && /^voir ma collection$/i.test(b.textContent.trim()));
+      if (mine) return { row, mine };
+    }
+    return null;
+  }
+
+  function markRecycleSpares() {
+    const old = document.querySelector('.aqm-recycle-spares');
+    const oldNote = document.querySelector('.aqm-recycle-note');
+    const found = (on('recycleSpares') || feat.autoRecycle === true) && pulledCards.size ? cardsWindowRow() : null;
+    if (!found) return void (old?.remove(), oldNote?.remove());
+    const { row, mine } = found;
+    if (spareOffer?.cards !== pulledCards) {
+      const offer = (spareOffer = { cards: pulledCards, state: 'loading' });
+      offerSpares(offer).finally(() => spareOffer === offer && markRecycleSpares());
+    }
+    const o = spareOffer;
+    // The automatic recycling's result, beside the buttons.
+    let note = oldNote;
+    if (o.note) {
+      if (!note || note.parentElement !== row) {
+        oldNote?.remove();
+        note = h('span', { class: 'aqm-root aqm-recycle-note' });
+        mine.after(note);
+      }
+      if (note.textContent !== o.note) note.textContent = o.note;
+    } else oldNote?.remove();
+    if (o.state === 'none' || o.state === 'loading' || (o.state === 'busy' && !o.ids)) return void old?.remove();
+    const n = o.ids?.length ?? 0;
+    const gain = o.perles ? ` · +${fmt(o.perles)} Perles` : '';
+    const label = {
+      unread: o.text,
+      ready: `♻ Recycler les doublons (${fmt(n)})`,
+      confirm: `Confirmer : ${fmt(n)} carte${n > 1 ? 's' : ''}${gain}`,
+      busy: 'Recyclage…',
+      done: o.text,
+      failed: o.text
+    }[o.state];
+    const title =
+      o.state === 'unread'
+        ? `Tes exemplaires n’ont pas pu être lus (${o.error}). Clique pour réessayer.`
+        : o.state === 'failed'
+        ? 'Clique pour réessayer'
+        : `Les doublons des cartes de ce tirage${gain}. On garde le plus petit numéro de chaque carte ; les cartes en vente ou verrouillées ne sont pas touchées.`;
+    let btn = old;
+    if (!btn || btn.parentElement !== row) {
+      old?.remove();
+      btn = h('button', { type: 'button', class: `${mine.className} aqm-recycle-spares`, onclick: recycleSpares });
+      (note?.isConnected ? note : mine).after(btn);
+    }
+    if (btn.textContent !== label) btn.textContent = label;
+    if (btn.title !== title) btn.title = title;
+    btn.disabled = o.state === 'busy' || o.state === 'done';
+    btn.classList.toggle('is-confirm', o.state === 'confirm');
+  }
+
+  async function recycleSpares() {
+    const o = spareOffer;
+    if (!o) return;
+    // (the copies couldn't be read: read again)
+    if (o.state === 'unread') {
+      spareOffer = null;
+      return markRecycleSpares();
+    }
+    if (o.state === 'ready' || o.state === 'failed') {
+      o.state = 'confirm';
+      // (no second click within 6 s: back to the first step)
+      setTimeout(() => o.state === 'confirm' && ((o.state = 'ready'), markRecycleSpares()), 6000);
+      return markRecycleSpares();
+    }
+    if (o.state !== 'confirm') return;
+    o.state = 'busy';
+    markRecycleSpares();
+    const { done, gained, error } = await recycleCopies(o.ids);
+    o.ids = o.ids.slice(done);
+    if (!error) {
+      o.state = 'done';
+      o.text = recycledText(done, gained);
+    } else {
+      o.state = o.ids.length ? 'failed' : 'done';
+      o.text = done ? `${recycledText(done, gained)}, puis refus : ${error.message}` : `Refusé : ${error.message}`;
+    }
+    markRecycleSpares();
+  }
+
   function markBoosterKinds() {
     if (!featLoaded || !on('boosterWheel') || !/^\/jeu\/?$/.test(location.pathname) || drawing || opening) return;
     // The game read its boosters before Aquaman listened: inject.js wrote them on the page; else Aquaman reads them
@@ -12070,6 +12600,7 @@ const CHANGES = [
     [markSeriesStrip, 'seriesTools'],
     [markFavoriteSeries, 'seriesTools'],
     [markAlbum, 'albumButtons'],
+    [watchGuards, 'albumButtons'],
     [markMissingTab, 'missingTab'],
     [markMissingSales, 'missingSales'],
     [markCollectionStats, 'collectionStats'],
@@ -12100,7 +12631,7 @@ const CHANGES = [
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
       if (!inGame && step !== markTrades && step !== checkAccess) continue;
       try {

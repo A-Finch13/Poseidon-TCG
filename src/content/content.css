@@ -1922,11 +1922,21 @@ html.aqm-grabbing * {
 .aqm-star.is-on {
   color: #facc15;
 }
+/* Une seule ligne : sur téléphone, elle défile de côté comme la bande des séries (jamais sur deux lignes par-dessus). */
 .aqm-fav-bar {
   display: flex;
+  gap: 8px;
   margin-bottom: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.aqm-fav-bar::-webkit-scrollbar {
+  display: none;
 }
 .aqm-fav-bar .aqm-chip {
+  flex: 0 0 auto;
+  white-space: nowrap;
   height: 32px;
   text-transform: none;
   letter-spacing: 0;
@@ -2712,9 +2722,6 @@ html.aqm-grabbing * {
 
 /* ---------- Collection : séries les plus avancées ---------- */
 
-.aqm-fav-bar .aqm-sort-progress {
-  margin-left: 8px;
-}
 .aqm-sort-progress.is-on {
   border-color: #3b82f6;
   background: rgba(59, 130, 246, 0.2);
@@ -2771,6 +2778,23 @@ html.aqm-grabbing * {
   display: flex;
   justify-content: flex-end;
   margin: 0 0 8px;
+}
+
+/* Fenêtre des cartes : « Recycler les doublons » du tirage (2e clic = confirmation) */
+.aqm-recycle-spares.is-confirm {
+  background: #f59e0b !important;
+  color: #111 !important;
+}
+.aqm-recycle-note {
+  align-self: center;
+  color: #86efac;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.aqm-recycle-spares:disabled {
+  opacity: 0.75;
+  cursor: default;
 }
 
 /* ---------- Joueurs avec Aquaman (auteur) ---------- */
@@ -2966,6 +2990,12 @@ html.aqm-grabbing * {
   display: flex;
   width: fit-content;
   margin: 12px 0 0 !important;
+  transform: none !important;
+}
+/* Téléphone : au bout de la rangée des boutons du jeu (Ma vitrine, Vendre, Recycler). */
+.aqm-stats-open.is-in-row {
+  position: static !important;
+  margin: 0 !important;
   transform: none !important;
 }
 /* Pendant le chargement de la page : posé par-dessus, à la même place (coordonnées de la page). */

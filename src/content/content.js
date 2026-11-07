@@ -659,6 +659,9 @@
   // The market: once a card is bought, its other sales are hidden for good (the player has it now), kept in
   // Aquaman's storage.
   const BOUGHT_KEY = 'marketBought';
+  // (the market's list only: /jeu/marche/{card} shows the sales of one card under its title, all of them would go)
+  const onMarket = () => /^\/jeu\/marche\/?$/.test(location.pathname);
+  const PAGE_PARTS = 'main, nav, header, footer, h1, [role="dialog"], [role="alertdialog"], dialog';
   // The cards bought: "rarity|name" in lower case (the rarity's code: n, r, sr, ssr, ur, sec), the same character in
   // another rarity stays shown. (A name alone: kept by the first days of this, any rarity.)
   const boughtNames = new Set();
@@ -681,13 +684,17 @@
   // The sales shown by the market: each is the highest box around its "Acheter" holding no other sale, with its texts
   // in lower case (the card's name, its series, its rarity as the game writes it: "N" and "Commune").
   // (the boxes are counted in one pass, the texts read only for the tiles that need them)
+  // Only on the market's page, never in a window (the game's "Confirmer"), and a tile never climbs to a box that holds
+  // the page's title, menu or main part: on a card's page, a lone "Acheter" made the whole page a "sale", hidden once
+  // that card was bought (a black page).
   function marketTiles() {
-    const buys = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root') && BUY_BUTTON.test(b.textContent.trim()));
+    if (!onMarket()) return [];
+    const buys = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root, [role="dialog"], [role="alertdialog"], dialog') && BUY_BUTTON.test(b.textContent.trim()));
     const held = new Map();
     for (const b of buys) for (let el = b.parentElement; el && el !== document.body; el = el.parentElement) held.set(el, (held.get(el) ?? 0) + 1);
     return buys.map((b) => {
       let tile = b;
-      while (tile.parentElement && tile.parentElement !== document.body && held.get(tile.parentElement) === 1) tile = tile.parentElement;
+      while (tile.parentElement && tile.parentElement !== document.body && held.get(tile.parentElement) === 1 && !tile.parentElement.matches(PAGE_PARTS) && !tile.parentElement.querySelector(PAGE_PARTS)) tile = tile.parentElement;
       let texts = null;
       return {
         tile,
@@ -699,10 +706,12 @@
   }
 
   function hideBoughtCards() {
-    if (!on('hideBought') || !boughtNames.size || !location.pathname.startsWith('/jeu')) return;
+    // (the sales hidden on a page left are shown again: the game may keep its boxes from one page to the next)
+    if (!onMarket()) return void document.querySelectorAll('[data-aqm-bought]').forEach((el) => el.removeAttribute('data-aqm-bought'));
+    if (!on('hideBought') || !boughtNames.size) return;
     for (const t of marketTiles()) {
       const { tile } = t;
-      if (tile.hasAttribute('data-aqm-bought')) continue;
+      if (tile.hasAttribute('data-aqm-bought') || tile.matches(PAGE_PARTS) || tile.querySelector(PAGE_PARTS)) continue;
       const { texts } = t;
       const rarity = RANKED.find((code) => texts.has(code.toLowerCase()) || texts.has(RARITY_NAMES[code].toLowerCase()))?.toLowerCase();
       const hidden = [...texts].some((t) => boughtNames.has(t) || (rarity && boughtNames.has(`${rarity}|${t}`)));
@@ -723,7 +732,7 @@
     }
   };
   function markMarketFavorites() {
-    if (!location.pathname.startsWith('/jeu')) return;
+    if (!onMarket()) return void document.querySelectorAll('[data-aqm-unfav]').forEach((el) => el.removeAttribute('data-aqm-unfav'));
     const mine = [...document.querySelectorAll('button')].find((b) => !b.closest('.aqm-root') && /^mes recherches$/i.test(b.textContent.trim()));
     if (!mine) return;
     const on = marketFavOn();
@@ -758,7 +767,7 @@
       return;
     }
     const titles = new Set(on ? [...favIds].map((id) => seriesTitles.get(id)).filter(Boolean) : []);
-    for (const { tile, texts } of marketTiles()) tile.toggleAttribute('data-aqm-unfav', on && ![...texts].some((t) => titles.has(t)));
+    for (const { tile, texts } of marketTiles()) tile.toggleAttribute('data-aqm-unfav', on && !tile.matches(PAGE_PARTS) && !tile.querySelector(PAGE_PARTS) && ![...texts].some((t) => titles.has(t)));
   }
 
   // Beside the game's "Vendre une carte" (the market): a button that withdraws every fixed-price sale of the player at
@@ -888,7 +897,9 @@
     // A feature turned on or off elsewhere (the extension's popup, another tab): offered to load the page again.
     if (changes.settings && !settingsOpen) {
       const now = changes.settings.newValue ?? {};
-      const STEPS = new Set(STEP_SETTING.values()).add('packGlow');
+      const STEPS = new Set(STEP_SETTING.values()).add('packGlow').add('recycleSpares');
+      // (off at first: missing means off)
+      if ((now.autoRecycle === true) !== (feat.autoRecycle === true)) offerReload();
       if ([...STEPS].some((key) => (now[key] !== false) !== on(key))) offerReload();
     }
     if (changes[QUEUE]) {
@@ -935,6 +946,7 @@
     if (e.data.aquaman === 'collection-stale') {
       owned = null;
       send({ type: 'collection-stale' });
+      guardSoon();
       if (on('collectionStats')) snapCollection(true);
       setTimeout(schedule, 1500);
       setTimeout(() => checkRoom(20e3), 3000); // a card searched may just have been obtained
@@ -953,6 +965,8 @@
       playersSeen.set(foldName(e.data.name), e.data.id);
     else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
       if (batch) batch.opened = e.data.boosters.length;
+      pulledCards = new Set((Array.isArray(e.data.cards) ? e.data.cards.flat() : []).filter((id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)));
+      spareOffer = null;
       send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
         if (report && !report.error) {
           pityReport = report;
@@ -2444,7 +2458,7 @@
         h(
           'div',
           { class: 'aqm-root aqm-fav-bar' },
-          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris ', h('b', {}, favIds ? String(favIds.size) : '…')),
+          h('button', { type: 'button', class: 'aqm-chip aqm-fav-open', onclick: openFavorites }, '★ Favoris', h('b', {}, favIds ? String(favIds.size) : '…')),
           h('button', {
             type: 'button',
             class: 'aqm-chip aqm-sort-progress',
@@ -3172,9 +3186,132 @@
       note.textContent = wantsNote(r, 'tu peux changer de page ou ouvrir des boosters');
     });
     paintWant();
+    // "Verrouiller les uniques": the cards of the series with a single copy are locked, and the series is watched (a
+    // card that goes down to one copy is locked then). A second click stops the watch (nothing is unlocked).
+    const guard = h('button', { type: 'button', class: 'aqm-album-btn aqm-guard' });
+    const paintGuard = () => {
+      guard.classList.toggle('is-on', !!st.guarded);
+      guard.textContent = st.guarded ? '🔒 Uniques verrouillées' : '🔒 Verrouiller les uniques';
+      guard.title = st.guarded
+        ? 'Les cartes de cette série dont tu n’as qu’un exemplaire sont verrouillées, et celles qui descendent à un seul le seront aussi. Clique pour arrêter (rien n’est déverrouillé).'
+        : 'Verrouille les cartes de cette série dont tu n’as qu’un exemplaire (ni vente, ni échange, ni recyclage), puis celles qui descendront à un seul exemplaire';
+    };
+    guard.addEventListener('click', async () => {
+      guard.disabled = true;
+      try {
+        if (st.guarded) {
+          await ask({ type: 'set-guarded', id, on: false });
+          st.guarded = false;
+          note.textContent = 'Cette série n’est plus surveillée. Les cartes déjà verrouillées le restent.';
+        } else {
+          guard.textContent = '🔒 Verrouillage…';
+          const r = await lockSingles(new Set(st.cardIds ?? []));
+          await ask({ type: 'set-guarded', id, cardIds: st.cardIds ?? [], on: true });
+          st.guarded = true;
+          note.textContent = guardNote(r);
+        }
+      } catch (e) {
+        note.textContent = `Verrouillage impossible : ${e.message}`;
+      }
+      guard.disabled = false;
+      paintGuard();
+    });
+    paintGuard();
     // (no progress of the waiting cards here: drawn again at each series, it made the page jump; it stays at the
     // bottom of the screen and in "Séries favorites")
-    box.replaceChildren(fav, want, note);
+    box.replaceChildren(fav, want, guard, note);
+  }
+
+  const guardNote = (r) =>
+    [
+      r.locked ? `🔒 ${fmt(r.locked)} carte${r.locked > 1 ? 's' : ''} verrouillée${r.locked > 1 ? 's' : ''}` : 'Aucune carte à verrouiller pour le moment',
+      r.already ? `${fmt(r.already)} déjà verrouillée${r.already > 1 ? 's' : ''}` : null,
+      r.onSale ? `${fmt(r.onSale)} en vente (verrouillée${r.onSale > 1 ? 's' : ''} si elle${r.onSale > 1 ? 's' : ''} revien${r.onSale > 1 ? 'nent' : 't'})` : null,
+      r.failed ? `${fmt(r.failed)} refusée${r.failed > 1 ? 's' : ''} par le jeu${r.error ? ` (« ${r.error} »)` : ''}` : null
+    ]
+      .filter(Boolean)
+      .join(' · ') + '. Les cartes qui descendront à un seul exemplaire seront verrouillées aussi.';
+
+  // Locks the single copy of each card of the set (cards: ids); a card on sale (locked by the market) is left, it is
+  // locked when it comes back. One request at a time, at the pace the game accepts.
+  let locking = Promise.resolve();
+  function lockSingles(cards) {
+    const run = locking.then(async () => {
+      const r = { locked: 0, already: 0, onSale: 0, failed: 0, error: null };
+      if (!cards.size) return r;
+      const { copies } = (await gameWrite('/copies', 'GET')) ?? {};
+      const byCard = new Map();
+      for (const c of Array.isArray(copies) ? copies : []) {
+        const id = c?.card?.id;
+        if (!id || !cards.has(id)) continue;
+        if (!byCard.has(id)) byCard.set(id, []);
+        byCard.get(id).push(c);
+      }
+      for (const list of byCard.values()) {
+        if (list.length !== 1) continue;
+        const [c] = list;
+        if (c.protected) {
+          r.already++;
+          continue;
+        }
+        if (c.locked) {
+          r.onSale++;
+          continue;
+        }
+        // (GET /copies gives each copy's id as copyId, the id PUT /copies/{id}/protect takes)
+        const { copyId } = c;
+        if (typeof copyId !== 'string' || !copyId) {
+          r.failed++;
+          r.error ??= 'exemplaire sans identifiant';
+          continue;
+        }
+        for (let tries = 0; ; tries++) {
+          try {
+            await gameWrite(`/copies/${encodeURIComponent(copyId)}/protect`, 'PUT');
+            r.locked++;
+            break;
+          } catch (e) {
+            if (!e.slowDown || tries >= 3) {
+              r.failed++;
+              r.error ??= e.message;
+              break;
+            }
+            await pause(e.wait || 3000);
+          }
+        }
+      }
+      return r;
+    });
+    locking = run.catch(() => {});
+    return run;
+  }
+
+  // The series watched: after a change of cards (a sale, a trade, a recycling…) and every 10 minutes on the game's
+  // pages, their cards down to a single copy are locked.
+  let guardTimer = 0;
+  let guardAt = 0;
+  function guardSoon(delay = 8000) {
+    clearTimeout(guardTimer);
+    guardTimer = setTimeout(guardSeries, delay);
+  }
+  async function guardSeries() {
+    if (stopped || !on('albumButtons')) return;
+    // (not while the window of cards is open: a lock makes the game read its status again, its pile drawn again)
+    if (cardsWindowRow() || opening || drawing) return void guardSoon(5000);
+    guardAt = Date.now();
+    try {
+      const { series } = await ask({ type: 'guarded-series' });
+      const cards = new Set(Object.values(series ?? {}).flat());
+      if (!cards.size) return;
+      const r = await lockSingles(cards);
+      if (r.locked) {
+        const box = document.querySelector('.aqm-album .aqm-album-note');
+        if (box) box.textContent = `🔒 ${fmt(r.locked)} carte${r.locked > 1 ? 's' : ''} descendue${r.locked > 1 ? 's' : ''} à un exemplaire, verrouillée${r.locked > 1 ? 's' : ''}.`;
+      }
+    } catch {}
+  }
+  function watchGuards() {
+    if (Date.now() - guardAt >= 10 * 60e3) guardSoon(1000);
   }
 
   // ---------- collection: "Ma progression" beside the "Ta collection" title ----------
@@ -3284,18 +3421,41 @@
     const b = btn.getBoundingClientRect();
     const row = vitrineButton()?.parentElement?.getBoundingClientRect();
     const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
-    if (blocked || b.right > document.documentElement.clientWidth - 8) set(t.left, t.bottom + 12, true);
+    // (no room at the right of the title, a phone: the button goes into the game's row once the page is ready, and
+    // shows nothing before, never over the page's text)
+    if (blocked || b.right > document.documentElement.clientWidth - 8) {
+      stopEarlyStats();
+      btn.remove();
+    }
   }
 
   // At the right of the title when it fits there, else under it.
+  // At the right of the title when it fits there; else (a phone) at the end of the game's row of buttons, beside
+  // "Recycler mes doublons". The place is worked out from the sizes alone, and the button moves only when it changes:
+  // its move changes the row's size, which asks again (the same answer, no loop).
   function placeStatsButton() {
     const btn = document.querySelector('.aqm-stats-open');
     if (!btn?.isConnected || btn.classList.contains('is-early')) return;
-    btn.classList.remove('is-below');
-    const b = btn.getBoundingClientRect();
-    const row = vitrineButton()?.parentElement?.getBoundingClientRect();
-    const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
-    if (blocked || b.right > document.documentElement.clientWidth - 8) btn.classList.add('is-below');
+    const title = document.querySelector('[data-aqm-stats-title]');
+    const row = vitrineButton()?.parentElement;
+    if (!title) return;
+    const t = title.getBoundingClientRect();
+    const w = btn.offsetWidth;
+    const hgt = btn.offsetHeight;
+    const left = t.right + 20;
+    const top = t.top + t.height / 2 - hgt / 2;
+    const r = row?.getBoundingClientRect();
+    const blocked = r && left + w + 8 > r.left && left < r.right && top < r.bottom && top + hgt > r.top;
+    const fits = !blocked && left + w <= document.documentElement.clientWidth - 8;
+    if (fits || !row) {
+      if (btn.parentElement !== title) title.append(btn);
+      btn.classList.remove('is-in-row');
+      btn.classList.toggle('is-below', !fits);
+    } else {
+      if (btn.parentElement !== row) row.append(btn);
+      btn.classList.remove('is-below');
+      btn.classList.add('is-in-row');
+    }
   }
   let statsResize = 0;
   addEventListener('resize', () => {
@@ -5357,6 +5517,179 @@
     }
   }
 
+  // ---------- the window of cards: "Recycler les doublons" of the cards just pulled ----------
+  // Beside "Voir ma collection": the copies of the cards pulled that the player has more than once, recycled as the
+  // game's "Recycler mes doublons" does: the smallest number of each card is kept, the cards on sale (locked) or locked
+  // by the player (protected) are never touched. Two clicks: the count and the Perles first, then the recycling.
+  // With "Recyclage automatique" (off at first), the N, R and SR ones go at once, without a click; the SSR, UR and SEC
+  // ones stay on the button.
+  const AUTO_RARITIES = new Set(['N', 'R', 'SR']);
+  let pulledCards = new Set(); // the cards of the last boosters opened
+  let spareOffer = null; // { cards, state: loading|unread|ready|none|confirm|busy|done|failed, ids, perles, text, note }
+
+  // The copies to recycle among those of the cards pulled ({ id, rarity, perles }), the smallest number kept.
+  async function loadSpares(cards) {
+    const [mine, rarities] = await Promise.all([gameWrite('/copies', 'GET'), gameWrite('/rarities', 'GET').catch(() => null)]);
+    const list = Array.isArray(rarities) ? rarities : rarities?.rarities ?? [];
+    const value = new Map(list.filter((r) => r?.code).map((r) => [r.code, Number(r.recycleValue) || 0]));
+    const byCard = new Map();
+    for (const c of Array.isArray(mine?.copies) ? mine.copies : []) {
+      const id = c?.card?.id;
+      if (!id || !cards.has(id) || c.locked) continue;
+      if (!byCard.has(id)) byCard.set(id, []);
+      byCard.get(id).push(c);
+    }
+    return [...byCard.values()]
+      .flatMap((all) =>
+        [...all]
+          .sort((a, b) => Number(!!b.protected) - Number(!!a.protected) || (Number(a.serial) || 0) - (Number(b.serial) || 0))
+          .slice(1)
+          .filter((c) => !c.protected)
+      )
+      .map((c) => ({ id: c.copyId, rarity: c.card?.rarity ?? null, perles: value.get(c.card?.rarity) ?? 0 }))
+      .filter((c) => typeof c.id === 'string' && c.id);
+  }
+
+  // Recycles the copies (200 at most per request, as the game sends them); the game's Perles change at once.
+  async function recycleCopies(ids) {
+    let gained = 0;
+    let done = 0;
+    let error = null;
+    try {
+      for (let i = 0; i < ids.length; i += 200) {
+        const res = await gameWrite('/recycle', 'POST', { copyIds: ids.slice(i, i + 200) });
+        done = Math.min(ids.length, i + 200);
+        gained += Number(res?.gained) || 0;
+        if (typeof res?.perles === 'number') window.postMessage({ aquamanCmd: 'set-perles', perles: res.perles }, location.origin);
+      }
+    } catch (e) {
+      error = e;
+    }
+    if (done) {
+      owned = null;
+      send({ type: 'collection-stale' });
+      guardSoon();
+    }
+    return { done, gained, error };
+  }
+  const recycledText = (done, gained) => `♻ ${fmt(done)} recyclée${done > 1 ? 's' : ''} · +${fmt(gained)} Perles`;
+
+  // The copies read: the automatic recycling first (setting), then the button for what is left.
+  async function offerSpares(offer) {
+    let spares;
+    try {
+      spares = await loadSpares(offer.cards);
+    } catch (e) {
+      // (shown on the button: a click reads the copies again)
+      console.warn('[Aquaman] doublons du tirage', e);
+      return Object.assign(offer, { state: 'unread', text: '♻ Doublons : réessayer', error: e?.message || String(e) });
+    }
+    if (feat.autoRecycle === true) {
+      const auto = spares.filter((c) => AUTO_RARITIES.has(c.rarity));
+      if (auto.length) {
+        offer.state = 'busy';
+        markRecycleSpares();
+        const r = await recycleCopies(auto.map((c) => c.id));
+        offer.note = r.done ? `${recycledText(r.done, r.gained)} (auto)` : `Recyclage automatique refusé : ${r.error?.message ?? ''}`;
+        const gone = new Set(auto.slice(0, r.done).map((c) => c.id));
+        spares = spares.filter((c) => !gone.has(c.id));
+      }
+    }
+    const left = on('recycleSpares') ? spares : [];
+    Object.assign(offer, { ids: left.map((c) => c.id), perles: left.reduce((n, c) => n + c.perles, 0), state: left.length ? 'ready' : 'none' });
+  }
+
+  // The window of cards: the row of its "Voir ma collection" (a link to /jeu/collection, not a button) and "Fermer" (the
+  // page may have other "Fermer", hidden).
+  function cardsWindowRow() {
+    for (const close of document.querySelectorAll('button')) {
+      if (close.closest('.aqm-root') || !/^fermer$/i.test(close.textContent.trim())) continue;
+      const row = close.parentElement;
+      const mine = row && [...row.children].find((b) => (b.tagName === 'A' || b.tagName === 'BUTTON') && !b.classList.contains('aqm-recycle-spares') && /^voir ma collection$/i.test(b.textContent.trim()));
+      if (mine) return { row, mine };
+    }
+    return null;
+  }
+
+  function markRecycleSpares() {
+    const old = document.querySelector('.aqm-recycle-spares');
+    const oldNote = document.querySelector('.aqm-recycle-note');
+    const found = (on('recycleSpares') || feat.autoRecycle === true) && pulledCards.size ? cardsWindowRow() : null;
+    if (!found) return void (old?.remove(), oldNote?.remove());
+    const { row, mine } = found;
+    if (spareOffer?.cards !== pulledCards) {
+      const offer = (spareOffer = { cards: pulledCards, state: 'loading' });
+      offerSpares(offer).finally(() => spareOffer === offer && markRecycleSpares());
+    }
+    const o = spareOffer;
+    // The automatic recycling's result, beside the buttons.
+    let note = oldNote;
+    if (o.note) {
+      if (!note || note.parentElement !== row) {
+        oldNote?.remove();
+        note = h('span', { class: 'aqm-root aqm-recycle-note' });
+        mine.after(note);
+      }
+      if (note.textContent !== o.note) note.textContent = o.note;
+    } else oldNote?.remove();
+    if (o.state === 'none' || o.state === 'loading' || (o.state === 'busy' && !o.ids)) return void old?.remove();
+    const n = o.ids?.length ?? 0;
+    const gain = o.perles ? ` · +${fmt(o.perles)} Perles` : '';
+    const label = {
+      unread: o.text,
+      ready: `♻ Recycler les doublons (${fmt(n)})`,
+      confirm: `Confirmer : ${fmt(n)} carte${n > 1 ? 's' : ''}${gain}`,
+      busy: 'Recyclage…',
+      done: o.text,
+      failed: o.text
+    }[o.state];
+    const title =
+      o.state === 'unread'
+        ? `Tes exemplaires n’ont pas pu être lus (${o.error}). Clique pour réessayer.`
+        : o.state === 'failed'
+        ? 'Clique pour réessayer'
+        : `Les doublons des cartes de ce tirage${gain}. On garde le plus petit numéro de chaque carte ; les cartes en vente ou verrouillées ne sont pas touchées.`;
+    let btn = old;
+    if (!btn || btn.parentElement !== row) {
+      old?.remove();
+      btn = h('button', { type: 'button', class: `${mine.className} aqm-recycle-spares`, onclick: recycleSpares });
+      (note?.isConnected ? note : mine).after(btn);
+    }
+    if (btn.textContent !== label) btn.textContent = label;
+    if (btn.title !== title) btn.title = title;
+    btn.disabled = o.state === 'busy' || o.state === 'done';
+    btn.classList.toggle('is-confirm', o.state === 'confirm');
+  }
+
+  async function recycleSpares() {
+    const o = spareOffer;
+    if (!o) return;
+    // (the copies couldn't be read: read again)
+    if (o.state === 'unread') {
+      spareOffer = null;
+      return markRecycleSpares();
+    }
+    if (o.state === 'ready' || o.state === 'failed') {
+      o.state = 'confirm';
+      // (no second click within 6 s: back to the first step)
+      setTimeout(() => o.state === 'confirm' && ((o.state = 'ready'), markRecycleSpares()), 6000);
+      return markRecycleSpares();
+    }
+    if (o.state !== 'confirm') return;
+    o.state = 'busy';
+    markRecycleSpares();
+    const { done, gained, error } = await recycleCopies(o.ids);
+    o.ids = o.ids.slice(done);
+    if (!error) {
+      o.state = 'done';
+      o.text = recycledText(done, gained);
+    } else {
+      o.state = o.ids.length ? 'failed' : 'done';
+      o.text = done ? `${recycledText(done, gained)}, puis refus : ${error.message}` : `Refusé : ${error.message}`;
+    }
+    markRecycleSpares();
+  }
+
   function markBoosterKinds() {
     if (!featLoaded || !on('boosterWheel') || !/^\/jeu\/?$/.test(location.pathname) || drawing || opening) return;
     // The game read its boosters before Aquaman listened: inject.js wrote them on the page; else Aquaman reads them
@@ -5849,6 +6182,7 @@
     [markSeriesStrip, 'seriesTools'],
     [markFavoriteSeries, 'seriesTools'],
     [markAlbum, 'albumButtons'],
+    [watchGuards, 'albumButtons'],
     [markMissingTab, 'missingTab'],
     [markMissingSales, 'missingSales'],
     [markCollectionStats, 'collectionStats'],
@@ -5879,7 +6213,7 @@
     }
     const began = performance.now();
     runText = null;
-    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+    for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
       if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
       if (!inGame && step !== markTrades && step !== checkAccess) continue;
       try {

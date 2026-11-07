@@ -25,7 +25,7 @@
   const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
   // The card of each sale the market last showed (listing id -> { name, rarity }), for the card of a purchase.
   const listingCards = new Map();
-  const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
+  const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?|recycle)$/;
   const RARITIES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
   const original = window.fetch;
 
@@ -127,19 +127,47 @@
       [...document.querySelectorAll('main p, main span, main h2, main h3')].find((el) => /^mes exemplaires$/i.test(el.textContent.trim())) ??
       document.querySelector('main *');
     const key = start && Object.keys(start).find((k) => k.startsWith('__reactFiber$'));
+    const { card: _card, ...around } = fresh.card ? fresh : {};
     let done = false;
     for (let fiber = key ? start[key] : null; fiber; fiber = fiber.return) {
       for (let hook = typeof fiber.memoizedState === 'object' ? fiber.memoizedState : null; hook && 'next' in hook; hook = hook.next) {
         const s = hook.memoizedState;
         const dispatch = hook.queue?.dispatch;
-        if (typeof dispatch !== 'function' || !s || typeof s !== 'object') continue;
-        if (s.id === id && 'copies' in s) dispatch(card);
-        else if (s.card?.id === id) dispatch({ ...s, ...(fresh.card ? fresh : { card }) });
+        if (typeof dispatch !== 'function' || !s || typeof s !== 'object' || Array.isArray(s) || !plainState(hook.queue)) continue;
+        // (the page's state keeps its shape: only the fields of the same kind are changed, none is lost)
+        if (s.id === id && 'copies' in s) dispatch(sameShape(s, { ...card, ...around }));
+        else if (s.card?.id === id && s.card && typeof s.card === 'object') dispatch({ ...sameShape(s, around), card: sameShape(s.card, card) });
         else continue;
         done = true;
       }
     }
     return done;
+  }
+
+  // A useState of the page (its reducer gives back what it is given), never a useReducer: an object given to a
+  // reducer that waits for an action would break the page (a black page after a purchase).
+  function plainState(queue) {
+    const reducer = queue?.lastRenderedReducer;
+    if (typeof reducer !== 'function') return false;
+    const probe = {};
+    try {
+      return reducer(null, probe) === probe;
+    } catch {
+      return false;
+    }
+  }
+
+  // old with the fields of fresh that have the same kind (an array stays an array, an object an object, nothing
+  // turns empty), and the new fields: the game's page never meets a value it can't draw.
+  function sameShape(old, fresh) {
+    const next = { ...old };
+    for (const [k, v] of Object.entries(fresh ?? {})) {
+      if (!(k in old)) next[k] = v;
+      else if (old[k] == null) next[k] = v;
+      else if (v == null || Array.isArray(v) !== Array.isArray(old[k]) || typeof v !== typeof old[k]) continue;
+      else next[k] = v;
+    }
+    return next;
   }
 
   // After a change of Perles or cards, the game's status (/me: Perles…) and the card of the page are read again from
@@ -172,6 +200,15 @@
       const store = await gameStore();
       if (typeof perles === 'number') store?.setPerles?.(perles); // the Perles the purchase answered, at once
       await store?.load().catch(() => {}); // then the game's status read again from /me
+    } catch {}
+  });
+
+  // content.js gives the game the Perles a change answered (a recycling from the window of cards): only the count is
+  // changed, the status isn't read again (it would draw the pile of boosters again behind the window).
+  window.addEventListener('message', async (e) => {
+    if (e.source !== window || e.data?.aquamanCmd !== 'set-perles' || typeof e.data.perles !== 'number') return;
+    try {
+      (await gameStore())?.setPerles?.(e.data.perles);
     } catch {}
   });
 
@@ -599,7 +636,9 @@
                     boosters: opened.map((b) => raritiesOf(b.pulls)),
                     best: opened.map((b) => bestCard(b.pulls)),
                     packs: opened.map((b) => b.pack),
-                    ids: opened.map((b) => b.id)
+                    ids: opened.map((b) => b.id),
+                    // (the cards pulled: their duplicates can be recycled from the window of cards)
+                    cards: opened.map((b) => (Array.isArray(b.pulls) ? b.pulls : []).map((p) => (p?.card ?? p)?.id).filter((id) => typeof id === 'string'))
                   });
               })
               .catch(() => {});
