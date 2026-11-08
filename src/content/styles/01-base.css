@@ -1,0 +1,22 @@
+/* Aquaman : styles ajoutés au jeu de poseidon-scans.net. Tout est préfixé aqm-.
+   Les fichiers de src/content/styles/ sont chargés dans l'ordre de leur numéro (manifest.json, build.mjs) : à
+   sélecteurs égaux, la règle d'un fichier plus loin l'emporte. */
+
+.aqm-root {
+  --aqm-bg: #0b0b0d;
+  --aqm-panel: #121214;
+  --aqm-card: #18181b;
+  --aqm-line: rgba(255, 255, 255, 0.07);
+  --aqm-text: #f4f4f5;
+  --aqm-muted: #a1a1aa;
+  --aqm-dim: #71717a;
+  --aqm-accent: #60a5fa;
+  --aqm-yes: #22c55e;
+  --aqm-no: #ef4444;
+  box-sizing: border-box;
+}
+.aqm-root *,
+.aqm-root *::before,
+.aqm-root *::after {
+  box-sizing: border-box;
+}

@@ -1,0 +1,184 @@
+/* ---------- Accueil : les boosters de chaque catégorie, côte à côte ---------- */
+
+/* La pile et les boutons du jeu, remplacés par ceux d'Aquaman : invisibles mais toujours dessinés (hors du flux), pour
+   que leurs images se chargent (une image en chargement différé ne se charge jamais dans une boîte non affichée). */
+[data-aqm-hidden] {
+  position: absolute !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+[data-aqm-veiled] {
+  visibility: hidden;
+}
+.aqm-piles {
+  position: relative;
+  flex: none;
+  align-self: auto;
+  max-width: none;
+  width: 100%;
+  /* (de la place au-dessus pour le badge du nombre et le pack qui se soulève sous le pointeur) */
+  padding: 28px 0 8px;
+  overflow: hidden;
+  /* Coupé sur les côtés seulement (les piles voisines) : la lueur d'un pack passe par-dessus le titre et en dessous. */
+  overflow-x: clip;
+  overflow-y: visible;
+}
+/* La lueur derrière le booster de devant, de la couleur de son pack (paintGlow) ; elle passe en fondu d'une couleur à
+   l'autre. */
+@property --aqm-glow {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgb(37 99 235 / 0.38);
+}
+.aqm-wheel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+  transition: --aqm-glow 0.6s ease;
+}
+.aqm-wheel::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: -1;
+  width: min(560px, 100%);
+  aspect-ratio: 1;
+  background: radial-gradient(closest-side, var(--aqm-glow, rgb(37 99 235 / 0.38)), transparent);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.aqm-wheel-track {
+  display: grid;
+}
+.aqm-wheel-controls {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+.aqm-pile {
+  display: flex;
+  grid-area: 1 / 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  justify-self: center;
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.4s, filter 0.4s;
+}
+.aqm-pile:not(.is-front) {
+  z-index: 0;
+  opacity: 0.4;
+  cursor: pointer;
+}
+.aqm-pile.is-front {
+  z-index: 1;
+}
+.aqm-pile.is-away {
+  opacity: 0;
+  pointer-events: none;
+}
+.aqm-pile:not(.is-front) .aqm-pile-art {
+  pointer-events: none;
+}
+/* Le booster du dessus, comme dans le jeu : il flotte, et tourne vers le pointeur (tiltOnHover). */
+.aqm-pile-art [class*='__packPose'] {
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.aqm-pile-art .aqm-pose-follow {
+  transition: transform 0.15s ease-out;
+}
+.aqm-pile.is-front [data-aqm-float] {
+  animation: aqm-pack-float 2.35s ease-in-out infinite alternate;
+}
+@keyframes aqm-pack-float {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(0, -16px, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aqm-pile.is-front [data-aqm-float] {
+    animation: none;
+  }
+}
+.aqm-wheel-arrow {
+  position: absolute;
+  top: 45%;
+  z-index: 3;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  font: inherit;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+.aqm-wheel-arrow:hover {
+  border-color: #3b82f6;
+  background: rgba(37, 99, 235, 0.35);
+}
+.aqm-wheel-arrow.is-prev {
+  left: 8px;
+}
+.aqm-wheel-arrow.is-next {
+  right: 8px;
+}
+.aqm-wheel-dots {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.aqm-wheel-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+}
+.aqm-wheel-dot.is-on {
+  width: 22px;
+  border-radius: 999px;
+  background: #3b82f6;
+}
+/* Redessiné (une nouvelle largeur) : les piles vont tout de suite à leur place, sans y glisser. */
+.aqm-piles.is-still .aqm-pile {
+  transition: none;
+}
+@media (max-width: 640px) {
+  /* Les boutons du jeu l'un sous l'autre, comme le jeu les montre sur téléphone. */
+  .aqm-wheel-controls > * {
+    flex-direction: column;
+  }
+  .aqm-wheel-arrow {
+    width: 36px;
+    height: 36px;
+    font-size: 22px;
+  }
+}
+.aqm-queue-btn.is-main {
+  border-color: #2563eb;
+  background: #2563eb;
+}
+.aqm-queue-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.aqm-scan-list {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}

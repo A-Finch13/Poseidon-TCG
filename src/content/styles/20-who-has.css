@@ -1,0 +1,131 @@
+/* ---------- Qui a cette carte ? ---------- */
+
+.aqm-who-gap {
+  margin-top: 18px;
+}
+.aqm-who-note {
+  margin: 0 0 6px;
+}
+.aqm-who-cards .aqm-mini {
+  cursor: pointer;
+}
+.aqm-who-cards .aqm-mini:hover,
+.aqm-who-cards .aqm-mini:focus-visible {
+  background: rgba(96, 165, 250, 0.14);
+  outline: none;
+}
+.aqm-who-back {
+  margin-bottom: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.aqm-who-card {
+  display: flex;
+  gap: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--aqm-card);
+}
+.aqm-who-card img {
+  width: 92px;
+  border-radius: 10px;
+  aspect-ratio: 63 / 88;
+  object-fit: cover;
+}
+.aqm-who-card > div {
+  flex: 1;
+  min-width: 0;
+}
+.aqm-who-card p {
+  margin: 0 0 2px;
+}
+.aqm-pack-title {
+  font-size: 17px;
+  font-weight: 900;
+  color: #fff;
+}
+.aqm-who-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.aqm-metric {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.aqm-metric small {
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aqm-dim);
+}
+.aqm-metric strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #fff;
+}
+.aqm-owners {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-owner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: var(--aqm-card);
+  font-size: 13px;
+}
+.aqm-avatar-sm {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+.aqm-owner .aqm-avatar-sm + a,
+.aqm-owner .aqm-avatar-sm + span {
+  min-width: 0;
+}
+.aqm-owner-serial {
+  min-width: 52px;
+  font-weight: 800;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-owner a {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #e4e4e7;
+  font-weight: 700;
+  text-decoration: none;
+}
+.aqm-owner a:hover {
+  color: #fff;
+  text-decoration: underline;
+}
+.aqm-owner-right {
+  margin-left: auto;
+  font-weight: 700;
+  color: var(--aqm-muted);
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .aqm-who-card img {
+    width: 72px;
+  }
+  .aqm-who-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

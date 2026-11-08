@@ -1,0 +1,253 @@
+/* ---------- Collection : « Ma progression » ---------- */
+
+/* Le bouton prend les classes du bouton « Ma vitrine » du jeu (et son icône celles de l'icône du jeu). Il est posé à
+   droite du titre « Ta collection », hors du flux de la page : le titre garde sa largeur, les boutons du jeu leur place. */
+[data-aqm-stats-title] {
+  position: relative;
+}
+.aqm-stats-open {
+  position: absolute !important;
+  top: 50% !important;
+  left: 100% !important;
+  margin: 0 0 0 20px !important;
+  transform: translateY(-50%) !important;
+  white-space: nowrap;
+  text-shadow: none;
+  background-clip: border-box;
+  -webkit-background-clip: border-box;
+}
+/* Pas de place à droite du titre : juste en dessous. */
+.aqm-stats-open.is-below {
+  position: static !important;
+  display: flex;
+  width: fit-content;
+  margin: 12px 0 0 !important;
+  transform: none !important;
+}
+/* Téléphone : au bout de la rangée des boutons du jeu (Ma vitrine, Vendre, Recycler). */
+.aqm-stats-open.is-in-row {
+  position: static !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+/* Pendant le chargement de la page : posé par-dessus, à la même place (coordonnées de la page). */
+.aqm-stats-open.is-early {
+  position: absolute !important;
+  top: var(--aqm-y) !important;
+  left: var(--aqm-x) !important;
+  margin: 0 !important;
+  z-index: 5;
+}
+.aqm-stats-open.is-early.is-below {
+  transform: none !important;
+  width: fit-content;
+}
+.aqm-stats-ico {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.aqm-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.aqm-progress-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 14px;
+  background: var(--aqm-card);
+}
+.aqm-progress-pct {
+  font-size: 40px;
+  font-weight: 900;
+  line-height: 1.1;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-bar.aqm-bar-big {
+  height: 8px;
+  margin-top: 8px;
+}
+.aqm-progress-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+.aqm-progress-tile {
+  padding: 12px 14px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 12px;
+  background: var(--aqm-card);
+}
+.aqm-progress-tile .aqm-label {
+  margin: 0 0 4px;
+}
+.aqm-progress-tile strong {
+  display: block;
+  font-size: 24px;
+  font-weight: 900;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-progress-tile small {
+  font-size: 11px;
+  color: var(--aqm-muted);
+}
+.aqm-progress-h {
+  margin: 6px 0 0;
+  font-size: 14px;
+  font-weight: 900;
+  color: #fff;
+}
+.aqm-progress-rarities {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-progress-rarity {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--aqm-card);
+}
+.aqm-progress-rname {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.aqm-progress-rname small,
+.aqm-progress-rbar small,
+.aqm-progress-copies {
+  font-size: 11px;
+  color: var(--aqm-muted);
+}
+.aqm-progress-rbar p {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-progress-rbar strong {
+  color: #fff;
+  font-weight: 900;
+}
+.aqm-progress-copies {
+  min-width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Couleur de chaque rareté, celle de son code. */
+.aqm-bar-N > span { background: #d4d4d8; }
+.aqm-bar-R > span { background: #60a5fa; }
+.aqm-bar-SR > span { background: #a78bfa; }
+.aqm-bar-SSR > span { background: #facc15; }
+.aqm-bar-UR > span { background: #f472b6; }
+.aqm-bar-SEC > span { background: linear-gradient(90deg, #c4b5fd, #e2e8f0); }
+
+/* Cartes gagnées chaque jour : une barre par jour, la valeur au-dessus, le jour en dessous. */
+.aqm-days {
+  display: grid;
+  grid-template-columns: repeat(14, 1fr);
+  gap: 2px;
+  height: 150px;
+  padding: 12px 8px 8px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 12px;
+  background: var(--aqm-card);
+}
+.aqm-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  border-radius: 6px;
+  outline: none;
+}
+.aqm-day:hover,
+.aqm-day:focus-visible {
+  background: rgba(255, 255, 255, 0.05);
+}
+.aqm-day-val {
+  height: 16px;
+  font-size: 10px;
+  font-weight: 800;
+  color: #e4e4e7;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.aqm-day-col {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex: 1;
+  width: 100%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.aqm-day-fill {
+  display: block;
+  width: min(18px, 70%);
+  border-radius: 4px 4px 0 0;
+  background: #3b82f6;
+}
+.aqm-day.is-today .aqm-day-fill {
+  background: #60a5fa;
+}
+.aqm-day.is-empty .aqm-day-col {
+  border-bottom-style: dashed;
+}
+.aqm-day-name {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--aqm-dim);
+}
+.aqm-day.is-today .aqm-day-name {
+  color: #fff;
+  font-weight: 800;
+}
+
+@media (max-width: 640px) {
+  .aqm-progress-pct {
+    font-size: 32px;
+  }
+  .aqm-progress-rarity {
+    grid-template-columns: 1fr auto;
+  }
+  .aqm-progress-rbar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .aqm-days {
+    height: 130px;
+    padding: 10px 4px 6px;
+  }
+  .aqm-day-val {
+    font-size: 9px;
+  }
+}
+
+/* Classement : ce qui a été gardé, et « Actualiser ». */
+.aqm-board-refresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: -4px 0 10px;
+  font-size: 12px;
+}
+.aqm-board-refresh:empty {
+  display: none;
+}
+.aqm-board-refresh .aqm-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

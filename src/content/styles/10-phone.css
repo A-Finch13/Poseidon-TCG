@@ -1,0 +1,35 @@
+/* ---------- Téléphone ---------- */
+
+@media (max-width: 640px) {
+  .aqm-overlay {
+    padding: 0;
+  }
+  .aqm-panel {
+    min-height: 100%;
+    border-radius: 0;
+    border: 0;
+  }
+  .aqm-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding-top: 18px;
+    background: var(--aqm-panel);
+  }
+  .aqm-title {
+    font-size: 19px;
+  }
+  .aqm-menu {
+    width: min(290px, calc(100vw - 16px));
+  }
+  
+  .aqm-strip {
+    grid-template-columns: 1fr;
+  }
+  .aqm-pull-thumb {
+    zoom: 1.4;
+  }
+  .aqm-tour-actions {
+    flex-wrap: wrap;
+  }
+}

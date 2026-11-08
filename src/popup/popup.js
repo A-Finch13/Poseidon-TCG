@@ -1,13 +1,14 @@
-import { ORIGIN, REPO, SETTINGS, getSettings, setSettings, safeHref } from '../lib/aquaman.js';
+import { ORIGIN, REPO, safeHref } from '../lib/common.js';
+import { SETTINGS, getSettings, setSettings } from '../lib/settings.js';
 
 const $ = (s) => document.querySelector(s);
 const FIREFOX = navigator.userAgent.includes('Firefox');
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const ZIP = `https://github.com/${REPO}/releases/latest/download/aquaman-chromium.zip`;
 
-// ---------- links ----------
+// ---------- liens ----------
 
-// Opens a page of the site (path) or any address, then closes the popup.
+// Ouvre une page du site (chemin) ou n'importe quelle adresse, puis ferme la fenêtre.
 document.addEventListener('click', async (e) => {
   const link = e.target.closest('[data-open]');
   if (!link) return;
@@ -20,7 +21,7 @@ document.addEventListener('click', async (e) => {
   window.close();
 });
 
-// ---------- new version ----------
+// ---------- nouvelle version ----------
 
 function renderUpdate(update) {
   $('#update').hidden = !update;
@@ -34,7 +35,7 @@ function updateHelp(html) {
   $('#update-help').innerHTML = html;
 }
 
-// "Mettre à jour": the updater replaces the files, then the extension reloads (the popup closes).
+// « Mettre à jour » : l'assistant remplace les fichiers, puis l'extension redémarre (la fenêtre se ferme).
 $('#update-go').addEventListener('click', async () => {
   const btn = $('#update-go');
   btn.disabled = true;
@@ -61,9 +62,10 @@ $('#update-go').addEventListener('click', async () => {
   }
 });
 
-// ---------- settings ----------
+// ---------- réglages ----------
 
-// The same list as "Plus › Réglages" on the site; the open pages of the game offer to load again to apply a feature.
+// La même liste que « Plus › Réglages » sur le site ; les pages ouvertes du jeu proposent de recharger pour appliquer
+// une fonction.
 async function bindSettings() {
   const settings = await getSettings();
   const box = $('#settings');
@@ -73,7 +75,7 @@ async function bindSettings() {
     if (i) title.className = 'gap';
     title.textContent = `${group.icon ?? ''} ${group.title}`.trim();
     box.append(title);
-    // (each: its title, its hint, and a switch on the right)
+    // (chacun : son titre, son aide, et un interrupteur à droite)
     for (const [key, text, hint] of group.items) {
       const label = document.createElement('label');
       label.className = 'switch';
@@ -94,9 +96,9 @@ async function bindSettings() {
   });
 }
 
-// ---------- status ----------
+// ---------- état ----------
 
-// Boosters waiting, as shown on the icon.
+// Boosters en attente, comme affichés sur l'icône.
 async function renderStatus() {
   const text = await chrome.action.getBadgeText({});
   $('#status').textContent =

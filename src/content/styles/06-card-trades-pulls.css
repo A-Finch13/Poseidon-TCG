@@ -1,0 +1,52 @@
+/* ---------- Page d'une carte : « Qui a cette carte ? » ---------- */
+
+.aqm-card-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.aqm-card-who-icon,
+.aqm-card-who-icon svg {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.aqm-card-who-row {
+  margin-top: 12px;
+}
+
+/* ---------- Échanges ---------- */
+
+.aqm-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 5;
+  min-width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  border: 2px solid rgba(0, 0, 0, 0.85);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+  pointer-events: auto;
+}
+.aqm-dot.is-yes {
+  background: var(--aqm-yes);
+}
+.aqm-dot.is-no {
+  background: var(--aqm-no);
+}
+.aqm-dot.has-count {
+  height: 13px;
+  padding: 0 3px;
+  font: 800 8px/9px system-ui, sans-serif;
+  color: #052e16;
+  text-align: center;
+}
+
+/* ---------- Accueil : beaux tirages ---------- */
+
+.aqm-pull-thumb {
+  zoom: 1.7;
+}

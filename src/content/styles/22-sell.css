@@ -1,0 +1,61 @@
+/* ---------- Vendre mes doublons ---------- */
+
+.aqm-sales {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.aqm-sell-wait {
+  flex: none;
+  align-self: stretch;
+  margin: 0 0 12px;
+  color: var(--aqm-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.aqm-sell-wait > p:first-child {
+  margin: 0;
+}
+.aqm-sell-waiting {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 2px 16px;
+  max-height: 140px;
+  margin: 8px 0 0;
+  padding: 0 6px 0 0;
+  overflow-y: auto;
+  list-style: none;
+  font-size: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.aqm-sell-waiting::-webkit-scrollbar {
+  width: 6px;
+}
+.aqm-sell-waiting::-webkit-scrollbar-track {
+  background: transparent;
+}
+.aqm-sell-waiting::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.aqm-sell-waiting::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+.aqm-sell-waiting::-webkit-scrollbar-button {
+  display: none;
+}
+.aqm-sell-last {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--aqm-muted);
+}
+.aqm-sell-waiting li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.aqm-sell-waiting li > span:first-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

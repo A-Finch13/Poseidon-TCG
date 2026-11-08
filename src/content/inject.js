@@ -1,12 +1,15 @@
-// Runs in the page before it loads: tells content.js what the site's own requests change. It changes one answer
-// only: the boosters waiting in /api-game/v1/me, limited to the kind chosen on the home page (see content.js).
-//   { aquaman: 'status', pending, boosters }  boosters waiting, read from the site's /api-game/v1/me answers
-//                                    (boosters: [{ id, kind, name, art }], kind and name null for a classic one)
-//   { aquaman: 'opened', boosters }  boosters just opened, each as the rarities of its cards (for the pity counters)
-//   { aquaman: 'feed', pulls }       the game's "beaux tirages", read from its /api-game/v1/feed answers
-//   { aquaman: 'collection-stale' }  a booster was opened, or a trade, sale or purchase went through
-//   { aquaman: 'sell-refused', item, message, ticked }  the game refused to put a copy on sale ({ cardId, copyId,
-//                                    price }); ticked: the copies still ticked in its "Vendre mes doublons" window
+// Tourne dans la page avant son chargement : dit au code de la page ce que changent les requêtes du site lui-même. Il
+// ne change qu'une réponse : les boosters en attente dans /api-game/v1/me, limités à la sorte choisie sur l'accueil
+// (voir home/booster-piles.js).
+//   { aquaman: 'status', pending, boosters }  boosters en attente, lus dans les réponses /api-game/v1/me du site
+//                                    (boosters : [{ id, kind, name, art }], kind et name null pour un classique)
+//   { aquaman: 'opened', boosters }  boosters qui viennent d'être ouverts, chacun sous la forme des raretés de ses
+//                                    cartes (pour les compteurs anti-malchance)
+//   { aquaman: 'feed', pulls }       les « beaux tirages » du jeu, lus dans ses réponses /api-game/v1/feed
+//   { aquaman: 'collection-stale' }  un booster a été ouvert, ou un échange, une vente ou un achat est passé
+//   { aquaman: 'sell-refused', item, message, ticked }  le jeu a refusé de mettre un exemplaire en vente ({ cardId,
+//                                    copyId, price }) ; ticked : les exemplaires encore cochés dans sa fenêtre
+//                                    « Vendre mes doublons »
 (() => {
   if (window.__aquamanHook) return;
   window.__aquamanHook = true;
@@ -18,18 +21,19 @@
   const BUY = /^\/api-game\/v1\/shop\/booster$/;
   const PLAYER_PATH = /^\/api-game\/v1\/(?:public\/)?(?:players|users)\/([^/?]+)/;
   const MARKET_BUY = /^\/api-game\/v1\/market\/listings\/([^/]+)\/buy$/;
-  // Changes of Perles or cards made outside the boosters (market, exchanges, auctions, copies sold or recycled): the
-  // game's status and the card of the page are read again from the API afterwards. (Not the boosters: the game counts
-  // their Perles and cards itself, and a status read again would redraw the pile in the middle of an opening.)
+  // Changements de Perles ou de cartes faits hors des boosters (marché, échanges, enchères, exemplaires vendus ou
+  // recyclés) : l'état du jeu et la carte de la page sont relus depuis l'API ensuite. (Pas les boosters : le jeu compte
+  // lui-même leurs Perles et leurs cartes, et un état relu redessinerait la pile au milieu d'une ouverture.)
   const ASSETS = /^\/api-game\/v1\/(trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
   const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
-  // The card of each sale the market last showed (listing id -> { name, rarity }), for the card of a purchase.
+  // La carte de chaque vente que le marché a montrée en dernier (id d'annonce -> { name, rarity }), pour la carte d'un
+  // achat.
   const listingCards = new Map();
   const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?|recycle)$/;
   const RARITIES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
   const original = window.fetch;
 
-  // The kind of boosters chosen on the home page ('classic' for the boosters without one), '' for all.
+  // La sorte de boosters choisie sur l'accueil ('classic' pour les boosters sans sorte), '' pour toutes.
   const chosenKind = () => {
     try {
       return sessionStorage.getItem('aqm-booster-kind') || '';
@@ -40,16 +44,17 @@
 
   const post = (data) => window.postMessage({ aquaman: data.type, ...data }, location.origin);
 
-  // The page sent by the server is taken over by React piece by piece (hydration), the big ones (the album) sometimes
-  // long after the page loaded, or at once when clicked. An element Aquaman adds in a piece not taken over yet doesn't
-  // match what React expects (error #418) and may leave the page blank. React marks each element it took over
-  // (__reactProps$…, seen only from the page): once every button and link of the page has its mark, data-aqm-hydrated
-  // tells content.js it may change the page (after 15 s at most, for a page with buttons outside React).
+  // La page envoyée par le serveur est prise en main par React morceau par morceau (hydratation), les gros (l'album)
+  // parfois longtemps après le chargement de la page, ou tout de suite quand on clique dessus. Un élément qu'Aquaman
+  // ajoute dans un morceau pas encore pris en main ne correspond pas à ce qu'attend React (erreur #418) et peut laisser
+  // la page blanche. React marque chaque élément qu'il a pris en main (__reactProps$…, visible seulement depuis la
+  // page) : dès que chaque bouton et chaque lien de la page a sa marque, data-aqm-hydrated dit au code de la page qu'il
+  // peut modifier la page (après 15 s au plus, pour une page avec des boutons hors de React).
   (function watchHydration() {
     const started = Date.now();
     const taken = (el) => Object.keys(el).some((k) => k.startsWith('__reactProps$') || k.startsWith('__reactFiber$'));
     const check = () => {
-      // (the page's own content: the buttons of other scripts, outside <main>, are never taken over)
+      // (le contenu propre de la page : les boutons d'autres scripts, hors de <main>, ne sont jamais pris en main)
       const own = [...(document.querySelector('main') ?? document.body ?? document).querySelectorAll('button, a[href]')].filter((el) => !el.closest('[class*="aqm-"]'));
       if ((document.readyState === 'complete' && own.length && own.every(taken)) || Date.now() - started > 15e3)
         return void document.documentElement.setAttribute('data-aqm-hydrated', '');
@@ -58,9 +63,9 @@
     check();
   })();
 
-  // The game's store of its status (/me: boosters, Perles…): its useGameStore hook (zustand), found among the site's
-  // modules. Aquaman adds a module of its own to the site's Turbopack, which looks through the modules already loaded
-  // (its context's c). Else, the state among the hooks of the game's components. Returns the state ({ load, … }).
+  // Le store du jeu pour son état (/me : boosters, Perles…) : son hook useGameStore (zustand), trouvé parmi les modules
+  // du site. Aquaman ajoute un module à lui dans le Turbopack du site, qui parcourt les modules déjà chargés (le c de
+  // son contexte). Sinon, l'état parmi les hooks des composants du jeu. Renvoie l'état ({ load, … }).
   let storeHook = null;
   let storeState = null;
   async function gameStore() {
@@ -70,7 +75,7 @@
     if (T && !Array.isArray(T) && typeof T.push === 'function') {
       const id = `aquaman-${Date.now()}`;
       try {
-        // Two pushes: the module, then the order to run it (a chunk has one or the other).
+        // Deux push : le module, puis l'ordre de le lancer (un morceau a l'un ou l'autre).
         T.push([
           'aquaman-store.js',
           id,
@@ -104,10 +109,10 @@
     return null;
   }
 
-  // All the waiting boosters, as the game's last /me gave them (before the filter). Also written on the page
-  // (data-aqm-boosters), where content.js finds them as soon as it starts.
+  // Tous les boosters en attente, tels que les a donnés le dernier /me du jeu (avant le filtre). Aussi écrits dans la
+  // page (data-aqm-boosters), où le code de la page les trouve dès qu'il démarre.
   let fullPending = null;
-  let forcedPending = null; // the boosters made up for the author's scan, given to the game in its next /me
+  let forcedPending = null; // les boosters fabriqués pour le relevé de l'auteur, donnés au jeu dans son prochain /me
   function keepPending(pending) {
     fullPending = pending;
     try {
@@ -115,8 +120,9 @@
     } catch {}
   }
 
-  // A card's page holds the card read from /cards/:id (with the player's copies) in a state of its components: the
-  // card is read again from the API and given to that state, the page draws it at once. False if no such state.
+  // La page d'une carte garde la carte lue depuis /cards/:id (avec les exemplaires du joueur) dans un état de ses
+  // composants : la carte est relue depuis l'API et donnée à cet état, la page la dessine tout de suite. False sans un
+  // tel état.
   async function refreshCardState(id) {
     const res = await fetch(`/api-game/v1/cards/${encodeURIComponent(id)}`, { credentials: 'include', headers: { accept: 'application/json' } });
     if (!res.ok) return false;
@@ -134,7 +140,7 @@
         const s = hook.memoizedState;
         const dispatch = hook.queue?.dispatch;
         if (typeof dispatch !== 'function' || !s || typeof s !== 'object' || Array.isArray(s) || !plainState(hook.queue)) continue;
-        // (the page's state keeps its shape: only the fields of the same kind are changed, none is lost)
+        // (l'état de la page garde sa forme : seuls les champs de même nature sont changés, aucun n'est perdu)
         if (s.id === id && 'copies' in s) dispatch(sameShape(s, { ...card, ...around }));
         else if (s.card?.id === id && s.card && typeof s.card === 'object') dispatch({ ...sameShape(s, around), card: sameShape(s.card, card) });
         else continue;
@@ -144,8 +150,8 @@
     return done;
   }
 
-  // A useState of the page (its reducer gives back what it is given), never a useReducer: an object given to a
-  // reducer that waits for an action would break the page (a black page after a purchase).
+  // Un useState de la page (son réducteur rend ce qu'on lui donne), jamais un useReducer : un objet donné à un
+  // réducteur qui attend une action casserait la page (une page noire après un achat).
   function plainState(queue) {
     const reducer = queue?.lastRenderedReducer;
     if (typeof reducer !== 'function') return false;
@@ -157,8 +163,8 @@
     }
   }
 
-  // old with the fields of fresh that have the same kind (an array stays an array, an object an object, nothing
-  // turns empty), and the new fields: the game's page never meets a value it can't draw.
+  // old avec les champs de fresh qui ont la même nature (un tableau reste un tableau, un objet un objet, rien ne
+  // devient vide), et les nouveaux champs : la page du jeu ne rencontre jamais une valeur qu'elle ne sait pas dessiner.
   function sameShape(old, fresh) {
     const next = { ...old };
     for (const [k, v] of Object.entries(fresh ?? {})) {
@@ -170,8 +176,8 @@
     return next;
   }
 
-  // After a change of Perles or cards, the game's status (/me: Perles…) and the card of the page are read again from
-  // the API, once for a burst of changes.
+  // Après un changement de Perles ou de cartes, l'état du jeu (/me : Perles…) et la carte de la page sont relus depuis
+  // l'API, une fois pour une rafale de changements.
   let assetsTimer = 0;
   function assetsChanged() {
     clearTimeout(assetsTimer);
@@ -181,11 +187,11 @@
     }, 600);
   }
 
-  // content.js asks the game to read its status again (its Perles after a purchase, its boosters…), and the card of
-  // its page (cardId) after a purchase: straight from the API, the page isn't loaded again.
+  // le code de la page demande au jeu de relire son état (ses Perles après un achat, ses boosters…), et la carte de sa
+  // page (cardId) après un achat : directement depuis l'API, la page n'est pas rechargée.
   window.addEventListener('message', async (e) => {
     if (e.source !== window || e.data?.aquamanCmd !== 'reload-game') return;
-    if (e.data.assets) return void assetsChanged(); // a change made by Aquaman itself, outside this page's fetch
+    if (e.data.assets) return void assetsChanged(); // un changement fait par Aquaman lui-même, hors du fetch de cette page
     const { cardId, perles } = e.data;
     let fixed = false;
     if (typeof cardId === 'string')
@@ -194,17 +200,17 @@
       } catch {}
     if (!fixed)
       try {
-        window.next?.router?.refresh?.(); // the page's own data (a card's copies…)
+        window.next?.router?.refresh?.(); // les données propres de la page (les exemplaires d'une carte…)
       } catch {}
     try {
       const store = await gameStore();
-      if (typeof perles === 'number') store?.setPerles?.(perles); // the Perles the purchase answered, at once
-      await store?.load().catch(() => {}); // then the game's status read again from /me
+      if (typeof perles === 'number') store?.setPerles?.(perles); // les Perles données par la réponse à l'achat, tout de suite
+      await store?.load().catch(() => {}); // puis l'état du jeu relu depuis /me
     } catch {}
   });
 
-  // content.js gives the game the Perles a change answered (a recycling from the window of cards): only the count is
-  // changed, the status isn't read again (it would draw the pile of boosters again behind the window).
+  // le code de la page donne au jeu les Perles qu'a renvoyées un changement (un recyclage depuis la fenêtre de cartes)
+  // : seul le nombre change, l'état n'est pas relu (il redessinerait la pile de boosters derrière la fenêtre).
   window.addEventListener('message', async (e) => {
     if (e.source !== window || e.data?.aquamanCmd !== 'set-perles' || typeof e.data.perles !== 'number') return;
     try {
@@ -212,22 +218,22 @@
     } catch {}
   });
 
-  // content.js sets the game on one kind ('' for all): the game's list of boosters is changed in its store at once
-  // (patch, no request), else read again through the filter (load). Answers once it is done, or at once when the
-  // store can't be found.
+  // le code de la page met le jeu sur une sorte ('' pour toutes) : la liste de boosters du jeu est changée tout de
+  // suite dans son store (patch, sans requête), sinon relue à travers le filtre (load). Répond une fois que c'est fait,
+  // ou tout de suite quand le store est introuvable.
   window.addEventListener('message', async (e) => {
     if (e.source !== window || e.data?.aquamanCmd !== 'refresh-boosters') return;
     let ok = false;
     try {
       const s = await gameStore();
       const kind = e.data.kind ?? '';
-      const given = Array.isArray(e.data.items) ? e.data.items : null; // the author's scan: boosters made up by kind
+      const given = Array.isArray(e.data.items) ? e.data.items : null; // le relevé de l'auteur : des boosters fabriqués par sorte
       if (s && (given || e.data.fresh || e.data.reload || !fullPending || typeof s.patch !== 'function')) {
-        // The game draws its pile afresh only when it reads its boosters itself (load: it goes through its loading
-        // state, the pile comes back with the right picture). Its answer goes through the filter of the kind, or
-        // carries the made-up boosters of the scan.
-        // The scan gives the ids of the player's own boosters: the game gets them whole, as its server sent them (a
-        // booster with an id it doesn't know is drawn with the classic picture).
+        // Le jeu ne redessine sa pile que quand il lit ses boosters lui-même (load : il passe par son état de
+        // chargement, la pile revient avec la bonne image). Sa réponse passe par le filtre de la sorte, ou porte les
+        // boosters fabriqués du relevé.
+        // Le relevé donne les ids des boosters du joueur : le jeu les reçoit entiers, tels que son serveur les a
+        // envoyés (un booster avec un id qu'il ne connaît pas est dessiné avec l'image classique).
         forcedPending = given && given.map((b) => fullPending?.find((x) => x?.id === b.id)).filter(Boolean);
         if (given && !forcedPending.length) forcedPending = null;
         try {
@@ -237,7 +243,7 @@
         }
         ok = true;
       } else if (s) {
-        // Back to all the boosters while the game's pile is hidden: at once, without a request.
+        // Retour à tous les boosters pendant que la pile du jeu est cachée : tout de suite, sans requête.
         s.patch(() => ({ pending: kind ? fullPending.filter((b) => (b?.kindId ?? 'classic') === kind) : fullPending }));
         ok = true;
       }
@@ -245,7 +251,7 @@
     post({ type: 'boosters-refreshed', ok, id: e.data.id ?? null });
   });
 
-  // Path of a same-origin request, or null.
+  // Chemin d'une requête de même origine, ou null.
   function pathOf(input) {
     try {
       const url = new URL(input instanceof Request ? input.url : String(input), location.href);
@@ -255,9 +261,9 @@
     }
   }
 
-  // A copy in the props of the site's components ({ cardId, copyId, name, serial }), looked for a few levels deep:
-  // { copyId } or a { id, serial }, its card beside it or around it (card: the card met on the way). Lists are left
-  // out: their first copy would be every row's.
+  // Un exemplaire dans les props des composants du site ({ cardId, copyId, name, serial }), cherché quelques niveaux en
+  // profondeur : { copyId } ou un { id, serial }, sa carte à côté ou autour (card : la carte rencontrée en chemin). Les
+  // listes sont laissées de côté : leur premier exemplaire serait celui de chaque ligne.
   function findCopy(v, depth, card = null) {
     if (!v || typeof v !== 'object' || Array.isArray(v) || depth > 4 || v instanceof Node || v.$$typeof) return null;
     const own = v.card && typeof v.card === 'object' && !Array.isArray(v.card) ? v.card : null;
@@ -273,7 +279,7 @@
     return null;
   }
 
-  // The copy shown by an element: read in the props of the components around it.
+  // L'exemplaire affiché par un élément : lu dans les props des composants autour de lui.
   function copyOf(el) {
     const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
     let fiber = key ? el[key] : null;
@@ -284,21 +290,21 @@
     return null;
   }
 
-  // The copies met in the site's answers (copy id -> { cardId, copyId, name, serial }), and the names of the cards:
-  // the rows of the "Vendre mes doublons" window are found there by their name and number. Only the logged-in
-  // player's own copies: the collection of another player the page reads (a profile, the partner of an exchange…) is
-  // never learnt, so that their copies are never taken for the player's.
+  // Les exemplaires rencontrés dans les réponses du site (id d'exemplaire -> { cardId, copyId, name, serial }), et les
+  // noms des cartes : les lignes de la fenêtre « Vendre mes doublons » y sont retrouvées par leur nom et leur numéro.
+  // Seulement les exemplaires du joueur connecté : la collection d'un autre joueur que lit la page (un profil, le
+  // partenaire d'un échange…) n'est jamais apprise, pour que ses exemplaires ne soient jamais pris pour ceux du joueur.
   const seenCopies = new Map();
   const cardNames = new Map();
-  let selfId = null; // the logged-in player, from the game's /me answers
+  let selfId = null; // le joueur connecté, d'après les réponses /me du jeu
   const idOfMe = (me) => [me?.id, me?.userId, me?.player?.id, me?.user?.id].find((x) => typeof x === 'string' && x) ?? null;
   function learnSelf(me) {
     const id = idOfMe(me);
     if (!id || id === selfId) return;
-    if (selfId) seenCopies.clear(); // another account: the copies of the previous one are forgotten
+    if (selfId) seenCopies.clear(); // un autre compte : les exemplaires du précédent sont oubliés
     selfId = id;
   }
-  // True when an answer of this path may hold the player's own copies: not another player's collection.
+  // Vrai quand une réponse de ce chemin peut contenir les exemplaires du joueur : pas la collection d'un autre joueur.
   function ownAnswer(path) {
     const player = path.match(PLAYER_PATH)?.[1];
     if (!player) return true;
@@ -329,7 +335,7 @@
     walk(body, null);
   }
 
-  // The copy of a row: its number (#518) and the longest card name found in its text.
+  // L'exemplaire d'une ligne : son numéro (#518) et le plus long nom de carte trouvé dans son texte.
   function copyOfRow(row, taken) {
     const text = row.textContent;
     const serial = Number(text.match(/#\s?(\d+)/)?.[1]);
@@ -342,8 +348,8 @@
     return best;
   }
 
-  // The copies still ticked in the "Vendre mes doublons" window, in its order, each with the price of its row (the
-  // price typed, else its "Valeur ≈").
+  // Les exemplaires encore cochés dans la fenêtre « Vendre mes doublons », dans son ordre, chacun avec le prix de sa
+  // ligne (le prix tapé, sinon sa « Valeur ≈ »).
   function tickedCopies() {
     try {
       const buttons = [...document.querySelectorAll('button')].filter((b) => !b.closest('.aqm-root'));
@@ -370,20 +376,22 @@
     }
   }
 
-  // Rarities of the cards of one booster's answer ({ pulls: [{ card: { rarity } }] }).
+  // Raretés des cartes de la réponse d'un booster ({ pulls: [{ card: { rarity } }] }).
   const raritiesOf = (pulls) => pulls.map((p) => p?.card?.rarity ?? p?.rarity).filter((r) => RARITIES.includes(r));
 
-  // The boosters of an opening answer: one booster, or several (open-many), each as the pulls of its cards.
+  // Les boosters d'une réponse d'ouverture : un booster, ou plusieurs (open-many), chacun sous la forme des tirages de
+  // ses cartes.
   function openedBoosters(body) {
     if (Array.isArray(body?.pulls)) return [body];
     const list = body?.boosters ?? body?.results ?? body?.opened ?? (Array.isArray(body) ? body : null);
     return Array.isArray(list) ? list.filter((b) => Array.isArray(b?.pulls)) : [];
   }
-  // The kind of each booster of an opening ({ id, name }, null when unknown): from the answer, else from the booster's
-  // id (in the path or the body of the request) among the waiting ones, else the kind Aquaman shows the game, else
-  // the only kind waiting.
-  // The game's id of each booster of an opening (null when unknown): from the answer, else from the request (its path
-  // or its body). Aquaman records each booster under it, so that a booster told twice is counted once.
+  // La sorte de chaque booster d'une ouverture ({ id, name }, null quand elle est inconnue) : d'après la réponse, sinon
+  // d'après l'id du booster (dans le chemin ou le corps de la requête) parmi ceux en attente, sinon la sorte qu'Aquaman
+  // montre au jeu, sinon la seule sorte en attente.
+  // L'id du jeu de chaque booster d'une ouverture (null quand il est inconnu) : d'après la réponse, sinon d'après la
+  // requête (son chemin ou son corps). Aquaman enregistre chaque booster sous cet id, pour qu'un booster signalé deux
+  // fois ne compte qu'une fois.
   function askedIds(path, init) {
     let asked = [];
     try {
@@ -418,7 +426,7 @@
       return kinds.size === 1 ? named([...kinds][0]) : null;
     });
   }
-  // The best card of a booster ({ id, name, image, rarity }), for the history of the pity.
+  // La meilleure carte d'un booster ({ id, name, image, rarity }), pour l'historique anti-malchance.
   function bestCard(pulls) {
     let best = null;
     for (const p of pulls) {
@@ -430,12 +438,12 @@
     return best;
   }
 
-  // ---------- the picture of a themed kind in the 3D pack of the opening ----------
-  // The game draws the pack of its opening window in 3D (three.js) with the classic picture (classique.webp) when it
-  // opens several boosters, whatever their kind. While Aquaman opens a themed kind (content.js writes its picture in
-  // data-aqm-opening-art), that picture takes the classic one's place each time the game draws it or sends it to the
-  // 3D: the same size (720 × 1080), nothing else changes. The classic picture the game keeps is never changed itself,
-  // so each opening gets the picture of its own kind.
+  // ---------- l'image d'une sorte à thème dans le pack 3D de l'ouverture ----------
+  // Le jeu dessine en 3D (three.js) le pack de sa fenêtre d'ouverture avec l'image classique (classique.webp) quand il
+  // ouvre plusieurs boosters, quelle que soit leur sorte. Pendant qu'Aquaman ouvre une sorte à thème (le code de la
+  // page écrit son image dans data-aqm-opening-art), cette image prend la place de la classique chaque fois que le jeu
+  // la dessine ou l'envoie à la 3D : la même taille (720 × 1080), rien d'autre ne change. L'image classique que garde
+  // le jeu n'est jamais modifiée elle-même, donc chaque ouverture reçoit l'image de sa propre sorte.
   const CLASSIC_ART = /\/game\/boosters\/classique\.(webp|png|jpe?g)/i;
   const openingArt = () => document.documentElement.getAttribute('data-aqm-opening-art') || '';
   const isClassicUrl = (url) => {
@@ -446,9 +454,9 @@
     }
   };
   const bitmap = globalThis.createImageBitmap;
-  const classicBlobs = new WeakSet(); // the classic picture fetched by the game
-  const classicBitmaps = new WeakSet(); // and made into bitmaps
-  const arts = new Map(); // picture -> { img, bitmap }, loaded once
+  const classicBlobs = new WeakSet(); // l'image classique récupérée par le jeu
+  const classicBitmaps = new WeakSet(); // et transformée en bitmaps
+  const arts = new Map(); // image -> { img, bitmap }, chargée une fois
   const artOf = (url) => {
     if (!arts.has(url)) {
       const art = { img: new Image(), bitmap: null };
@@ -460,7 +468,7 @@
     return arts.get(url);
   };
   new MutationObserver(() => openingArt() && artOf(openingArt())).observe(document.documentElement, { attributes: true, attributeFilter: ['data-aqm-opening-art'] });
-  // The themed picture to use in place of a classic one (as an image or a bitmap, like the source), once loaded.
+  // L'image à thème à utiliser à la place d'une classique (en image ou en bitmap, comme la source), une fois chargée.
   const swapFor = (source) => {
     const url = openingArt();
     if (!url || !source) return null;
@@ -503,7 +511,7 @@
       };
     }
 
-  // Only the requests to the game's API are looked at; the others (analytics, images…) go straight through.
+  // Seules les requêtes à l'API du jeu sont examinées ; les autres (statistiques, images…) passent tout droit.
   window.fetch = function (input, init) {
     const path = pathOf(input);
     if (!path?.startsWith('/api-game/')) return original.apply(this, arguments);
@@ -511,12 +519,12 @@
   };
 
   async function watch(pending, path, input, init) {
-    const self = !!window.__aquamanSelf; // a request of Aquaman itself (userscript)
-    const waiting = fullPending; // the boosters waiting when the request left (an opening: those it opens)
+    const self = !!window.__aquamanSelf; // une requête d'Aquaman lui-même (script)
+    const waiting = fullPending; // les boosters en attente au départ de la requête (une ouverture : ceux qu'elle ouvre)
     const res = await pending;
     try {
       const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
-      // The game sees only the waiting boosters of the chosen kind (all of them when none is left).
+      // Le jeu ne voit que les boosters en attente de la sorte choisie (tous quand il n'en reste aucun).
       const kind = chosenKind();
       if (forcedPending && res.ok && method === 'GET' && ME.test(path)) {
         const me = await res.clone().json().catch(() => null);
@@ -564,8 +572,8 @@
           .json()
           .then(learnCopies)
           .catch(() => {});
-      // A player whose cards the game reads (the partner of an exchange…): their id with their name, for the filter
-      // "Il lui manque" of the exchanges.
+      // Un joueur dont le jeu lit les cartes (le partenaire d'un échange…) : son id avec son nom, pour le filtre « Il
+      // lui manque » des échanges.
       const player = path && res.ok && method === 'GET' ? path.match(PLAYER_PATH)?.[1] : null;
       if (player)
         res
@@ -604,11 +612,12 @@
             .then((body) => Array.isArray(body?.pulls) && post({ type: 'feed', pulls: body.pulls }))
             .catch(() => {});
         } else if (method !== 'GET' && WRITE.test(path)) {
-          // A card bought on the market: its other sales are hidden (content.js), the player has it now.
+          // Une carte achetée sur le marché : ses autres ventes sont cachées (le code de la page), le joueur l'a
+          // maintenant.
           const bought = path.match(MARKET_BUY)?.[1];
           const card = bought && listingCards.get(decodeURIComponent(bought));
           if (card) post({ type: 'market-bought', name: card.name, rarity: card.rarity });
-          // A booster bought in the shop: the game adds it to its boosters without reading /me again, Aquaman too.
+          // Un booster acheté dans la boutique : le jeu l'ajoute à ses boosters sans relire /me, Aquaman aussi.
           if (BUY.test(path) && fullPending)
             res
               .clone()
@@ -620,7 +629,7 @@
                 post({ type: 'status', pending: fullPending.length, boosters: fullPending.map((x) => ({ id: x.id, kind: x.kindId ?? null, name: x.kindName ?? null, art: x.kindArt ?? null })) });
               })
               .catch(() => {});
-          // The boosters Aquaman opens itself (window.__aquamanSelf, in the userscript) are counted by Aquaman.
+          // Les boosters qu'Aquaman ouvre lui-même (window.__aquamanSelf, dans le script) sont comptés par Aquaman.
           if (OPEN.test(path) && !window.__aquamanSelf)
             res
               .clone()
@@ -637,7 +646,7 @@
                     best: opened.map((b) => bestCard(b.pulls)),
                     packs: opened.map((b) => b.pack),
                     ids: opened.map((b) => b.id),
-                    // (the cards pulled: their duplicates can be recycled from the window of cards)
+                    // (les cartes tirées : leurs doublons peuvent être recyclés depuis la fenêtre de cartes)
                     cards: opened.map((b) => (Array.isArray(b.pulls) ? b.pulls : []).map((p) => (p?.card ?? p)?.id).filter((id) => typeof id === 'string'))
                   });
               })

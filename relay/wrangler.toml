@@ -2,13 +2,13 @@ name = "aquaman-relay"
 main = "worker.js"
 compatibility_date = "2026-10-01"
 
-# Created by "npx wrangler d1 create aquaman".
+# Créé par « npx wrangler d1 create aquaman ».
 [[d1_databases]]
 binding = "DB"
 database_name = "aquaman"
 database_id = "d2015fb6-dc3b-4f72-99c2-2f5c4ac46b91"
 
-# The queue of the imports of the public history of the "beaux tirages": one instance, one import at a time.
+# La file des imports de l'historique public des « beaux tirages » : une instance, un import à la fois.
 [[durable_objects.bindings]]
 name = "PULLS_WRITER"
 class_name = "PullsWriter"
@@ -17,6 +17,7 @@ class_name = "PullsWriter"
 tag = "v1"
 new_sqlite_classes = ["PullsWriter"]
 
-# Every 5 minutes: reads the game's feed (secret GAME_COOKIE). Every day at 4 h (UTC): forgets the openings older than a year.
+# Toutes les 5 minutes : lit le fil du jeu (secret GAME_COOKIE). Chaque jour à 4 h (UTC) : oublie les ouvertures de plus
+# d'un an.
 [triggers]
 crons = ["*/5 * * * *", "0 4 * * *"]

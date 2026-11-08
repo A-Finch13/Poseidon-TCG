@@ -1,0 +1,40 @@
+/* ---------- Page d'une carte : offres du marché ---------- */
+
+.aqm-listings {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.aqm-listings-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+}
+.aqm-listings-head .aqm-label {
+  margin: 0;
+}
+.aqm-listings .aqm-owners {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-buy-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.aqm-buy {
+  height: 30px;
+}
+.aqm-buy-refused {
+  margin: 8px 0 0;
+  color: #fca5a5;
+}

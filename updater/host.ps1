@@ -1,6 +1,6 @@
-# Aquaman updater, started by the browser (native messaging) when the "Mettre a jour" button is clicked.
-# Replaces the extension's files with the requested GitHub release, then answers so the extension can reload itself.
-# A folder that is a git clone is updated with "git pull" instead.
+# Assistant de mise a jour d'Aquaman, lance par le navigateur (native messaging) quand on clique sur "Mettre a jour".
+# Remplace les fichiers de l'extension par la version GitHub demandee, puis repond pour que l'extension redemarre.
+# Un dossier qui est un clone git est mis a jour avec "git pull" a la place.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -31,7 +31,7 @@ function Send-Message($reply) {
   $stdout.Flush()
 }
 
-# Runs a program without letting it write to stdout, which belongs to the browser.
+# Lance un programme sans le laisser ecrire sur stdout, qui appartient au navigateur.
 function Invoke-Quiet($file, $arguments) {
   $p = New-Object Diagnostics.Process
   $p.StartInfo.FileName = $file
@@ -47,7 +47,7 @@ function Invoke-Quiet($file, $arguments) {
   return @{ code = $p.ExitCode; text = ($out.Result + $err).Trim() }
 }
 
-# -1, 0 or 1, like 1.6.1 against 1.6.2.
+# -1, 0 ou 1, comme 1.6.1 contre 1.6.2.
 function Compare-Version($a, $b) {
   $pa = @($a -split '\.' | ForEach-Object { [int]$_ })
   $pb = @($b -split '\.' | ForEach-Object { [int]$_ })
@@ -84,17 +84,17 @@ function Update-Extension($dir, $msg) {
       Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
-  # The updater itself follows the extension.
+  # L'assistant lui-meme suit l'extension.
   $fresh = Join-Path $dir 'updater\host.ps1'
   if (Test-Path -LiteralPath $fresh) { Copy-Item -LiteralPath $fresh -Destination (Join-Path $here 'host.ps1') -Force -ErrorAction SilentlyContinue }
   $now = Get-Version $dir
-  # A newer version than the one asked for (a release came out meanwhile) is fine too.
+  # Une version plus recente que celle demandee (une version est sortie entre-temps) convient aussi.
   if ($msg.version -and (Compare-Version $now ([string]$msg.version)) -lt 0) { return @{ error = 'version_mismatch'; detail = $now } }
   return @{ ok = $true; version = $now }
 }
 
 try {
-  # Chrome passes "chrome-extension://<id>/", Firefox the manifest path then the add-on id.
+  # Chrome passe "chrome-extension://<id>/", Firefox le chemin du manifeste puis l'id du module.
   $caller = ($args | Where-Object { $_ -match '^chrome-extension://' } | Select-Object -First 1)
   $id = if ($caller) { ($caller -replace '^chrome-extension://', '').TrimEnd('/') } else { [string]$args[-1] }
   $config = Get-Content -LiteralPath (Join-Path $here 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json

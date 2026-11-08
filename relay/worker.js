@@ -1,29 +1,31 @@
-// Aquaman relay (Cloudflare Worker):
-// - shares between the devices of a player (computer, phone, extension or userscript) the boosters they open, so that
-//   the pity counters are the same everywhere, and their favourite series. It keeps, for each player id, the boosters
-//   opened: { id, at, top } (random id, time, best rarity rank), and the ids of the favourite series;
-// - keeps a public history of the game's "beaux tirages" (SSR, UR, SEC), the pulls the game already shows to every
-//   player, sent by every Aquaman: who pulled which card, its number and when.
-// The public history is never rewritten: an import adds the pulls not known yet and only fills the empty fields of
-// the known ones. The imports go through one Durable Object (PullsWriter) that handles them one at a time, each in one
-// transaction.
-// Every 5 minutes, the relay also reads the game's feed itself, with the session of the account given in the secret
-// GAME_COOKIE (the "cookie" header of a request of the game); its pulls go through the same queue as the others.
-// Each Aquaman also says, every 10 minutes, that it is used (player id and name, extension or userscript, version):
-// one line per player and per kind; the list is given only to the author: to a request signed by one of the author's approved devices (each
-// device keeps its own private key; the relay keeps the public keys), or carrying the secret ADMIN_TOKEN, which is
-// only used to approve the first device.
-// The cards a player waits to search (beyond the game's 100) are shared between their devices, like the favourites.
-// The author publishes the drawings of every kind of booster (scanned on the game's home page): given to every
-// Aquaman (GET /packs), which then draws nothing itself.
-// The SSR, UR and SEC cards of the players seen in the "beaux tirages" are kept too (read by the Aquaman that saw them,
-// in the player's public collection, every 12 hours at most): "Qui a cette carte ?" lists them.
-// Bindings: DB (D1 database, schema.sql), PULLS_WRITER (Durable Object, the queue of the imports), GAME_COOKIE and
-// ADMIN_TOKEN (secrets).
+// Relais d'Aquaman (Cloudflare Worker) :
+// - partage entre les appareils d'un joueur (ordinateur, téléphone, extension ou script) les boosters qu'ils ouvrent,
+//   pour que les compteurs anti-malchance soient les mêmes partout, et ses séries favorites. Il garde, pour chaque id
+//   de joueur, les boosters ouverts : { id, at, top } (id au hasard, moment, rang de la meilleure rareté), et les ids
+//   des séries favorites ;
+// - garde un historique public des « beaux tirages » du jeu (SSR, UR, SEC), les tirages que le jeu montre déjà à tous
+//   les joueurs, envoyés par chaque Aquaman : qui a tiré quelle carte, son numéro et quand.
+// L'historique public n'est jamais réécrit : un import ajoute les tirages pas encore connus et ne remplit que les
+// champs vides des connus. Les imports passent par un seul Durable Object (PullsWriter) qui les traite un par un,
+// chacun dans une transaction.
+// Toutes les 5 minutes, le relais lit aussi lui-même le fil du jeu, avec la session du compte donnée dans le secret
+// GAME_COOKIE (l'en-tête « cookie » d'une requête du jeu) ; ses tirages passent par la même file que les autres.
+// Chaque Aquaman dit aussi, toutes les 10 minutes, qu'il est utilisé (id et nom du joueur, extension ou script,
+// version) : une ligne par joueur et par sorte ; la liste n'est donnée qu'à l'auteur : à une requête signée par un des
+// appareils approuvés de l'auteur (chaque appareil garde sa propre clé privée ; le relais garde les clés publiques), ou
+// portant le secret ADMIN_TOKEN, qui ne sert qu'à approuver le premier appareil.
+// Les cartes qu'un joueur attend de rechercher (au-delà des 100 du jeu) sont partagées entre ses appareils, comme les
+// favoris.
+// L'auteur publie les dessins de chaque sorte de booster (relevés sur l'accueil du jeu) : donnés à chaque Aquaman (GET
+// /packs), qui ne dessine alors plus rien lui-même.
+// Les cartes SSR, UR et SEC des joueurs vus dans les « beaux tirages » sont gardées aussi (lues par l'Aquaman qui les a
+// vus, dans la collection publique du joueur, toutes les 12 heures au plus) : « Qui a cette carte ? » les liste.
+// Liaisons : DB (base D1, schema.sql), PULLS_WRITER (Durable Object, la file des imports), GAME_COOKIE et ADMIN_TOKEN
+// (secrets).
 
-const KEEP = 500; // openings sent back, the most recent: more than the longest pity
-const SEC_RANK = 6; // the rank of the SEC in the openings' "top"
-const MAX_IN = 200; // openings accepted in one request
+const KEEP = 500; // ouvertures renvoyées, les plus récentes : plus que la plus longue garantie
+const SEC_RANK = 6; // le rang de la SEC dans le « top » des ouvertures
+const MAX_IN = 200; // ouvertures acceptées dans une requête
 const MAX_BODY = 64 * 1024;
 const YEAR = 365 * 86400e3;
 const PLAYER = /^[A-Za-z0-9_-]{6,64}$/;
@@ -31,19 +33,19 @@ const BOOSTER = /^[A-Za-z0-9_.:-]{1,64}$/;
 const SERIES = /^[A-Za-z0-9_-]{1,64}$/;
 const CARD = /^[A-Za-z0-9_-]{1,64}$/;
 const RARE = new Set(['SSR', 'UR', 'SEC']);
-const MAX_PULLS_IN = 100; // pulls accepted in one request
+const MAX_PULLS_IN = 100; // tirages acceptés dans une requête
 const MONTH = 31 * 86400e3;
 const GAME_FEED = 'https://poseidon-scans.net/api-game/v1/feed';
 const EVERY_DAY = '0 4 * * *';
 const MAX_FAVORITES = 500;
 const MAX_WANTS = 400;
-const MAX_HOLDINGS = 2000; // cards of one player
+const MAX_HOLDINGS = 2000; // cartes d'un joueur
 const HOLDINGS_BODY = 256 * 1024;
-const RESCAN = 12 * 3600e3; // a player's collection is read again after this
+const RESCAN = 12 * 3600e3; // la collection d'un joueur est relue après ce délai
 const MAX_STALE_ASKED = 40;
 const KIND = /^[A-Za-z0-9_-]{1,64}$/;
-const MAX_PILE_HTML = 150 * 1024; // one drawing of a booster's pile
-const MAX_PACK_DESIGNS = 150; // the author's drawings: every kind of booster, each with 1, 2 and 3+ boosters
+const MAX_PILE_HTML = 150 * 1024; // un dessin de la pile d'un booster
+const MAX_PACK_DESIGNS = 150; // les dessins de l'auteur : chaque sorte de booster, chacune avec 1, 2 et 3+ boosters
 const PACKS_BODY = 8 * 1024 * 1024;
 
 const CORS = {
@@ -54,7 +56,7 @@ const CORS = {
 };
 
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...CORS, ...headers } });
-// Public answers can be kept a minute by the browsers.
+// Les réponses publiques peuvent être gardées une minute par les navigateurs.
 const shared = (body) => json(body, 200, { 'cache-control': 'public, max-age=60' });
 
 export default {
@@ -67,7 +69,7 @@ export default {
       if (req.method === 'POST' && pathname === '/pity/all') return json(await pityAll(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/wants') return json(await wants(env, await readBody(req)));
-      if (req.method === 'POST' && pathname === '/lists') return json(await playerList(env, await readBody(req, HOLDINGS_BODY))); // (Ma progression: a count for each series)
+      if (req.method === 'POST' && pathname === '/lists') return json(await playerList(env, await readBody(req, HOLDINGS_BODY))); // (Ma progression : un compte pour chaque série)
       if (req.method === 'GET' && pathname === '/packs') return shared(await packDesigns(env));
       if (req.method === 'POST' && pathname === '/holdings') return json(await saveHoldings(env, await readBody(req, HOLDINGS_BODY)));
       if (req.method === 'GET' && pathname === '/holdings') return json(await findHoldings(env, url.searchParams));
@@ -85,28 +87,29 @@ export default {
     }
   },
 
-  // Once a day: forgets the openings older than a year. Every 5 minutes: reads the game's feed.
+  // Une fois par jour : oublie les ouvertures de plus d'un an. Toutes les 5 minutes : lit le fil du jeu.
   async scheduled(event, env, ctx) {
     if (event.cron === EVERY_DAY) await env.DB.prepare('DELETE FROM pity WHERE at < ?1').bind(Date.now() - YEAR).run();
     else ctx.waitUntil(readGameFeed(env));
   }
 };
 
-// JSON body of a request, refused above max.
+// Corps JSON d'une requête, refusé au-delà de max.
 async function readBody(req, max = MAX_BODY) {
   const text = await req.text();
   if (text.length > max) throw new Error('too_large');
   return JSON.parse(text);
 }
 
-// True for an opening as sent by the extension.
+// Vrai pour une ouverture telle que l'envoie l'extension.
 function valid(e) {
   const now = Date.now();
   return e && typeof e.id === 'string' && BOOSTER.test(e.id) && Number.isFinite(e.at) && e.at > now - YEAR && e.at < now + 86400e3 && Number.isInteger(e.top) && e.top >= 0 && e.top <= 6;
 }
 
-// Adds the player's new openings, then sends back all of their recent ones, and the boosters opened since their
-// last SEC over the whole year kept (sec: { since, known }; the SEC has no guarantee, it is often further back).
+// Ajoute les nouvelles ouvertures du joueur, puis renvoie toutes ses ouvertures récentes, et les boosters ouverts
+// depuis sa dernière SEC sur toute l'année gardée (sec : { since, known } ; la SEC n'a pas de garantie, elle remonte
+// souvent plus loin).
 async function pity(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
@@ -115,20 +118,23 @@ async function pity(env, body) {
     await env.DB.batch(
       events.map((e) => env.DB.prepare('INSERT OR IGNORE INTO pity (player, id, at, top, card) VALUES (?1, ?2, ?3, ?4, ?5)').bind(player, e.id, Math.round(e.at), e.top, pityCard(e)))
     );
-  const [{ results }, sec] = await Promise.all([
+  const [{ results }, sec, { results: last }] = await Promise.all([
     env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at DESC LIMIT ?2').bind(player, KEEP).all(),
     env.DB.prepare(
       'SELECT (SELECT MAX(at) FROM pity WHERE player = ?1 AND top >= ?2) AS last, ' +
         '(SELECT COUNT(*) FROM pity WHERE player = ?1 AND at > COALESCE((SELECT MAX(at) FROM pity WHERE player = ?1 AND top >= ?2), -1)) AS since'
     )
       .bind(player, SEC_RANK)
-      .first()
+      .first(),
+    // (le dernier tirage SSR, UR et SEC du joueur vu dans les « beaux tirages » du jeu : il compte aussi les boosters
+    // ouverts sans Aquaman, sur un autre appareil)
+    env.DB.prepare("SELECT rarity, MAX(pulled_at) AS at FROM pulls WHERE player_id = ?1 AND rarity IN ('SSR', 'UR', 'SEC') GROUP BY rarity").bind(player).all()
   ]);
-  return { events: results.reverse(), sec: { since: sec?.since ?? 0, known: sec?.last != null } };
+  return { events: results.reverse(), sec: { since: sec?.since ?? 0, known: sec?.last != null }, pulls: Object.fromEntries(last.map((r) => [r.rarity, r.at])) };
 }
 
-// The best card of a SSR, UR or SEC opening ({ id, name, image, rarity }) and the kind of booster it came from
-// (pack: { id, name }), checked, as JSON; null for the others.
+// La meilleure carte d'une ouverture SSR, UR ou SEC ({ id, name, image, rarity }) et la sorte de booster d'où elle
+// vient (pack : { id, name }), vérifiées, en JSON ; null pour les autres.
 function pityCard(e) {
   if (e.top < 4) return null;
   const c = e?.card;
@@ -138,15 +144,15 @@ function pityCard(e) {
   return Object.keys(card).length ? JSON.stringify(card) : null;
 }
 
-// The card and the kind of booster kept with an opening (pityCard).
+// La carte et la sorte de booster gardées avec une ouverture (pityCard).
 function readPityCard(raw) {
   const { pack = null, ...card } = raw ? JSON.parse(raw) : {};
   return { card: card.id ? card : null, pack };
 }
 
-// All the openings of a player kept (a year), oldest first, with the card of their SSR, UR and SEC when it was kept;
-// and the player's pulls seen in the game's "beaux tirages", to find the card of the older ones. For their history
-// ("Historique" of the pity); read only when the player opens it.
+// Toutes les ouvertures gardées d'un joueur (un an), la plus ancienne d'abord, avec la carte de leurs SSR, UR et SEC
+// quand elle a été gardée ; et les tirages du joueur vus dans les « beaux tirages » du jeu, pour trouver la carte des
+// plus anciennes. Pour son historique (« Historique » de l'anti-malchance) ; lu seulement quand le joueur l'ouvre.
 async function pityAll(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
@@ -160,7 +166,7 @@ async function pityAll(env, body) {
   };
 }
 
-// Keeps the most recent list of favourite series of the player (by the time of its change), and sends it back.
+// Garde la liste la plus récente de séries favorites du joueur (d'après le moment de son changement), et la renvoie.
 async function favorites(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
@@ -176,13 +182,13 @@ async function favorites(env, body) {
   return saved ? { list: JSON.parse(saved.list), at: saved.at } : { list: null, at: 0 };
 }
 
-// The drawings of every kind of booster published by the author: { kind: { v, pile, buttons, many, name, art, at } }.
+// Les dessins de chaque sorte de booster publiés par l'auteur : { kind: { v, pile, buttons, many, name, art, at } }.
 async function packDesigns(env) {
   const { results } = await env.DB.prepare('SELECT kind, data, at FROM pack_designs ORDER BY kind LIMIT ?1').bind(MAX_PACK_DESIGNS).all();
   return { packs: Object.fromEntries(results.map((r) => [r.kind, { ...JSON.parse(r.data), at: r.at }])) };
 }
 
-// The author's scan: the drawings of the kinds given replace those kept.
+// Le relevé de l'auteur : les dessins des sortes données remplacent ceux gardés.
 async function publishPacks(env, body) {
   const html = (v) => (typeof v === 'string' && v.length <= MAX_PILE_HTML ? v : null);
   const text = (v) => (typeof v === 'string' ? v.slice(0, 200) : null);
@@ -190,7 +196,7 @@ async function publishPacks(env, body) {
   const writes = [];
   for (const [kind, v] of Object.entries(body?.packs && typeof body.packs === 'object' ? body.packs : {}).slice(0, MAX_PACK_DESIGNS)) {
     const data = { v: Number.isInteger(v?.v) ? v.v : 0, pile: html(v?.pile), buttons: html(v?.buttons), many: html(v?.many), name: text(v?.name), art: text(v?.art) };
-    // kind: the kind of booster and the shape of its pile ("…--n1", "…--n2", "…--n3" for 3 and more)
+    // kind : la sorte de booster et la forme de sa pile (« …--n1 », « …--n2 », « …--n3 » pour 3 et plus)
     if (!/^[A-Za-z0-9_-]{1,72}$/.test(kind) || !data.pile || !data.buttons) continue;
     writes.push(env.DB.prepare('INSERT INTO pack_designs (kind, data, at) VALUES (?1, ?2, ?3) ON CONFLICT (kind) DO UPDATE SET data = ?2, at = ?3').bind(kind, JSON.stringify(data), now));
   }
@@ -198,7 +204,8 @@ async function publishPacks(env, body) {
   return { ok: true, published: writes.length };
 }
 
-// Keeps the most recent lists of searched cards of the player (by the time of their change), and sends them back.
+// Garde les listes les plus récentes de cartes recherchées du joueur (d'après le moment de leur changement), et les
+// renvoie.
 async function wants(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
@@ -216,9 +223,9 @@ async function wants(env, body) {
   return saved ? { waiting: JSON.parse(saved.waiting), sent: JSON.parse(saved.sent), at: saved.at } : { waiting: null, sent: null, at: 0 };
 }
 
-// ---------- other lists of a player, the same on all their devices ----------
+// ---------- autres listes d'un joueur, les mêmes sur tous ses appareils ----------
 
-// A reading of the collection (Ma progression): whole numbers and a time.
+// Une lecture de la collection (Ma progression) : des nombres entiers et un moment.
 const count = (v) => Number.isInteger(v) && v >= 0 && v < 1e7;
 const reading = (p) =>
   p && count(p.owned) && count(p.total) && count(p.complete) && Number.isFinite(p.at) && p.at > 0 && p.at < Date.now() + 86400e3
@@ -226,9 +233,9 @@ const reading = (p) =>
     : null;
 const RARITY_CODES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
 
-// Each list, and what one item of it may be: anything else is dropped.
+// Chaque liste, et ce que peut être un de ses éléments : tout le reste est écarté.
 const LISTS = {
-  // Ma progression: the first and the last reading of each day { day: "2026-11-07", first, last }
+  // Ma progression : la première et la dernière lecture de chaque jour { day: "2026-11-07", first, last }
   days: {
     max: 120,
     item: (v) => {
@@ -237,7 +244,8 @@ const LISTS = {
       return /^\d{4}-\d{2}-\d{2}$/.test(String(v?.day ?? '')) && first && last ? { day: v.day, first, last } : null;
     }
   },
-  // Ma progression: the cards of each rarity of each series { id, owned, total, at, by: { N: [owned, cards, copies] } }
+  // Ma progression : les cartes de chaque rareté de chaque série { id, owned, total, at, by: { N: [possédées, cartes,
+  // exemplaires] } }
   rarities: {
     max: 600,
     item: (v) => {
@@ -250,9 +258,9 @@ const LISTS = {
       return { id: v.id, owned: v.owned, total: v.total, at: Math.round(v.at), by };
     }
   },
-  // the cards bought on the market: "rarity|name" (or a name alone), in lower case
+  // les cartes achetées sur le marché : « rareté|nom » (ou un nom seul), en minuscules
   bought: { max: 3000, item: (v) => (typeof v === 'string' && v.length <= 160 && !/[<>]/.test(v) ? v : null) },
-  // the copies waiting for a place on the market: { cardId, copyId, price, name }
+  // les exemplaires en attente d'une place sur le marché : { cardId, copyId, price, name }
   sales: {
     max: 50,
     item: (v) =>
@@ -262,8 +270,8 @@ const LISTS = {
   }
 };
 
-// The relay keeps the most recent version of each list (at: time of its last change): it takes the one sent if it is
-// more recent, and sends back the one it keeps. A list sent without data only reads it.
+// Le relais garde la version la plus récente de chaque liste (at : moment de son dernier changement) : il prend celle
+// envoyée si elle est plus récente, et renvoie celle qu'il garde. Une liste envoyée sans données ne fait que la lire.
 async function playerList(env, body) {
   const player = String(body?.player ?? '');
   const kind = Object.hasOwn(LISTS, String(body?.name)) ? String(body.name) : null;
@@ -282,9 +290,9 @@ async function playerList(env, body) {
   return saved ? { data: JSON.parse(saved.data), at: saved.at } : { data: null, at: 0 };
 }
 
-// ---------- the rare cards of the players seen in the "beaux tirages" ----------
+// ---------- les cartes rares des joueurs vus dans les « beaux tirages » ----------
 
-// The players of the list (?players=id,id) whose collection wasn't read for RESCAN.
+// Les joueurs de la liste (?players=id,id) dont la collection n'a pas été lue depuis RESCAN.
 async function staleScans(env, params) {
   const ids = [...new Set(String(params.get('players') ?? '').split(','))].filter((id) => PLAYER.test(id)).slice(0, MAX_STALE_ASKED);
   if (!ids.length) return { stale: [] };
@@ -295,7 +303,8 @@ async function staleScans(env, params) {
   return { stale: ids.filter((id) => !fresh.has(id)) };
 }
 
-// The rare cards of one player, read in their collection: they replace the ones kept (a private collection keeps none).
+// Les cartes rares d'un joueur, lues dans sa collection : elles remplacent celles gardées (une collection privée n'en
+// garde aucune).
 async function saveHoldings(env, body) {
   const player = String(body?.player?.id ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
@@ -322,7 +331,8 @@ async function saveHoldings(env, body) {
   return { ok: true, cards: cards.size };
 }
 
-// The players known to have a card (?card=), with when their collection was read; and how many collections were read.
+// Les joueurs dont on sait qu'ils ont une carte (?card=), avec le moment où leur collection a été lue ; et combien de
+// collections ont été lues.
 async function findHoldings(env, params) {
   const card = params.get('card') ?? '';
   if (!CARD.test(card)) throw new Error('bad_card');
@@ -332,7 +342,7 @@ async function findHoldings(env, params) {
     )
       .bind(card)
       .all(),
-    // (how many collections were read: kept 10 minutes, it reads the whole table)
+    // (combien de collections ont été lues : gardé 10 minutes, cela lit toute la table)
     remember('scans-count', 10 * 60e3, () => env.DB.prepare('SELECT COUNT(*) AS n FROM scans WHERE private = 0').first())
   ]);
   return {
@@ -341,7 +351,7 @@ async function findHoldings(env, params) {
   };
 }
 
-// Lower case without accents, to search the names.
+// Minuscules sans accents, pour chercher dans les noms.
 const fold = (s) =>
   String(s ?? '')
     .normalize('NFD')
@@ -350,7 +360,7 @@ const fold = (s) =>
     .trim();
 const text = (v, max) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
 
-// One pull of the game's feed as sent by Aquaman, checked; null when it doesn't look like one.
+// Un tirage du fil du jeu tel que l'envoie Aquaman, vérifié ; null quand il n'en a pas l'air.
 function cleanPull(p) {
   const card = p?.card;
   const at = Date.parse(p?.pulledAt);
@@ -376,7 +386,8 @@ function cleanPull(p) {
   };
 }
 
-// Hands an import to the queue: the checked pulls go to the one PullsWriter, which writes them after the earlier imports.
+// Confie un import à la file : les tirages vérifiés vont à l'unique PullsWriter, qui les écrit après les imports
+// précédents.
 async function queuePulls(env, body) {
   const rows = (Array.isArray(body?.pulls) ? body.pulls : []).slice(0, MAX_PULLS_IN).map(cleanPull).filter(Boolean);
   if (!rows.length) return { received: 0 };
@@ -386,7 +397,7 @@ async function queuePulls(env, body) {
   return res.json();
 }
 
-// New pull: added. Known pull: only its empty fields are filled; nothing already written ever changes.
+// Nouveau tirage : ajouté. Tirage connu : seuls ses champs vides sont remplis ; rien de déjà écrit ne change jamais.
 const IMPORT = `INSERT INTO pulls (k, card_id, serial, card_name, rarity, image, series, player_id, player_name, pulled_at, search)
   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
   ON CONFLICT (k) DO UPDATE SET
@@ -400,7 +411,7 @@ const IMPORT = `INSERT INTO pulls (k, card_id, serial, card_name, rarity, image,
      OR (pulls.player_id IS NULL AND excluded.player_id IS NOT NULL)
      OR (pulls.player_name IS NULL AND excluded.player_name IS NOT NULL)`;
 
-// The queue of the imports: one instance for the whole relay, which writes the imports one after the other.
+// La file des imports : une seule instance pour tout le relais, qui écrit les imports l'un après l'autre.
 export class PullsWriter {
   constructor(state, env) {
     this.env = env;
@@ -409,7 +420,7 @@ export class PullsWriter {
 
   async fetch(req) {
     const rows = await req.json();
-    // Waits for the import before it, whatever its outcome, then writes this one in one transaction (D1 batch).
+    // Attend l'import d'avant, quel que soit son résultat, puis écrit celui-ci en une transaction (lot D1).
     const turn = this.last.catch(() => {}).then(() => this.write(rows));
     this.last = turn;
     return Response.json(await turn);
@@ -423,7 +434,7 @@ export class PullsWriter {
   }
 }
 
-// Answers kept a moment in this instance of the relay: the same question asked again reads nothing.
+// Réponses gardées un moment dans cette instance du relais : la même question reposée ne lit rien.
 const memo = new Map();
 async function remember(key, ttl, make) {
   const hit = memo.get(key);
@@ -434,14 +445,16 @@ async function remember(key, ttl, make) {
   return value;
 }
 
-// The start and end of the history and its size, in a few rows: each aggregate alone uses its index (together in one
-// SELECT they read the whole table), and pulls are never deleted, so the last rowid counts them.
+// Le début et la fin de l'historique et sa taille, en quelques lignes : chaque agrégat seul utilise son index (ensemble
+// dans un même SELECT ils lisent toute la table), et les tirages ne sont jamais supprimés, donc le dernier rowid les
+// compte.
 const pullsSpan = (env) =>
   remember('pulls-span', 60e3, () =>
     env.DB.prepare('SELECT (SELECT MIN(pulled_at) FROM pulls) AS since, (SELECT MAX(pulled_at) FROM pulls) AS latest, (SELECT MAX(rowid) FROM pulls) AS total').first()
   );
 
-// The pulls of a card (?card=), matching a name or a series (?q=), or the latest ones; with the start of the history.
+// Les tirages d'une carte (?card=), qui correspondent à un nom ou une série (?q=), ou les derniers ; avec le début de
+// l'historique.
 async function findPulls(env, params) {
   const limit = Math.min(200, Math.max(1, Number(params.get('limit')) || 100));
   const card = params.get('card');
@@ -466,10 +479,10 @@ async function findPulls(env, params) {
   };
 }
 
-// Players seen in the recent pulls, the most recent first.
+// Joueurs vus dans les tirages récents, les plus récents d'abord.
 async function recentPlayers(env, params) {
   const limit = Math.min(300, Math.max(1, Number(params.get('limit')) || 150));
-  // (it reads every pull with a player: kept 10 minutes)
+  // (cela lit chaque tirage avec un joueur : gardé 10 minutes)
   const results = await remember(`players:${limit}`, 10 * 60e3, async () =>
     (
       await env.DB.prepare(
@@ -482,12 +495,12 @@ async function recentPlayers(env, params) {
   return { players: results.map((r) => ({ id: r.id, name: r.name })) };
 }
 
-// ---------- the relay's own reading of the game's feed ----------
+// ---------- la lecture du fil du jeu par le relais lui-même ----------
 
 const setMeta = (env, values) =>
   env.DB.batch(Object.entries(values).map(([k, v]) => env.DB.prepare('INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = ?2').bind(k, String(v))));
 
-// Reads the game's "beaux tirages" with the account's session and imports them like the pulls sent by the players.
+// Lit les « beaux tirages » du jeu avec la session du compte et les importe comme les tirages envoyés par les joueurs.
 async function readGameFeed(env) {
   if (!env.GAME_COOKIE) return;
   const now = Date.now();
@@ -509,7 +522,7 @@ async function readGameFeed(env) {
   await setMeta(env, { feed_tried_at: now, feed_ok_at: now, feed_state: 'ok', feed_seen: rows.length, feed_written: written });
 }
 
-// Whether the relay's reading works (nothing about the session itself).
+// Si la lecture du relais marche (rien sur la session elle-même).
 async function status(env) {
   const { results } = await env.DB.prepare("SELECT key, value FROM meta WHERE key LIKE 'feed_%'").all();
   const meta = Object.fromEntries(results.map((r) => [r.key, r.value]));
@@ -526,12 +539,12 @@ async function status(env) {
   };
 }
 
-// ---------- who uses Aquaman (the author only) ----------
+// ---------- qui utilise Aquaman (l'auteur seulement) ----------
 
 const KINDS = new Set(['extension', 'userscript']);
 
-// An Aquaman says it is used: the player's line and the line of this kind of Aquaman are created, or brought up to
-// date (name, kind, version, last seen).
+// Un Aquaman dit qu'il est utilisé : la ligne du joueur et la ligne de cette sorte d'Aquaman sont créées, ou mises à
+// jour (nom, sorte, version, dernière fois vu).
 async function hello(env, body) {
   const player = String(body?.player ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
@@ -544,8 +557,8 @@ async function hello(env, body) {
        ON CONFLICT (player) DO UPDATE SET name = COALESCE(?2, users.name), kind = COALESCE(?3, users.kind), version = COALESCE(?4, users.version), last_seen = ?5`
     ).bind(player, text(body.name, 60), kind, version, now)
   ];
-  // The leaderboard by Perles is gone: the Perles an older version shared are taken back at the player's next hello,
-  // whatever it sends.
+  // Le classement par Perles n'existe plus : les Perles qu'une ancienne version partageait sont reprises au prochain
+  // bonjour du joueur, quoi qu'il envoie.
   statements.push(env.DB.prepare('UPDATE users SET perles = NULL, perles_at = NULL WHERE player = ?1 AND perles IS NOT NULL').bind(player));
   if (kind)
     statements.push(
@@ -555,12 +568,12 @@ async function hello(env, body) {
       ).bind(player, kind, version, now)
     );
   await env.DB.batch(statements);
-  // The author may have taken Aquaman back from this player: their Aquaman stops. (false while the column is missing)
+  // L'auteur a peut-être retiré Aquaman à ce joueur : son Aquaman s'arrête. (false tant que la colonne manque)
   const row = await env.DB.prepare('SELECT revoked FROM users WHERE player = ?1').bind(player).first().catch(() => null);
   return { ok: true, revoked: !!row?.revoked };
 }
 
-// Whether the author took Aquaman back from a player (?player=): asked every minute by each Aquaman, one row read.
+// Si l'auteur a retiré Aquaman à un joueur (?player=) : demandé chaque minute par chaque Aquaman, une ligne lue.
 async function access(env, params) {
   const player = String(params.get('player') ?? '');
   if (!PLAYER.test(player)) throw new Error('bad_player');
@@ -568,7 +581,7 @@ async function access(env, params) {
   return { revoked: !!row?.revoked };
 }
 
-// True when the request carries the author's code (compared in constant time).
+// Vrai quand la requête porte le code de l'auteur (comparé en temps constant).
 function isAuthor(req, env) {
   const given = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
   const want = env.ADMIN_TOKEN ?? '';
@@ -578,8 +591,8 @@ function isAuthor(req, env) {
   return diff === 0;
 }
 
-// Every player who used Aquaman, the most recently seen first, with each of their kinds of Aquaman (the players seen
-// before the installs table only have their last kind).
+// Tous les joueurs qui ont utilisé Aquaman, le plus récemment vu d'abord, avec chacune de leurs sortes d'Aquaman (les
+// joueurs vus avant la table installs n'ont que leur dernière sorte).
 async function users(env) {
   const [{ results }, { results: installs }] = await Promise.all([
     env.DB.prepare('SELECT * FROM users ORDER BY last_seen DESC LIMIT 5000').all(),
@@ -604,15 +617,16 @@ async function users(env) {
   };
 }
 
-// ---------- the author's devices ----------
+// ---------- les appareils de l'auteur ----------
 
 const DEVICE = /^[A-Z0-9]{8}$/;
-const PENDING_KEEP = 3600e3; // a device not approved within an hour is forgotten
-const SIGNED_FOR = 120e3; // a signed request is valid two minutes
+const PENDING_KEEP = 3600e3; // un appareil pas approuvé dans l'heure est oublié
+const SIGNED_FOR = 120e3; // une requête signée est valable deux minutes
 
 const fromBase64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 
-// True when the request is signed by an approved device: signature of "METHOD /path time body" with its key.
+// Vrai quand la requête est signée par un appareil approuvé : signature de « MÉTHODE /chemin moment corps » avec sa
+// clé.
 async function signedByDevice(req, env, url, body) {
   const id = req.headers.get('x-aqm-device') ?? '';
   const time = Number(req.headers.get('x-aqm-time'));
@@ -631,7 +645,8 @@ async function signedByDevice(req, env, url, body) {
   }
 }
 
-// A new device asks to be approved: its public key is kept, waiting, with a code to show to the author.
+// Un nouvel appareil demande à être approuvé : sa clé publique est gardée, en attente, avec un code à montrer à
+// l'auteur.
 async function requestDevice(env, body) {
   const pub = body?.pub;
   if (!pub || pub.kty !== 'EC' || pub.crv !== 'P-256' || typeof pub.x !== 'string' || typeof pub.y !== 'string') throw new Error('bad_key');
@@ -645,7 +660,8 @@ async function requestDevice(env, body) {
   return { id, state: 'pending' };
 }
 
-// The /admin/ addresses: asking for approval is open; everything else needs the author (approved device or ADMIN_TOKEN).
+// Les adresses /admin/ : demander une approbation est ouvert à tous ; tout le reste demande l'auteur (appareil approuvé
+// ou ADMIN_TOKEN).
 async function admin(req, env, url) {
   const body = req.method === 'GET' ? '' : await req.text();
   const path = url.pathname;
@@ -668,7 +684,7 @@ async function admin(req, env, url) {
     return json({ ok: true });
   }
   if (req.method === 'POST' && path === '/admin/packs') return json(await publishPacks(env, data));
-  // A player's Aquaman taken back (revoked: true) or given back: it stops within a minute (GET /access).
+  // L'Aquaman d'un joueur retiré (revoked: true) ou rendu : il s'arrête en moins d'une minute (GET /access).
   if (req.method === 'POST' && path === '/admin/users/revoke' && PLAYER.test(String(data.id ?? ''))) {
     await env.DB.prepare('UPDATE users SET revoked = ?2 WHERE player = ?1').bind(data.id, data.revoked ? Date.now() : null).run();
     return json({ ok: true });

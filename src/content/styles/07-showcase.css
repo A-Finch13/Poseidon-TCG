@@ -1,0 +1,81 @@
+/* ---------- Ma vitrine ---------- */
+
+.aqm-hidden {
+  display: none !important;
+}
+.aqm-slot {
+  position: relative;
+  cursor: grab;
+  transition: transform 0.15s, opacity 0.15s;
+}
+.aqm-slot:active {
+  cursor: grabbing;
+}
+.aqm-slot.aqm-dragging {
+  opacity: 0.4;
+}
+.aqm-slot.aqm-over {
+  transform: translateY(-4px);
+  outline: 2px dashed #60a5fa;
+  outline-offset: 3px;
+  border-radius: 10px;
+}
+.aqm-moving .aqm-slot {
+  pointer-events: none;
+}
+.aqm-slot-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.9);
+  color: #fecaca;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.aqm-slot-x svg {
+  width: 12px;
+  height: 12px;
+}
+.aqm-slot:hover .aqm-slot-x,
+.aqm-slot-x:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .aqm-slot-x {
+    opacity: 1;
+  }
+}
+.aqm-slot {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.aqm-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483200;
+  margin: 0;
+  pointer-events: none;
+  opacity: 0.92;
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.6));
+  will-change: transform;
+}
+.aqm-ghost .aqm-slot-x {
+  display: none;
+}
+
+/* Les cartes de la collection dans la fenêtre ne sont dessinées que près de l'écran. */
+[data-aqm-lite] > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--aqm-cell-w, 120px) auto var(--aqm-cell-h, 200px);
+}

@@ -1,0 +1,11 @@
+/* ---------- Collection : bandes attrapables ---------- */
+
+.aqm-grab {
+  cursor: grab;
+}
+html.aqm-grabbing,
+html.aqm-grabbing * {
+  cursor: grabbing !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}

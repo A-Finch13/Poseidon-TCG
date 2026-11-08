@@ -1,0 +1,68 @@
+/* ---------- Qui a tiré… ? ---------- */
+
+.aqm-pulled {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-pull {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 14px;
+  background: var(--aqm-card);
+}
+.aqm-pull-card img {
+  display: block;
+  width: 40px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+.aqm-pull-main {
+  min-width: 0;
+}
+.aqm-pull-main > p {
+  margin: 0;
+}
+.aqm-pull-series {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.aqm-pull-who {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+}
+.aqm-pull-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aqm-pull-player .aqm-avatar-sm {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
+.aqm-pull-who a {
+  color: #fff;
+  text-decoration: none;
+}
+.aqm-pull-who a:hover {
+  text-decoration: underline;
+}
+.aqm-pull-who small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--aqm-muted);
+}

@@ -1,0 +1,74 @@
+/* ---------- Marché : « Retirer mes ventes » à côté de « Vendre une carte » ---------- */
+
+.aqm-unlist {
+  margin-left: 8px;
+}
+
+/* ---------- Fenêtre de question (à la place de celles du navigateur) ---------- */
+
+.aqm-panel.is-ask {
+  max-width: 520px;
+}
+.aqm-ask-text {
+  margin: 0 0 12px;
+  color: var(--aqm-text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.aqm-ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.aqm-ask-actions .aqm-queue-btn {
+  height: 36px;
+  padding: 0 18px;
+  font-weight: 700;
+}
+
+/* ---------- Marché : les autres annonces d'une carte qu'on vient d'acheter ---------- */
+
+[data-aqm-bought] {
+  display: none !important;
+}
+
+/* ---------- Marché : filtre « Favoris » à côté de « Mes recherches » ---------- */
+
+.aqm-market-fav.is-on {
+  background: #1e3a5f !important;
+  color: #fff !important;
+}
+[data-aqm-unfav] {
+  display: none !important;
+}
+/* Les filtres d'Aquaman dans la fenêtre d'un échange, à côté des pastilles du jeu. */
+.aqm-trade-filter.is-on {
+  background: #1e3a5f !important;
+  color: #fff !important;
+}
+.aqm-trade-filter.is-on.is-off {
+  opacity: 0.55;
+}
+[data-aqm-tradehide] {
+  display: none !important;
+}
+/* La page d'une carte : ses enchères en cours, sous les offres du marché. */
+.aqm-auctions-head {
+  margin-top: 18px;
+}
+.aqm-auction-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+/* « Enchérir » : un lien vers la page de l'enchère, dessiné comme le bouton « Acheter » (pas comme le nom d'un joueur). */
+.aqm-owner a.aqm-buy {
+  display: inline-flex;
+  align-items: center;
+  overflow: visible;
+  color: #fff;
+  font-weight: 800;
+  text-decoration: none;
+}

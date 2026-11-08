@@ -1,0 +1,41 @@
+/* ---------- Boosters rentables : filtres, explications ---------- */
+
+.aqm-filter-name {
+  width: 86px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--aqm-dim);
+}
+.aqm-chip-r {
+  font-style: italic;
+  font-weight: 900;
+}
+.aqm-chip-r.is-on {
+  border-color: currentColor;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.aqm-how {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: var(--aqm-card);
+  font-size: 13px;
+  color: #d4d4d8;
+}
+.aqm-how summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: #fff;
+}
+.aqm-how ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  line-height: 1.55;
+}
+.aqm-how li + li {
+  margin-top: 4px;
+}

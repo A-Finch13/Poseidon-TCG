@@ -1,0 +1,147 @@
+/* ---------- Boosters rentables ---------- */
+
+.aqm-search {
+  flex: 1 1 260px;
+  height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.aqm-search:focus {
+  border-color: rgba(96, 165, 250, 0.5);
+}
+.aqm-search::placeholder {
+  color: var(--aqm-dim);
+}
+
+.aqm-pack {
+  width: 64px;
+  height: 92px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.aqm-pack-plain {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(160deg, #1e3a8a, #0ea5e9 55%, #e0f2fe);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+.aqm-pack-plain span {
+  font-size: 11px;
+  font-weight: 900;
+  font-style: italic;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.aqm-perles {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-pearl {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 30%, #fff, #bfdbfe 45%, #60a5fa);
+  box-shadow: 0 0 6px rgba(147, 197, 253, 0.6);
+}
+
+.aqm-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+.aqm-mini img {
+  width: 34px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  object-fit: cover;
+}
+.aqm-mini > div {
+  min-width: 0;
+}
+.aqm-mini.is-owned img {
+  box-shadow: 0 0 0 2px var(--aqm-yes);
+}
+.aqm-mini-name {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 800;
+  color: #fff;
+}
+.aqm-rarity {
+  font-weight: 900;
+  font-style: italic;
+}
+.aqm-r-N {
+  color: #e4e4e7;
+}
+.aqm-r-R {
+  color: #60a5fa;
+}
+.aqm-r-SR {
+  color: #c4b5fd;
+}
+.aqm-r-SSR {
+  color: #fde047;
+}
+.aqm-r-UR {
+  color: #f9a8d4;
+}
+.aqm-r-SEC {
+  color: #e2e8f0;
+  text-shadow: 0 0 6px rgba(196, 181, 253, 0.8);
+}
+
+@media (max-width: 640px) {
+  .aqm-overlay {
+    padding: 16px 8px;
+  }
+  .aqm-head,
+  .aqm-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .aqm-row {
+    flex-wrap: wrap;
+  }
+  .aqm-stats {
+    width: 100%;
+    padding-left: 44px;
+  }
+  .aqm-stat {
+    min-width: 0;
+  }
+  
+  
+  .aqm-pack {
+    width: 48px;
+    height: 69px;
+  }
+}

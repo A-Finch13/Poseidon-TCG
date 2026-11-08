@@ -1,13 +1,17 @@
-// Userscript: the extension APIs used by the page code, rebuilt in the page.
-// Storage in the site's localStorage under "aqm:" (in memory when full); messages answered by handle() (bridge.js).
-const OWNER = 'userscript';
+// Script : les API d'extension utilisées par le code de la page, refaites dans la page. esbuild branche sur ce module
+// chaque « chrome » et « OWNER » du code (build.mjs).
+// Stockage dans le localStorage du site sous « aqm: » (en mémoire quand il est plein) ; messages traités par handle()
+// (bridge.js).
+import { handle } from './bridge.js';
 
-const chrome = (() => {
+export const OWNER = 'userscript';
+
+export const chrome = (() => {
   const PREFIX = 'aqm:';
   const memory = new Map();
   const listeners = [];
 
-  // Stored value of a key, or undefined.
+  // Valeur gardée d'une clé, ou undefined.
   const read = (key) => {
     if (memory.has(key)) return memory.get(key);
     try {
@@ -24,7 +28,7 @@ const chrome = (() => {
     memory.set(key, value);
     try {
       localStorage.setItem(PREFIX + key, JSON.stringify(value));
-    } catch {} // full: the value stays for this page
+    } catch {} // plein : la valeur reste pour cette page
   };
   const drop = (key) => {
     memory.delete(key);
@@ -32,7 +36,7 @@ const chrome = (() => {
       localStorage.removeItem(PREFIX + key);
     } catch {}
   };
-  // Tells the listeners of storage.onChanged.
+  // Prévient les écouteurs de storage.onChanged.
   const emit = (changes) => {
     if (!Object.keys(changes).length) return;
     setTimeout(() =>
@@ -45,7 +49,7 @@ const chrome = (() => {
   };
   const names = (keys) => (typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys ?? {}));
 
-  // Another tab of the site changed a value.
+  // Un autre onglet du site a changé une valeur.
   window.addEventListener('storage', (e) => {
     if (!e.key?.startsWith(PREFIX)) return;
     const key = e.key.slice(PREFIX.length);

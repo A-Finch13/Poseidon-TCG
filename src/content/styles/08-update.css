@@ -1,0 +1,33 @@
+/* ---------- Nouvelle version du script ---------- */
+
+.aqm-update .aqm-queue-head strong {
+  color: #93c5fd;
+}
+.aqm-update-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.aqm-update-actions .aqm-queue-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.aqm-update-actions .is-main {
+  border-color: #2563eb;
+  background: #2563eb;
+}
+/* iPhone : les étapes de la mise à jour avec Userscripts. */
+.aqm-update-steps {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.aqm-update .aqm-muted {
+  margin: 8px 0 0;
+  font-size: 12px;
+}

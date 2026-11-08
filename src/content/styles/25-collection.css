@@ -1,0 +1,77 @@
+/* ---------- Collection : séries les plus avancées ---------- */
+
+.aqm-sort-progress.is-on {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.2);
+  color: #fff;
+}
+
+/* ---------- Collection : onglet Manquantes ---------- */
+
+[data-aqm-owned-card],
+[data-aqm-locked-card] {
+  display: none !important;
+}
+/* « Manquante » et le « En vente » d'Aquaman sur une ligne. */
+[data-aqm-sale='on'] {
+  display: inline-block !important;
+  margin-right: 8px !important;
+  vertical-align: middle;
+}
+/* Seulement un signe : un clic passe jusqu'à la carte du jeu. */
+.aqm-sale {
+  display: inline-block;
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid rgba(59, 130, 246, 0.6);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.22);
+  color: #93c5fd;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1.6;
+  white-space: nowrap;
+  text-transform: uppercase;
+  vertical-align: middle;
+  pointer-events: none;
+}
+[data-aqm-pill-off] {
+  opacity: 0 !important;
+}
+[data-aqm-unpicked] {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--aqm-plain-color) !important;
+}
+.aqm-missing-tab.is-on {
+  border-radius: var(--aqm-pill-radius);
+  background: var(--aqm-pill-bg) !important;
+  box-shadow: var(--aqm-pill-shadow);
+  color: var(--aqm-picked-color) !important;
+}
+
+/* ---------- Recycler des cartes ---------- */
+
+.aqm-recycle-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 8px;
+}
+
+/* Fenêtre des cartes : « Recycler les doublons » du tirage (2e clic = confirmation) */
+.aqm-recycle-spares.is-confirm {
+  background: #f59e0b !important;
+  color: #111 !important;
+}
+.aqm-recycle-note {
+  align-self: center;
+  color: #86efac;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.aqm-recycle-spares:disabled {
+  opacity: 0.75;
+  cursor: default;
+}

@@ -1,10 +1,15 @@
-// Userscript: the background worker's answers to the page code, done in the page.
-// No badge, notifications or updater here: the script manager installs new versions; content.js offers them as soon as
-// they are out.
+// Script : les réponses du service de fond au code de la page, faites dans la page.
+// Pas de badge, de notifications ni d'assistant de mise à jour ici : le gestionnaire de scripts installe les nouvelles
+// versions ; le code de la page les propose dès qu'elles sortent.
+
+import { safeHref } from '../lib/common.js';
+import { answer } from '../lib/messages.js';
+import { checkUpdate, newer } from '../lib/updates.js';
 
 const UPDATE_EVERY = 10 * 60e3;
 
-// The latest GitHub release when it is newer than this script (looked for every 10 minutes at most, by any tab).
+// La dernière version GitHub quand elle est plus récente que ce script (cherchée toutes les 10 minutes au plus, par
+// n'importe quel onglet).
 async function scriptUpdate() {
   const { updateCheckedAt = 0 } = await chrome.storage.local.get('updateCheckedAt');
   if (Date.now() - updateCheckedAt >= UPDATE_EVERY) {
@@ -15,8 +20,8 @@ async function scriptUpdate() {
   return { update: update && newer(update.version, VERSION) ? update : null };
 }
 
-// Answers the messages of the page code.
-async function handle(msg) {
+// Répond aux messages du code de la page.
+export async function handle(msg) {
   switch (msg?.type) {
     case 'status':
       return { ok: true };
@@ -25,7 +30,7 @@ async function handle(msg) {
     case 'install-update':
       return { error: 'userscript' };
     case 'open': {
-      // (only a page of the game or Aquaman's GitHub pages: never "javascript:" or another site)
+      // (seulement une page du jeu ou les pages GitHub d'Aquaman : jamais « javascript: » ni un autre site)
       const url = safeHref(msg.href);
       if (!url) return { error: 'bad_href' };
       location.assign(url);

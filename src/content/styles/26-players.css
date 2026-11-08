@@ -1,0 +1,93 @@
+/* ---------- Joueurs avec Aquaman (auteur) ---------- */
+
+.aqm-users-code {
+  display: flex;
+  gap: 8px;
+}
+.aqm-users-stats {
+  margin-top: 4px;
+}
+.aqm-users {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 14px;
+  background: var(--aqm-card);
+  font-size: 13px;
+}
+.aqm-user .aqm-user-revoke {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.aqm-tag.aqm-revoked {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+}
+.aqm-user .aqm-avatar {
+  width: 32px;
+  height: 32px;
+}
+.aqm-user .aqm-name {
+  flex: 1;
+  font-size: 13px;
+}
+.aqm-kind-userscript {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+.aqm-user-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.aqm-online {
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+}
+.aqm-user-seen {
+  min-width: 90px;
+  text-align: right;
+  color: var(--aqm-muted);
+}
+.aqm-device-wait {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(37, 99, 235, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+.aqm-device-wait p {
+  margin: 0;
+}
+.aqm-device-wait p + p {
+  margin-top: 6px;
+}
+.aqm-device-wait strong,
+.aqm-device-code {
+  font: 800 15px ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  letter-spacing: 0.08em;
+  color: #fff;
+}
+
+/* Le cadre de nouvelle version va en haut : le cadre de la liste de recherche reste en bas. */
+.aqm-update {
+  top: 16px;
+  bottom: auto;
+}
+@media (max-width: 640px) {
+  .aqm-update {
+    top: 8px;
+    bottom: auto;
+  }
+}

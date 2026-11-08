@@ -1,7 +1,8 @@
-# Installs the Aquaman updater for the extension folder this script belongs to (run it once per folder).
-# Afterwards the "Mettre a jour" button of the popup replaces the extension's files by itself.
-#   installer-mises-a-jour.bat             install or refresh
-#   installer-mises-a-jour.bat -Uninstall  remove the updater
+# Installe l'assistant de mise a jour d'Aquaman pour le dossier d'extension auquel appartient ce script (a lancer une
+# fois par dossier).
+# Ensuite le bouton "Mettre a jour" de la fenetre remplace tout seul les fichiers de l'extension.
+#   installer-mises-a-jour.bat             installer ou rafraichir
+#   installer-mises-a-jour.bat -Uninstall  retirer l'assistant
 param([switch]$Uninstall)
 $ErrorActionPreference = 'Stop'
 
@@ -24,7 +25,8 @@ if ($Uninstall) {
   return
 }
 
-# Id of an unpacked extension: SHA-256 of its folder path (UTF-16, drive letter in capitals), letters a-p.
+# Id d'une extension non empaquetee : SHA-256 du chemin de son dossier (UTF-16, lettre de lecteur en majuscule), lettres
+# a-p.
 function Get-PathId($path) {
   $path = $path.Substring(0, 1).ToUpper() + $path.Substring(1)
   $hash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::Unicode.GetBytes($path))
@@ -36,7 +38,8 @@ function Get-Key($dict, $key) {
   return $null
 }
 
-# The ids the browsers gave to this folder, read from their profiles (Preferences may hold empty keys: no ConvertFrom-Json).
+# Les ids que les navigateurs ont donnes a ce dossier, lus dans leurs profils (Preferences peut contenir des cles vides
+# : pas de ConvertFrom-Json).
 function Find-Ids {
   $ids = @{ (Get-PathId $ext) = $true }
   Add-Type -AssemblyName System.Web.Extensions
@@ -73,7 +76,7 @@ New-Item -ItemType Directory -Path $home2 -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'host.ps1') -Destination $home2 -Force
 [IO.File]::WriteAllText((Join-Path $home2 'host.cmd'), "@echo off`r`npowershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"%~dp0host.ps1`" %*`r`n", [Text.Encoding]::ASCII)
 
-# id -> extension folder, kept from earlier installs of other folders.
+# id -> dossier d'extension, garde des installations precedentes d'autres dossiers.
 $config = @{}
 $configPath = Join-Path $home2 'config.json'
 if (Test-Path -LiteralPath $configPath) {

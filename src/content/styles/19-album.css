@@ -1,0 +1,41 @@
+/* ---------- Collection : album de la série ---------- */
+
+.aqm-album {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 12px;
+}
+.aqm-album-btn {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e4e4e7;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aqm-album-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.aqm-album-btn.is-on {
+  border-color: rgba(250, 204, 21, 0.45);
+  color: #fde047;
+}
+.aqm-album-btn.is-main {
+  border-color: transparent;
+  background: #2563eb;
+  color: #fff;
+}
+.aqm-album-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.aqm-album-note {
+  font-size: 12px;
+  color: var(--aqm-muted);
+}

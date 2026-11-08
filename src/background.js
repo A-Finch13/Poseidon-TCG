@@ -1,4 +1,9 @@
-import { ORIGIN, REPO, answer, checkUpdate, newer, getSettings, gameStatus, pollFeed, safeHref } from './lib/aquaman.js';
+import { ORIGIN, REPO, safeHref } from './lib/common.js';
+import { getSettings } from './lib/settings.js';
+import { gameStatus } from './lib/api.js';
+import { pollFeed } from './lib/feed.js';
+import { answer } from './lib/messages.js';
+import { checkUpdate, newer } from './lib/updates.js';
 
 const POLL_ALARM = 'aquaman-poll';
 const UPDATE_ALARM = 'aquaman-update';
@@ -7,9 +12,10 @@ const FIREFOX = navigator.userAgent.includes('Firefox');
 const ICON = chrome.runtime.getURL('icons/icon128.png');
 const UPDATER = 'com.aquaman.updater';
 
-// ---------- alarms ----------
+// ---------- alarmes ----------
 
-// Boosters waiting every 5 minutes, the game's "beaux tirages" every minute, new versions every 10 minutes.
+// Boosters en attente toutes les 5 minutes, « beaux tirages » du jeu toutes les minutes, nouvelles versions toutes les
+// 10 minutes.
 async function schedule() {
   if ((await chrome.alarms.get(POLL_ALARM))?.periodInMinutes !== 5) await chrome.alarms.create(POLL_ALARM, { delayInMinutes: 0.5, periodInMinutes: 5 });
   if ((await chrome.alarms.get(UPDATE_ALARM))?.periodInMinutes !== 10) await chrome.alarms.create(UPDATE_ALARM, { delayInMinutes: 1, periodInMinutes: 10 });
@@ -22,9 +28,9 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === UPDATE_ALARM) lookForUpdate();
 });
 
-// ---------- notifications and badge ----------
+// ---------- notifications et badge ----------
 
-// Shows a notification that opens href when clicked.
+// Affiche une notification qui ouvre href quand on clique dessus.
 async function notify(id, { title, message, href }) {
   await chrome.storage.local.set({ [`notif:${id}`]: href ?? null });
   chrome.notifications.create(id, { type: 'basic', iconUrl: ICON, title, message, priority: 1 });
@@ -38,7 +44,7 @@ chrome.notifications.onClicked.addListener(async (id) => {
   if (href) openSite(href);
 });
 
-// Opens a page of the site (or any address) in a tab, reusing a tab of the site when there is one.
+// Ouvre une page du site (ou n'importe quelle adresse) dans un onglet, en réutilisant un onglet du site s'il y en a un.
 async function openSite(href) {
   const url = safeHref(href);
   if (!url) return;
@@ -49,13 +55,13 @@ async function openSite(href) {
   } else chrome.tabs.create({ url });
 }
 
-// Number of boosters to open on the icon, "!" when the player is logged out.
+// Nombre de boosters à ouvrir sur l'icône, « ! » quand le joueur est déconnecté.
 function setBadge(pending, loggedOut = false) {
   chrome.action.setBadgeBackgroundColor({ color: loggedOut ? '#71717a' : '#2563eb' });
   chrome.action.setBadgeText({ text: loggedOut ? '!' : pending > 0 ? String(Math.min(pending, 99)) : '' });
 }
 
-// Boosters waiting: badge, and a notification when there are more than before.
+// Boosters en attente : badge, et une notification quand il y en a plus qu'avant.
 async function onStatus(pending) {
   setBadge(pending);
   const { lastPending = 0 } = await chrome.storage.local.get('lastPending');
@@ -76,11 +82,11 @@ async function pollBoosters() {
   }
 }
 
-// ---------- new versions ----------
+// ---------- nouvelles versions ----------
 
-// Looks for a newer release on GitHub (always the latest one) and notifies it once per version.
+// Cherche une version plus récente sur GitHub (toujours la dernière) et la signale une fois par version.
 async function lookForUpdate(maxAge = 9 * 60e3) {
-  if (FIREFOX) return; // Firefox users run the userscript
+  if (FIREFOX) return; // les utilisateurs de Firefox prennent le script
   const { updateCheckedAt } = await chrome.storage.local.get('updateCheckedAt');
   if (Date.now() - (updateCheckedAt ?? 0) < maxAge) return;
   await chrome.storage.local.set({ updateCheckedAt: Date.now() });
@@ -98,7 +104,7 @@ async function lookForUpdate(maxAge = 9 * 60e3) {
   } catch {}
 }
 
-// "Mettre à jour": the updater installed on the computer replaces the files, then the extension reloads.
+// « Mettre à jour » : l'assistant installé sur l'ordinateur remplace les fichiers, puis l'extension redémarre.
 async function installUpdate() {
   const update = (await checkUpdate().catch(() => null)) ?? (await chrome.storage.local.get('update')).update;
   if (!update) return { error: 'no_update' };
@@ -114,7 +120,7 @@ async function installUpdate() {
   return { ok: true, version: res.version, update };
 }
 
-// After an update: empties the site's cache and reloads its tabs.
+// Après une mise à jour : vide le cache du site et recharge ses onglets.
 async function refreshSite() {
   try {
     await chrome.browsingData?.remove({ origins: [ORIGIN] }, { cache: true, cacheStorage: true });
@@ -123,7 +129,7 @@ async function refreshSite() {
   for (const tab of tabs) chrome.tabs.reload(tab.id, { bypassCache: true }).catch(() => {});
 }
 
-// Says that a new version was installed, with a link to what changed.
+// Dit qu'une nouvelle version a été installée, avec un lien vers ce qui a changé.
 async function announceUpdate(previousVersion) {
   const version = chrome.runtime.getManifest().version;
   if (!previousVersion || previousVersion === version) return;
@@ -172,8 +178,8 @@ async function handle(msg) {
   }
 }
 
-// Only Aquaman's own pages (its popup) and its scripts in the game's pages: the answers carry what the player's
-// session reads (their collection, their friends…), never given to another sender.
+// Seulement les pages d'Aquaman (sa fenêtre) et ses scripts dans les pages du jeu : les réponses portent ce que lit la
+// session du joueur (sa collection, ses amis…), jamais donné à un autre expéditeur.
 const trusted = (sender) => {
   if (sender?.id !== chrome.runtime.id) return false;
   if (!sender.tab || String(sender.url ?? '').startsWith(chrome.runtime.getURL(''))) return true;

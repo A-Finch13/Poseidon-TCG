@@ -1,32 +1,32 @@
--- Boosters opened by each player, shared between their devices (relay/worker.js).
+-- Boosters ouverts par chaque joueur, partagés entre ses appareils (relay/worker.js).
 CREATE TABLE IF NOT EXISTS pity (
   player TEXT NOT NULL,
   id TEXT NOT NULL,
   at INTEGER NOT NULL,
   top INTEGER NOT NULL,
-  card TEXT, -- the best card of a SSR, UR or SEC opening (JSON: id, name, image, rarity), for the history
+  card TEXT, -- la meilleure carte d'une ouverture SSR, UR ou SEC (JSON : id, name, image, rarity), pour l'historique
   PRIMARY KEY (player, id)
 );
--- On a database made before it: ALTER TABLE pity ADD COLUMN card TEXT;
+-- Sur une base créée avant : ALTER TABLE pity ADD COLUMN card TEXT;
 CREATE INDEX IF NOT EXISTS pity_player_at ON pity (player, at);
--- The player's last SEC (MAX(at) of their openings with top >= SEC) found without reading all their openings.
+-- La dernière SEC du joueur (MAX(at) de ses ouvertures avec top >= SEC) trouvée sans lire toutes ses ouvertures.
 CREATE INDEX IF NOT EXISTS pity_player_top ON pity (player, top, at);
 
--- Favourite series of each player, the most recent list (relay/worker.js).
+-- Séries favorites de chaque joueur, la liste la plus récente (relay/worker.js).
 CREATE TABLE IF NOT EXISTS favorites (
   player TEXT PRIMARY KEY,
   list TEXT NOT NULL,
   at INTEGER NOT NULL
 );
 
--- The drawing of every kind of booster's pile, scanned and published by the author for every Aquaman (relay/worker.js).
+-- Le dessin de la pile de chaque sorte de booster, relevé et publié par l'auteur pour chaque Aquaman (relay/worker.js).
 CREATE TABLE IF NOT EXISTS pack_designs (
   kind TEXT PRIMARY KEY,
   data TEXT NOT NULL,
   at INTEGER NOT NULL
 );
 
--- The game's "beaux tirages" (SSR, UR, SEC) seen by every Aquaman, public (relay/worker.js).
+-- Les « beaux tirages » du jeu (SSR, UR, SEC) vus par chaque Aquaman, publics (relay/worker.js).
 CREATE TABLE IF NOT EXISTS pulls (
   k TEXT PRIMARY KEY,
   card_id TEXT NOT NULL,
@@ -44,13 +44,14 @@ CREATE INDEX IF NOT EXISTS pulls_card ON pulls (card_id, pulled_at);
 CREATE INDEX IF NOT EXISTS pulls_at ON pulls (pulled_at);
 CREATE INDEX IF NOT EXISTS pulls_player ON pulls (player_id, pulled_at);
 
--- State of the relay's own reading of the game's feed (relay/worker.js): last try, last success, last answer.
+-- État de la lecture du fil du jeu par le relais lui-même (relay/worker.js) : dernier essai, dernière réussite,
+-- dernière réponse.
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT
 );
 
--- The players who use Aquaman (relay/worker.js), seen by the author only (secret ADMIN_TOKEN).
+-- Les joueurs qui utilisent Aquaman (relay/worker.js), vus par l'auteur seulement (secret ADMIN_TOKEN).
 CREATE TABLE IF NOT EXISTS users (
   player TEXT PRIMARY KEY,
   name TEXT,
@@ -58,14 +59,14 @@ CREATE TABLE IF NOT EXISTS users (
   version TEXT,
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL,
-  revoked INTEGER, -- when the author took Aquaman back from the player (null: allowed)
-  perles INTEGER, -- no longer used (the leaderboard by Perles is gone): emptied at the player's next hello
+  revoked INTEGER, -- quand l'auteur a retiré Aquaman au joueur (null : autorisé)
+  perles INTEGER, -- plus utilisé (le classement par Perles n'existe plus) : vidé au prochain bonjour du joueur
   perles_at INTEGER
 );
--- On a database made before it: ALTER TABLE users ADD COLUMN revoked INTEGER;
+-- Sur une base créée avant : ALTER TABLE users ADD COLUMN revoked INTEGER;
 -- ALTER TABLE users ADD COLUMN perles INTEGER; ALTER TABLE users ADD COLUMN perles_at INTEGER;
 
--- The author's devices (relay/worker.js): public key of each device, waiting for approval or approved.
+-- Les appareils de l'auteur (relay/worker.js) : clé publique de chaque appareil, en attente d'approbation ou approuvé.
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   pubkey TEXT NOT NULL,
@@ -75,8 +76,8 @@ CREATE TABLE IF NOT EXISTS devices (
   last_used INTEGER
 );
 
--- Each Aquaman of a player (relay/worker.js): one line per kind (extension, userscript), so that a player with both
--- shows both; the author's list is built from it.
+-- Chaque Aquaman d'un joueur (relay/worker.js) : une ligne par sorte (extension, userscript), pour qu'un joueur qui a
+-- les deux montre les deux ; la liste de l'auteur est faite à partir d'elle.
 CREATE TABLE IF NOT EXISTS installs (
   player TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -86,8 +87,8 @@ CREATE TABLE IF NOT EXISTS installs (
   PRIMARY KEY (player, kind)
 );
 
--- Cards waiting in Aquaman for a place in the game's search list, and those Aquaman put there, the most recent lists
--- of each player (relay/worker.js).
+-- Cartes en attente dans Aquaman d'une place dans la liste de recherche du jeu, et celles qu'Aquaman y a mises, les
+-- listes les plus récentes de chaque joueur (relay/worker.js).
 CREATE TABLE IF NOT EXISTS wants (
   player TEXT PRIMARY KEY,
   waiting TEXT NOT NULL,
@@ -95,8 +96,9 @@ CREATE TABLE IF NOT EXISTS wants (
   at INTEGER NOT NULL
 );
 
--- Other lists of each player kept the same on all their devices (relay/worker.js, POST /lists): the cards bought on
--- the market whose other sales are hidden ("bought"), the copies waiting for a place on the market ("sales").
+-- Autres listes de chaque joueur gardées identiques sur tous ses appareils (relay/worker.js, POST /lists) : les cartes
+-- achetées sur le marché dont les autres ventes sont cachées (« bought »), les exemplaires en attente d'une place sur
+-- le marché (« sales »).
 CREATE TABLE IF NOT EXISTS lists (
   player TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -105,8 +107,8 @@ CREATE TABLE IF NOT EXISTS lists (
   PRIMARY KEY (player, name)
 );
 
--- The SSR, UR and SEC cards of the players seen in the "beaux tirages", read in their public collections
--- (relay/worker.js): who has which card, for "Qui a cette carte ?".
+-- Les cartes SSR, UR et SEC des joueurs vus dans les « beaux tirages », lues dans leurs collections publiques
+-- (relay/worker.js) : qui a quelle carte, pour « Qui a cette carte ? ».
 CREATE TABLE IF NOT EXISTS holdings (
   player_id TEXT NOT NULL,
   card_id TEXT NOT NULL,
@@ -116,7 +118,7 @@ CREATE TABLE IF NOT EXISTS holdings (
 );
 CREATE INDEX IF NOT EXISTS holdings_card ON holdings (card_id);
 
--- When each player's collection was last read, and whether it was private.
+-- Quand la collection de chaque joueur a été lue pour la dernière fois, et si elle était privée.
 CREATE TABLE IF NOT EXISTS scans (
   player_id TEXT PRIMARY KEY,
   player_name TEXT,

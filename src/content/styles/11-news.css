@@ -1,0 +1,40 @@
+/* ---------- Nouveautés ---------- */
+
+.aqm-news-version {
+  margin-top: 18px;
+}
+.aqm-news {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aqm-news li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--aqm-card);
+  font-size: 14px;
+  line-height: 1.45;
+  color: #e4e4e7;
+}
+.aqm-news .aqm-chip {
+  flex-shrink: 0;
+}
+.aqm-news-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+@media (max-width: 640px) {
+  .aqm-news li {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

@@ -2,3 +2,4 @@ dist/
 relay/.wrangler/
 graphify-out/
 .claude/settings.local.json
+node_modules/
