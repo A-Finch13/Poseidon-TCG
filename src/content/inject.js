@@ -26,12 +26,35 @@
   // lui-même leurs Perles et leurs cartes, et un état relu redessinerait la pile au milieu d'une ouverture.)
   const ASSETS = /^\/api-game\/v1\/(trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
   const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
+  const AUCTIONS = /^\/api-game\/v1\/auctions$/;
   // La carte de chaque vente que le marché a montrée en dernier (id d'annonce -> { name, rarity }), pour la carte d'un
   // achat.
   const listingCards = new Map();
   const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?|recycle)$/;
   const RARITIES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
   const original = window.fetch;
+
+  const requestUrl = (input) => {
+    try {
+      return new URL(input instanceof Request ? input.url : String(input), location.href);
+    } catch {
+      return null;
+    }
+  };
+  const saleKey = (cardId) => typeof cardId === 'string' ? cardId : null;
+  const emitMarketSales = (body, auctions) => {
+    const name = auctions ? 'auctions' : 'listings';
+    const keys = [];
+    for (const sale of Array.isArray(body?.[name]) ? body[name] : []) {
+      if (auctions && sale?.status !== 'open') continue;
+      const key = saleKey(sale?.card?.id);
+      if (key) keys.push(key);
+    }
+    try {
+      document.documentElement.setAttribute(`data-aqm-market-sales-${auctions ? 'auctions' : 'listings'}`, JSON.stringify(keys));
+    } catch {}
+    post({ type: 'market-sales', kind: auctions ? 'auctions' : 'listings', keys });
+  };
 
   // La sorte de boosters choisie sur l'accueil ('classic' pour les boosters sans sorte), '' pour toutes.
   const chosenKind = () => {
@@ -524,6 +547,7 @@
     const res = await pending;
     try {
       const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      const url = requestUrl(input);
       // Le jeu ne voit que les boosters en attente de la sorte choisie (tous quand il n'en reste aucun).
       const kind = chosenKind();
       if (forcedPending && res.ok && method === 'GET' && ME.test(path)) {
@@ -603,7 +627,14 @@
             .json()
             .then((body) => {
               for (const l of Array.isArray(body?.listings) ? body.listings : []) if (l?.id && l.card?.name) listingCards.set(String(l.id), { name: l.card.name, rarity: l.card.rarity ?? null });
+              if (url?.searchParams.get('mine') === '1') emitMarketSales(body, false);
             })
+            .catch(() => {});
+        } else if (method === 'GET' && AUCTIONS.test(path) && url?.searchParams.get('mine') === 'selling') {
+          res
+            .clone()
+            .json()
+            .then((body) => emitMarketSales(body, true))
             .catch(() => {});
         } else if (method === 'GET' && FEED.test(path)) {
           res

@@ -48,6 +48,7 @@
         "src/content/queues/sales.js",
         "src/content/market/bought.js",
         "src/content/market/favorites.js",
+        "src/content/market/sales-card.js",
         "src/content/market/unlist.js",
         "src/content/menu/plus-tab.js",
         "src/content/menu/overlay.js",

@@ -73,6 +73,13 @@ function onPageMessage(e) {
     }
   }
   else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
+  else if (e.data.aquaman === 'market-sales' && Array.isArray(e.data.keys)) {
+    const target = e.data.kind === 'auctions' ? marketAuctionKeys : marketListingKeys;
+    target.clear();
+    for (const key of e.data.keys) if (typeof key === 'string') target.add(key);
+    marketSalesKeys = new Set([...marketListingKeys, ...marketAuctionKeys]);
+    markSalesCards();
+  }
   else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
   else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(e.data.id) && typeof e.data.name === 'string' && e.data.name.trim())
     playersSeen.set(foldName(e.data.name), e.data.id);
@@ -101,7 +108,8 @@ function onKey(e) {
   }
   if (e.key !== 'Escape') return;
   if (menu) closeMenu();
-  else if (overlay) closeOverlay();
+  if (marketSortMenu) closeMarketSortMenu();
+  if (overlay) closeOverlay();
 }
 
 // De retour sur la page (un autre appareil a pu ouvrir des boosters entre-temps) : les compteurs sont relus.
@@ -114,4 +122,5 @@ function onBack() {
 
 function onOutside(e) {
   if (menu && !menu.contains(e.target) && !menu.anchor?.contains(e.target) && !e.target.closest?.('.aqm-tour')) closeMenu();
+  if (marketSortMenu && !marketSortMenu.contains(e.target) && !marketSortMenu.anchor?.contains(e.target)) closeMarketSortMenu();
 }
