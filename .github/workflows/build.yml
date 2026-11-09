@@ -3,16 +3,14 @@ name: Build
 on:
   push:
     branches-ignore:
+      - "main"
       - "feat/**"
       - "fix/**"
       - "patch/**"
   workflow_run:
     workflows: ["Version Bump"]
     types: [completed]
-    branches:
-      - "feat/**"
-      - "fix/**"
-      - "patch/**"
+    branches: ["main"]
   pull_request:
     branches: ["**"]
 
