@@ -40,6 +40,7 @@ export const SETTINGS = [
     items: [
       ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
       ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
+      ['marketSales', 'Tes cartes à vendre', '« Déjà en vente » sur les cartes que tu vends déjà (au marché ou en enchère), et « Trier par » (recherchées, possédées, valeur, nom)'],
       ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter », et les enchères en cours'],
       ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
     ]

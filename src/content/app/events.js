@@ -73,6 +73,8 @@ function onPageMessage(e) {
     }
   }
   else if (e.data.aquaman === 'market-bought' && typeof e.data.name === 'string') addBought(e.data.name, e.data.rarity);
+  // (les cartes du joueur en vente, d'après ses annonces ou ses enchères : « Déjà en vente » au marché)
+  else if (e.data.aquaman === 'market-sales' && Array.isArray(e.data.keys) && on('marketSales')) markSalesCards();
   else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
   else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(e.data.id) && typeof e.data.name === 'string' && e.data.name.trim())
     playersSeen.set(foldName(e.data.name), e.data.id);
@@ -100,7 +102,8 @@ function onKey(e) {
     return;
   }
   if (e.key !== 'Escape') return;
-  if (menu) closeMenu();
+  if (marketSortMenu) closeMarketSortMenu();
+  else if (menu) closeMenu();
   else if (overlay) closeOverlay();
 }
 
@@ -114,4 +117,5 @@ function onBack() {
 
 function onOutside(e) {
   if (menu && !menu.contains(e.target) && !menu.anchor?.contains(e.target) && !e.target.closest?.('.aqm-tour')) closeMenu();
+  if (marketSortMenu && !marketSortMenu.contains(e.target) && !marketSortMenu.anchor?.contains(e.target)) closeMarketSortMenu();
 }

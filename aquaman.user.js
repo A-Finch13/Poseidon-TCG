@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.6.0
+// @version      1.7.0
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -101,6 +101,7 @@ window.__aquamanUserscript = true;
       items: [
         ["hideBought", "Masquer ce que je viens d’acheter", "Les autres annonces d’une carte achetée disparaissent"],
         ["marketFavorites", "Filtre « ★ Favoris »", "Les ventes de tes séries favorites seulement"],
+        ["marketSales", "Tes cartes à vendre", "« Déjà en vente » sur les cartes que tu vends déjà (au marché ou en enchère), et « Trier par » (recherchées, possédées, valeur, nom)"],
         ["cardListings", "Annonces sur la page d’une carte", "Les 5 annonces les moins chères, avec « Acheter », et les enchères en cours"],
         ["sellTools", "Vente des doublons", "File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »"]
       ]
@@ -924,6 +925,7 @@ window.__aquamanUserscript = true;
   // src/lib/rarities.js
   var RARITY_STEP = 40;
   var RARITY_AGAIN = 24 * 36e5;
+  var RARITY_FORMAT = 2;
   var rarityBusy = Promise.resolve();
   function rarityCounts(budget = RARITY_STEP) {
     const run = rarityBusy.then(() => countRarities(budget));
@@ -939,16 +941,18 @@ window.__aquamanUserscript = true;
     const now = Date.now();
     const current = (s) => {
       const k = mine[s.id];
-      return !!k && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && now - k.at < RARITY_AGAIN;
+      return !!k && k.v === RARITY_FORMAT && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && now - k.at < RARITY_AGAIN;
     };
     const todo = series.filter((s) => !current(s));
     const batch = todo.slice(0, Math.max(0, budget));
     let failed = 0;
+    const misses = {};
     for (let i = 0; i < batch.length; i += 3)
       await Promise.all(
         batch.slice(i, i + 3).map(async (s) => {
           try {
             const cards = (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? [];
+            misses[s.id] = missEntry(s, cards);
             const by = {};
             for (const c of cards) {
               if (!RANK[c?.rarity]) continue;
@@ -956,10 +960,10 @@ window.__aquamanUserscript = true;
               r[1]++;
               if (c.owned > 0) {
                 r[0]++;
-                r[2] += c.owned;
+                r[2]++;
               }
             }
-            mine[s.id] = { owned: s.owned ?? 0, total: s.total ?? 0, at: Date.now(), by };
+            mine[s.id] = { v: RARITY_FORMAT, owned: s.owned ?? 0, total: s.total ?? 0, at: Date.now(), by };
           } catch {
             failed++;
           }
@@ -968,6 +972,7 @@ window.__aquamanUserscript = true;
     const ids = new Set(series.map((s) => s.id));
     for (const k in mine) if (!ids.has(k)) delete mine[k];
     if (batch.length) await chrome.storage.local.set({ rarityCache: { ...rarityCache, [me]: mine } });
+    if (Object.keys(misses).length) await keepMisses(me, misses, ids);
     const byRarity = Object.fromEntries(Object.keys(RANK).map((r) => [r, { owned: 0, total: 0, copies: 0 }]));
     for (const s of series)
       for (const [r, [owned, total, copies]] of Object.entries(mine[s.id]?.by ?? {})) {
@@ -977,6 +982,63 @@ window.__aquamanUserscript = true;
       }
     const counted = series.filter((s) => mine[s.id]).length;
     return { byRarity, counted, series: series.length, pending: todo.length - batch.length + failed, failed };
+  }
+  var MISS_STEP = 60;
+  var missBusy = Promise.resolve();
+  var missEntry = (s, cards) => ({
+    owned: s.owned ?? 0,
+    total: s.total ?? 0,
+    at: Date.now(),
+    miss: cards.filter((c) => c?.id && RANK[c.rarity] && !(c.owned > 0)).map((c) => ({
+      id: c.id,
+      name: c.name ?? "",
+      image: c.image ?? null,
+      rarity: c.rarity,
+      types: Array.isArray(c.types) ? c.types : [],
+      series: c.series?.title ?? s.title ?? "",
+      maxCopies: c.maxCopies ?? null,
+      minted: c.minted ?? null
+    }))
+  });
+  async function keepMisses(me, misses, ids) {
+    const { missingCache = {} } = await chrome.storage.local.get("missingCache");
+    const mine = { ...missingCache[me] ?? {}, ...misses };
+    if (ids) {
+      for (const k in mine) if (!ids.has(k)) delete mine[k];
+    }
+    await chrome.storage.local.set({ missingCache: { ...missingCache, [me]: mine } });
+  }
+  function missingCards(filter = {}) {
+    const run = missBusy.then(() => readMissing(filter));
+    missBusy = run.catch(() => {
+    });
+    return run;
+  }
+  async function readMissing({ rarity = "", type = "", q = "", manga = "" } = {}) {
+    const me = await myId();
+    const series = (await seriesList()).filter((s) => s?.id && (!manga || s.id === manga));
+    const { missingCache = {} } = await chrome.storage.local.get("missingCache");
+    const mine = missingCache[me] ?? {};
+    const current = (s) => {
+      const k = mine[s.id];
+      return !!k && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && Date.now() - k.at < RARITY_AGAIN;
+    };
+    const todo = series.filter((s) => !current(s));
+    const batch = todo.slice(0, MISS_STEP);
+    const fresh = {};
+    for (let i = 0; i < batch.length; i += 4)
+      await Promise.all(
+        batch.slice(i, i + 4).map(async (s) => {
+          try {
+            fresh[s.id] = missEntry(s, (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? []);
+          } catch {
+          }
+        })
+      );
+    if (Object.keys(fresh).length) await keepMisses(me, fresh, manga ? null : new Set(series.map((s) => s.id)));
+    const words = String(q).trim().toLowerCase();
+    const cards = series.flatMap((s) => (fresh[s.id] ?? mine[s.id])?.miss ?? []).filter((c) => (!rarity || c.rarity === rarity) && (!type || c.types.includes(type)) && (!words || c.name.toLowerCase().includes(words) || c.series.toLowerCase().includes(words))).sort((a, b) => RANK[b.rarity] - RANK[a.rarity] || a.name.localeCompare(b.name, "fr"));
+    return { cards, pending: todo.length - Object.keys(fresh).length };
   }
   async function collectionStats() {
     await syncProgress(await myId(), true).catch(() => false);
@@ -1064,11 +1126,31 @@ window.__aquamanUserscript = true;
       return { since: events.filter((e) => e.at > pullAt).length, known: true, missed: true };
     return { since: last >= 0 ? events.length - 1 - last : events.length, known: last >= 0, missed: false };
   }
-  function pityReport(mine, rules, sync, chance = null) {
+  var THEME_PRICE = 250;
+  var SPECIAL_NAME = /halloween|l[ée]gendaire|prestige|no[eë]l|saison|[ée]v[ée]nement/i;
+  function pityPacks() {
+    return cached("pity-packs", 30 * 6e4, async () => {
+      const shop = await game("/shop");
+      const specials = Array.isArray(shop?.specials) ? shop.specials : [];
+      const base = Number(shop?.boosterPrice) || 150;
+      return Object.fromEntries(specials.filter((s) => typeof s?.id === "string").map((s) => [s.id, Number(s.price) > 0 && Number(s.price) <= Math.max(THEME_PRICE, base)]));
+    }).catch(() => null);
+  }
+  function pityCounts(packs) {
+    return (e) => {
+      const id = e?.pack?.id;
+      if (!id || id === "classic") return true;
+      if (packs && id in packs) return packs[id];
+      return packs ? false : !SPECIAL_NAME.test(e.pack.name ?? "");
+    };
+  }
+  function pityReport(mine, rules, sync, chance = null, packs = null) {
     const { events } = mine;
     const out = { opened: events.length, sync: sync ? mine.syncError ? "error" : mine.syncedAt ? "ok" : "waiting" : "off", syncedAt: mine.syncedAt || null };
+    const counted = events.filter(pityCounts(packs));
+    out.skipped = events.length - counted.length;
     for (const code of Object.keys(PITY)) {
-      const { since, known, missed } = sinceLast(events, RANK[code], mine.pulls?.[code]);
+      const { since, known, missed } = sinceLast(counted, RANK[code], mine.pulls?.[code]);
       out[code] = { since, known, missed, over: since >= rules[code], every: rules[code], left: Math.max(1, rules[code] - since) };
     }
     out.SEC = secReport(mine, chance);
@@ -1080,9 +1162,12 @@ window.__aquamanUserscript = true;
   }
   function mergeEvents(a, b) {
     const byId = /* @__PURE__ */ new Map();
-    for (const e of [...a, ...b])
-      if (e?.id && !byId.has(e.id))
-        byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...e.card ? { card: e.card } : {}, ...e.pack ? { pack: e.pack } : {} });
+    for (const e of [...a, ...b]) {
+      if (!e?.id) continue;
+      const known = byId.get(e.id);
+      if (!known) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...e.card ? { card: e.card } : {}, ...e.pack ? { pack: e.pack } : {} });
+      else if (!known.pack && e.pack) known.pack = e.pack;
+    }
     return [...byId.values()].sort((x, y) => x.at - y.at).slice(-PITY_EVENTS);
   }
   async function exchangePity(state, force) {
@@ -1112,7 +1197,7 @@ window.__aquamanUserscript = true;
     const state = await pityState();
     const on = (await getSettings()).syncPity;
     if (on) await exchangePity(state, fresh);
-    return pityReport(state.mine, state.rules, on, await secChance());
+    return pityReport(state.mine, state.rules, on, await secChance(), await pityPacks());
   }
   async function pityHistory() {
     const state = await pityState();
@@ -1156,14 +1241,16 @@ window.__aquamanUserscript = true;
     for (const e of events) if (e.top >= RANK.SSR) e.card = cardOf(e, codeOf(e.top));
     await guessPacks(events);
     const out = { opened: events.length, since: events[0]?.at ?? null, recent: events.slice(-300).map((e) => e.top), chances: await rarityChances() };
+    const counts = pityCounts(await pityPacks());
     for (const code of ["SSR", "UR", "SEC"]) {
       const hits = [];
       let count = 0;
       for (const e of events) {
-        count++;
+        const counted = code === "SEC" || counts(e);
+        if (counted) count++;
         if (e.top !== RANK[code]) continue;
-        hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, pack: e.pack ?? null, after: count, first: !hits.length });
-        count = 0;
+        hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, pack: e.pack ?? null, after: counted ? count : 0, first: !hits.length, special: !counted });
+        if (counted) count = 0;
       }
       out[code] = { hits: hits.reverse(), current: count };
     }
@@ -1192,18 +1279,18 @@ window.__aquamanUserscript = true;
       const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
       const c = best[i];
       const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
-      const pack = top >= RANK.SSR ? cleanPack(packs[i]) : null;
+      const pack = cleanPack(packs[i]);
       const gameId = typeof ids[i] === "string" && /^[A-Za-z0-9_.:-]{1,60}$/.test(ids[i]) ? `g:${ids[i]}` : null;
       return { id: gameId ?? `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...card ? { card } : {}, ...pack ? { pack } : {} };
     }).filter((e, i, all) => !known.has(e.id) && all.findIndex((x) => x.id === e.id) === i);
-    if (!added.length) return pityReport(mine, rules, (await getSettings()).syncPity, await secChance());
+    if (!added.length) return pityReport(mine, rules, (await getSettings()).syncPity, await secChance(), await pityPacks());
     mine.events = mergeEvents(mine.events, added);
     if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
     mine.unsynced = [.../* @__PURE__ */ new Set([...mine.unsynced, ...added.map((e) => e.id)])].slice(-PITY_EVENTS);
     const on = (await getSettings()).syncPity;
     if (on) await exchangePity(state, true);
     else await savePity(state);
-    return pityReport(mine, rules, on, await secChance());
+    return pityReport(mine, rules, on, await secChance(), await pityPacks());
   }
   async function setPityRules(rules) {
     const clean = Object.fromEntries(
@@ -1674,6 +1761,10 @@ window.__aquamanUserscript = true;
           return await collectionStats();
         case "rarity-counts":
           return await rarityCounts();
+        case "missing-cards": {
+          const text = (v, max) => typeof v === "string" ? v.slice(0, max) : "";
+          return await missingCards({ rarity: text(msg.rarity, 4), type: text(msg.kind, 40), q: text(msg.q, 80), manga: text(msg.manga, 64) });
+        }
         case "collection-snapshot": {
           const { point } = await collectionSnapshot();
           return { ok: true, owned: point.owned };
@@ -1823,7 +1914,7 @@ window.__aquamanUserscript = true;
       await checkUpdate().catch(() => null);
     }
     const { update } = await chrome.storage.local.get("update");
-    return { update: update && newer(update.version, "1.6.0") ? update : null };
+    return { update: update && newer(update.version, "1.7.0") ? update : null };
   }
   async function handle(msg) {
     switch (msg?.type) {
@@ -1903,7 +1994,7 @@ window.__aquamanUserscript = true;
     return {
       runtime: {
         id: OWNER,
-        getManifest: () => ({ version: "1.6.0" }),
+        getManifest: () => ({ version: "1.7.0" }),
         sendMessage: (msg) => handle(msg).catch((e) => ({ error: e?.message ?? String(e) }))
       },
       storage: {
@@ -1952,10 +2043,31 @@ window.__aquamanUserscript = true;
     const MARKET_BUY = /^\/api-game\/v1\/market\/listings\/([^/]+)\/buy$/;
     const ASSETS = /^\/api-game\/v1\/(trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
     const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
+    const AUCTIONS = /^\/api-game\/v1\/auctions$/;
     const listingCards = /* @__PURE__ */ new Map();
     const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?|recycle)$/;
     const RARITIES = ["N", "R", "SR", "SSR", "UR", "SEC"];
     const original = window.fetch;
+    const requestUrl = (input) => {
+      try {
+        return new URL(input instanceof Request ? input.url : String(input), location.href);
+      } catch {
+        return null;
+      }
+    };
+    const emitMarketSales = (body, auctions) => {
+      const kind = auctions ? "auctions" : "listings";
+      const keys = [];
+      for (const sale of Array.isArray(body?.[kind]) ? body[kind] : []) {
+        if (auctions && sale?.status !== "open") continue;
+        if (typeof sale?.card?.id === "string") keys.push(sale.card.id);
+      }
+      try {
+        document.documentElement.setAttribute(`data-aqm-market-sales-${kind}`, JSON.stringify(keys));
+      } catch {
+      }
+      post({ type: "market-sales", kind, keys });
+    };
     const chosenKind = () => {
       try {
         return sessionStorage.getItem("aqm-booster-kind") || "";
@@ -2421,6 +2533,21 @@ window.__aquamanUserscript = true;
           } else if (method === "GET" && MARKET_LIST.test(path)) {
             res.clone().json().then((body) => {
               for (const l of Array.isArray(body?.listings) ? body.listings : []) if (l?.id && l.card?.name) listingCards.set(String(l.id), { name: l.card.name, rarity: l.card.rarity ?? null });
+              if (requestUrl(input)?.searchParams.get("mine") === "1") emitMarketSales(body, false);
+            }).catch(() => {
+            });
+          } else if (method === "GET" && AUCTIONS.test(path) && requestUrl(input)?.searchParams.get("mine") === "selling") {
+            res.clone().json().then((body) => emitMarketSales(body, true)).catch(() => {
+            });
+          } else if (method === "GET" && path === "/api-game/v1/cards" && location.pathname.startsWith("/jeu/collection")) {
+            let query = "";
+            try {
+              query = new URL(input instanceof Request ? input.url : String(input), location.href).search;
+            } catch {
+            }
+            res.clone().json().then((body) => {
+              const cards = Array.isArray(body?.cards) ? body.cards : [];
+              post({ type: "cards-shown", query, ids: cards.map((c) => c?.id).filter((id) => typeof id === "string"), names: cards.slice(0, 400).map((c) => [c?.id, c?.name, c?.series?.title ?? ""]) });
             }).catch(() => {
             });
           } else if (method === "GET" && FEED.test(path)) {
@@ -2468,7 +2595,7 @@ window.__aquamanUserscript = true;
   var start = () => {
     const style = document.createElement("style");
     style.id = "aquaman-style";
-    style.textContent = '/* src/content/styles/01-base.css */\n.aqm-root {\n  --aqm-bg: #0b0b0d;\n  --aqm-panel: #121214;\n  --aqm-card: #18181b;\n  --aqm-line: rgba(255, 255, 255, 0.07);\n  --aqm-text: #f4f4f5;\n  --aqm-muted: #a1a1aa;\n  --aqm-dim: #71717a;\n  --aqm-accent: #60a5fa;\n  --aqm-yes: #22c55e;\n  --aqm-no: #ef4444;\n  box-sizing: border-box;\n}\n.aqm-root *,\n.aqm-root *::before,\n.aqm-root *::after {\n  box-sizing: border-box;\n}\n\n/* src/content/styles/02-plus-menu.css */\n.aqm-plus {\n  cursor: pointer;\n  background: none;\n  border: 0;\n}\n.aqm-plus[aria-expanded=true] {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-nav-ico,\n.aqm-nav-ico svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-menu {\n  position: fixed;\n  z-index: 2147483000;\n  width: 290px;\n  padding: 6px;\n  border-radius: 18px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);\n  animation: aqm-pop 0.14s ease-out;\n}\n.aqm-menu-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  width: 100%;\n  padding: 10px 12px;\n  border: 0;\n  border-radius: 12px;\n  background: none;\n  color: var(--aqm-text);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-menu-item:hover,\n.aqm-menu-item:focus-visible {\n  background: rgba(255, 255, 255, 0.06);\n  outline: none;\n}\n.aqm-menu-item strong {\n  display: block;\n  font-size: 14px;\n  font-weight: 800;\n}\n.aqm-menu-item small {\n  display: block;\n  margin-top: 2px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-menu-ico {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  background: rgba(96, 165, 250, 0.12);\n  color: var(--aqm-accent);\n}\n.aqm-menu-ico svg {\n  width: 18px;\n  height: 18px;\n}\n@keyframes aqm-pop {\n  from {\n    opacity: 0;\n    transform: translateY(-4px) scale(0.98);\n  }\n}\n\n/* src/content/styles/03-window.css */\nhtml.aqm-lock {\n  overflow: hidden;\n}\n.aqm-overlay {\n  position: fixed;\n  inset: 0;\n  z-index: 2147482000;\n  display: flex;\n  align-items: flex-start;\n  justify-content: center;\n  padding: 48px 16px;\n  overflow-y: auto;\n  background: rgba(0, 0, 0, 0.72);\n  backdrop-filter: blur(6px);\n  color: var(--aqm-text);\n  animation: aqm-fade 0.16s ease-out;\n}\n@keyframes aqm-fade {\n  from {\n    opacity: 0;\n  }\n}\n.aqm-panel {\n  width: 100%;\n  max-width: 860px;\n  border-radius: 28px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);\n  overflow: hidden;\n}\n.aqm-head {\n  display: flex;\n  align-items: flex-start;\n  justify-content: space-between;\n  gap: 16px;\n  padding: 26px 28px 8px;\n}\n.aqm-title {\n  margin: 0;\n  font-size: 22px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  letter-spacing: -0.01em;\n  color: #fff;\n}\n.aqm-sub {\n  margin: 6px 0 0;\n  font-size: 14px;\n  color: var(--aqm-muted);\n}\n.aqm-close {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-close:hover {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.12);\n}\n.aqm-close svg {\n  width: 18px;\n  height: 18px;\n}\n.aqm-body {\n  padding: 12px 28px 28px;\n}\n.aqm-note {\n  margin: 14px 0 0;\n  font-size: 12px;\n  line-height: 1.5;\n  color: var(--aqm-dim);\n}\n.aqm-muted {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-label {\n  margin: 0 0 8px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  text-transform: uppercase;\n  color: var(--aqm-accent);\n}\n.aqm-empty {\n  padding: 28px;\n  text-align: center;\n  color: var(--aqm-muted);\n  list-style: none;\n}\n.aqm-chips {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 8px;\n}\n.aqm-chip {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: var(--aqm-muted);\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  cursor: pointer;\n}\n.aqm-chip:hover {\n  color: #fff;\n}\n.aqm-chip.is-on {\n  border-color: rgba(96, 165, 250, 0.4);\n  background: rgba(37, 99, 235, 0.22);\n  color: #fff;\n}\n.aqm-place {\n  display: grid;\n  place-items: center;\n  width: 30px;\n  height: 30px;\n  flex-shrink: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  font-size: 13px;\n  font-weight: 900;\n  color: var(--aqm-muted);\n}\n.aqm-place-1 {\n  background:\n    linear-gradient(\n      135deg,\n      #fde68a,\n      #f59e0b);\n  color: #422006;\n}\n.aqm-place-2 {\n  background:\n    linear-gradient(\n      135deg,\n      #f4f4f5,\n      #a1a1aa);\n  color: #18181b;\n}\n.aqm-place-3 {\n  background:\n    linear-gradient(\n      135deg,\n      #fdba74,\n      #c2410c);\n  color: #fff7ed;\n}\n\n/* src/content/styles/04-leaderboard.css */\n.aqm-board {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 16px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-row {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  padding: 12px 16px;\n  border-radius: 18px;\n  background: var(--aqm-card);\n  border: 1px solid transparent;\n}\n.aqm-row.is-me {\n  border-color: rgba(96, 165, 250, 0.35);\n  background:\n    linear-gradient(\n      90deg,\n      rgba(37, 99, 235, 0.14),\n      var(--aqm-card) 60%);\n}\n.aqm-avatar {\n  width: 40px;\n  height: 40px;\n  flex-shrink: 0;\n  border-radius: 12px;\n  object-fit: cover;\n  background: #27272a;\n}\n.aqm-name {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  flex: 1;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  font-size: 14px;\n  font-weight: 800;\n  color: #fff;\n  text-decoration: none;\n}\n.aqm-name:hover {\n  text-decoration: underline;\n}\n.aqm-tag {\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: rgba(96, 165, 250, 0.18);\n  color: #bfdbfe;\n  font-size: 10px;\n  font-weight: 900;\n  text-transform: uppercase;\n}\n.aqm-stats {\n  display: flex;\n  align-items: center;\n  gap: 20px;\n  flex-shrink: 0;\n}\n.aqm-stat {\n  min-width: 170px;\n  opacity: 0.6;\n}\n.aqm-stat.is-on {\n  opacity: 1;\n}\n.aqm-stat strong {\n  font-size: 18px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-stat small {\n  margin-left: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-bar {\n  display: block;\n  height: 4px;\n  margin-top: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n  overflow: hidden;\n}\n.aqm-bar > span {\n  display: block;\n  height: 100%;\n  border-radius: inherit;\n  background:\n    linear-gradient(\n      90deg,\n      #3b82f6,\n      #60a5fa);\n}\n.aqm-board-scope {\n  display: flex;\n  justify-content: center;\n  margin: 40px auto 0;\n}\n.aqm-friends-board {\n  margin: 32px auto 0;\n}\n.aqm-board-game {\n  margin-top: 16px;\n  padding: 0;\n  list-style: none;\n}\n.aqm-friends-board[hidden],\n[data-aqm-board-off] {\n  display: none !important;\n}\n.aqm-friends-note {\n  margin: 0;\n  text-align: center;\n  font-size: 13px;\n}\n.aqm-friend-main {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n  flex: 1;\n}\n.aqm-friend-main .aqm-name {\n  flex: none;\n}\n.aqm-friend-main small {\n  font-size: 11px;\n}\n.aqm-friend-score {\n  flex-shrink: 0;\n  text-align: right;\n  white-space: nowrap;\n}\n.aqm-friend-score strong {\n  font-size: 18px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-friend-score small {\n  margin-left: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-friends-board .aqm-board-refresh {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 12px;\n  font-size: 12px;\n}\n@media (max-width: 640px) {\n  .aqm-friends-board .aqm-row {\n    gap: 10px;\n    padding: 10px 12px;\n  }\n  .aqm-friend-score strong {\n    font-size: 15px;\n  }\n}\n\n/* src/content/styles/05-boosters.css */\n.aqm-search {\n  flex: 1 1 260px;\n  height: 44px;\n  padding: 0 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: #fff;\n  font: inherit;\n  font-size: 14px;\n  outline: none;\n}\n.aqm-search:focus {\n  border-color: rgba(96, 165, 250, 0.5);\n}\n.aqm-search::placeholder {\n  color: var(--aqm-dim);\n}\n.aqm-pack {\n  width: 64px;\n  height: 92px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  object-fit: cover;\n}\n.aqm-pack-plain {\n  display: grid;\n  place-items: center;\n  background:\n    linear-gradient(\n      160deg,\n      #1e3a8a,\n      #0ea5e9 55%,\n      #e0f2fe);\n  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);\n}\n.aqm-pack-plain span {\n  font-size: 11px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);\n}\n.aqm-perles {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-pearl {\n  display: inline-block;\n  width: 10px;\n  height: 10px;\n  border-radius: 999px;\n  background:\n    radial-gradient(\n      circle at 35% 30%,\n      #fff,\n      #bfdbfe 45%,\n      #60a5fa);\n  box-shadow: 0 0 6px rgba(147, 197, 253, 0.6);\n}\n.aqm-strip {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-mini {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 6px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-mini img {\n  width: 34px;\n  height: 48px;\n  flex-shrink: 0;\n  border-radius: 5px;\n  object-fit: cover;\n}\n.aqm-mini > div {\n  min-width: 0;\n}\n.aqm-mini.is-owned img {\n  box-shadow: 0 0 0 2px var(--aqm-yes);\n}\n.aqm-mini-name {\n  margin: 0;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  font-size: 12px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rarity {\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-r-N {\n  color: #e4e4e7;\n}\n.aqm-r-R {\n  color: #60a5fa;\n}\n.aqm-r-SR {\n  color: #c4b5fd;\n}\n.aqm-r-SSR {\n  color: #fde047;\n}\n.aqm-r-UR {\n  color: #f9a8d4;\n}\n.aqm-r-SEC {\n  color: #e2e8f0;\n  text-shadow: 0 0 6px rgba(196, 181, 253, 0.8);\n}\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 16px 8px;\n  }\n  .aqm-head,\n  .aqm-body {\n    padding-left: 16px;\n    padding-right: 16px;\n  }\n  .aqm-row {\n    flex-wrap: wrap;\n  }\n  .aqm-stats {\n    width: 100%;\n    padding-left: 44px;\n  }\n  .aqm-stat {\n    min-width: 0;\n  }\n  .aqm-pack {\n    width: 48px;\n    height: 69px;\n  }\n}\n\n/* src/content/styles/06-card-trades-pulls.css */\n.aqm-card-who {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  cursor: pointer;\n}\n.aqm-card-who-icon,\n.aqm-card-who-icon svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-card-who-row {\n  margin-top: 12px;\n}\n.aqm-dot {\n  position: absolute;\n  top: 3px;\n  right: 3px;\n  z-index: 5;\n  min-width: 11px;\n  height: 11px;\n  border-radius: 999px;\n  border: 2px solid rgba(0, 0, 0, 0.85);\n  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);\n  pointer-events: auto;\n}\n.aqm-dot.is-yes {\n  background: var(--aqm-yes);\n}\n.aqm-dot.is-no {\n  background: var(--aqm-no);\n}\n.aqm-dot.has-count {\n  height: 13px;\n  padding: 0 3px;\n  font: 800 8px/9px system-ui, sans-serif;\n  color: #052e16;\n  text-align: center;\n}\n.aqm-pull-thumb {\n  zoom: 1.7;\n}\n\n/* src/content/styles/07-showcase.css */\n.aqm-hidden {\n  display: none !important;\n}\n.aqm-slot {\n  position: relative;\n  cursor: grab;\n  transition: transform 0.15s, opacity 0.15s;\n}\n.aqm-slot:active {\n  cursor: grabbing;\n}\n.aqm-slot.aqm-dragging {\n  opacity: 0.4;\n}\n.aqm-slot.aqm-over {\n  transform: translateY(-4px);\n  outline: 2px dashed #60a5fa;\n  outline-offset: 3px;\n  border-radius: 10px;\n}\n.aqm-moving .aqm-slot {\n  pointer-events: none;\n}\n.aqm-slot-x {\n  position: absolute;\n  top: 4px;\n  right: 4px;\n  z-index: 6;\n  display: grid;\n  place-items: center;\n  width: 22px;\n  height: 22px;\n  padding: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(127, 29, 29, 0.9);\n  color: #fecaca;\n  cursor: pointer;\n  opacity: 0;\n  transition: opacity 0.15s;\n}\n.aqm-slot-x svg {\n  width: 12px;\n  height: 12px;\n}\n.aqm-slot:hover .aqm-slot-x,\n.aqm-slot-x:focus-visible {\n  opacity: 1;\n}\n@media (hover: none) {\n  .aqm-slot-x {\n    opacity: 1;\n  }\n}\n.aqm-slot {\n  user-select: none;\n  -webkit-user-select: none;\n  -webkit-touch-callout: none;\n}\n.aqm-ghost {\n  position: fixed;\n  top: 0;\n  left: 0;\n  z-index: 2147483200;\n  margin: 0;\n  pointer-events: none;\n  opacity: 0.92;\n  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.6));\n  will-change: transform;\n}\n.aqm-ghost .aqm-slot-x {\n  display: none;\n}\n[data-aqm-lite] > * {\n  content-visibility: auto;\n  contain-intrinsic-size: auto var(--aqm-cell-w, 120px) auto var(--aqm-cell-h, 200px);\n}\n\n/* src/content/styles/08-update.css */\n.aqm-update .aqm-queue-head strong {\n  color: #93c5fd;\n}\n.aqm-update-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-update-actions .aqm-queue-btn {\n  display: inline-flex;\n  align-items: center;\n  text-decoration: none;\n}\n.aqm-update-actions .is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-update-steps {\n  display: grid;\n  gap: 6px;\n  margin: 8px 0 0;\n  padding-left: 20px;\n  font-size: 13px;\n  line-height: 1.45;\n}\n.aqm-update .aqm-muted {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n\n/* src/content/styles/09-tour.css */\n.aqm-tour {\n  position: fixed;\n  inset: 0;\n  z-index: 2147483100;\n  color: var(--aqm-text);\n}\n.aqm-tour-block {\n  position: absolute;\n  inset: 0;\n}\n.aqm-tour-hole {\n  position: fixed;\n  border-radius: 16px;\n  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.9), 0 0 0 9999px rgba(0, 0, 0, 0.66);\n  pointer-events: none;\n  transition: all 0.25s ease;\n}\n.aqm-tour.is-dim .aqm-tour-block {\n  background: rgba(0, 0, 0, 0.66);\n}\n.aqm-tour-card {\n  position: fixed;\n  top: 0;\n  left: 0;\n  width: min(360px, calc(100vw - 24px));\n  padding: 18px 20px 16px;\n  border-radius: 20px;\n  background: var(--aqm-panel);\n  border: 1px solid rgba(96, 165, 250, 0.25);\n  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);\n  transition: transform 0.25s ease;\n}\n.aqm-tour-count {\n  margin: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  color: var(--aqm-accent);\n}\n.aqm-tour-title {\n  margin: 6px 0 0;\n  font-size: 18px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n}\n.aqm-tour-text {\n  margin: 8px 0 0;\n  font-size: 14px;\n  line-height: 1.5;\n  color: #d4d4d8;\n}\n.aqm-tour-actions {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin-top: 16px;\n}\n.aqm-tour-gap {\n  flex: 1;\n}\n.aqm-tour-skip,\n.aqm-tour-btn {\n  height: 36px;\n  padding: 0 14px;\n  border: 0;\n  border-radius: 999px;\n  font: inherit;\n  font-size: 13px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-tour-skip {\n  padding: 0 4px;\n  background: none;\n  color: var(--aqm-dim);\n}\n.aqm-tour-skip:hover {\n  color: #fff;\n}\n.aqm-tour-btn {\n  background: rgba(255, 255, 255, 0.08);\n  color: #fff;\n}\n.aqm-tour-btn.is-main {\n  background: #2563eb;\n}\n.aqm-tour-btn:hover {\n  filter: brightness(1.15);\n}\n\n/* src/content/styles/10-phone.css */\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 0;\n  }\n  .aqm-panel {\n    min-height: 100%;\n    border-radius: 0;\n    border: 0;\n  }\n  .aqm-head {\n    position: sticky;\n    top: 0;\n    z-index: 2;\n    padding-top: 18px;\n    background: var(--aqm-panel);\n  }\n  .aqm-title {\n    font-size: 19px;\n  }\n  .aqm-menu {\n    width: min(290px, calc(100vw - 16px));\n  }\n  .aqm-strip {\n    grid-template-columns: 1fr;\n  }\n  .aqm-pull-thumb {\n    zoom: 1.4;\n  }\n  .aqm-tour-actions {\n    flex-wrap: wrap;\n  }\n}\n\n/* src/content/styles/11-news.css */\n.aqm-news-version {\n  margin-top: 18px;\n}\n.aqm-news {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-news li {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n}\n.aqm-news .aqm-chip {\n  flex-shrink: 0;\n}\n.aqm-news-foot {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 20px;\n}\n@media (max-width: 640px) {\n  .aqm-news li {\n    flex-direction: column;\n    align-items: flex-start;\n  }\n}\n\n/* src/content/styles/12-boosters-filters.css */\n.aqm-filter-name {\n  width: 86px;\n  flex-shrink: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.1em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-chip-r {\n  font-style: italic;\n  font-weight: 900;\n}\n.aqm-chip-r.is-on {\n  border-color: currentColor;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-how {\n  margin-top: 16px;\n  padding: 12px 16px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n  color: #d4d4d8;\n}\n.aqm-how summary {\n  cursor: pointer;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-how ul {\n  margin: 10px 0 0;\n  padding-left: 18px;\n  line-height: 1.55;\n}\n.aqm-how li + li {\n  margin-top: 4px;\n}\n\n/* src/content/styles/13-strips.css */\n.aqm-grab {\n  cursor: grab;\n}\nhtml.aqm-grabbing,\nhtml.aqm-grabbing * {\n  cursor: grabbing !important;\n  user-select: none !important;\n  -webkit-user-select: none !important;\n}\n\n/* src/content/styles/14-pity.css */\n.aqm-pity {\n  width: min(460px, 100%);\n  margin: 14px auto 0;\n  padding: 12px 16px;\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid var(--aqm-line);\n  text-align: left;\n  color: var(--aqm-text);\n}\n.aqm-pity .aqm-label {\n  margin-bottom: 8px;\n  text-align: center;\n}\n.aqm-pity-lines {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: 14px;\n}\n.aqm-pity-line p {\n  margin: 0;\n  font-size: 13px;\n  font-weight: 700;\n  color: #e4e4e7;\n}\n.aqm-pity-line strong {\n  color: #fff;\n  font-weight: 900;\n}\n.aqm-pity-line .aqm-bar {\n  margin-top: 6px;\n}\n.aqm-pity-line small {\n  display: block;\n  margin-top: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n  font-variant-numeric: tabular-nums;\n}\n.aqm-pity-line:has(.aqm-r-UR) .aqm-bar > span {\n  background:\n    linear-gradient(\n      90deg,\n      #38bdf8,\n      #f472b6,\n      #facc15);\n}\n.aqm-pity-line:has(.aqm-r-SSR) .aqm-bar > span {\n  background:\n    linear-gradient(\n      90deg,\n      #eab308,\n      #fde047);\n}\n.aqm-pity-line.is-sec {\n  grid-column: 1 / -1;\n  padding-top: 10px;\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-pity-note {\n  margin: 10px 0 0;\n  font-size: 11px;\n  text-align: center;\n  color: var(--aqm-dim);\n}\n.aqm-pity-more {\n  display: flex;\n  justify-content: center;\n  margin-top: 10px;\n}\n.aqm-history {\n  display: grid;\n  gap: 14px;\n}\n.aqm-history-count {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-rates {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 10px;\n}\n.aqm-rate {\n  --aqm-rate:\n    148,\n    163,\n    184;\n  position: relative;\n  padding: 14px 16px;\n  border: 1px solid rgba(var(--aqm-rate), 0.22);\n  border-radius: 18px;\n  background:\n    radial-gradient(\n      120% 90% at 0% 0%,\n      rgba(var(--aqm-rate), 0.14),\n      transparent 60%),\n    var(--aqm-card);\n  overflow: hidden;\n}\n.aqm-rate.is-SSR {\n  --aqm-rate:\n    253,\n    224,\n    71;\n}\n.aqm-rate.is-UR {\n  --aqm-rate:\n    244,\n    114,\n    182;\n}\n.aqm-rate.is-SEC {\n  --aqm-rate:\n    196,\n    181,\n    253;\n}\n.aqm-rate-top {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  font-size: 15px;\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-rate-value {\n  margin: 10px 0 0;\n  font-size: 26px;\n  font-weight: 900;\n  line-height: 1;\n}\n.aqm-rate-value small {\n  font-size: 13px;\n  font-weight: 700;\n  color: var(--aqm-dim);\n}\n.aqm-rate-sub {\n  margin: 4px 0 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-rate-foot {\n  margin: 12px 0 0;\n  padding-top: 10px;\n  border-top: 1px solid var(--aqm-line);\n  font-size: 11px;\n  color: var(--aqm-dim);\n}\n.aqm-luck {\n  font-size: 10px;\n  font-style: normal;\n}\n.aqm-luck.is-good {\n  background: rgba(34, 197, 94, 0.18);\n  color: #86efac;\n}\n.aqm-luck.is-bad {\n  background: rgba(239, 68, 68, 0.18);\n  color: #fca5a5;\n}\n.aqm-history-box {\n  padding: 14px 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.02);\n}\n.aqm-history-row {\n  display: flex;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 8px;\n  margin-bottom: 10px;\n}\n.aqm-history-row .aqm-label {\n  margin: 0;\n}\n.aqm-tracker-strip {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(8px, 1fr));\n  gap: 3px;\n}\n.aqm-cell {\n  display: inline-block;\n  height: 16px;\n  min-width: 8px;\n  border-radius: 3px;\n  background: rgba(255, 255, 255, 0.07);\n  vertical-align: middle;\n}\n.aqm-cell.is-SSR {\n  background: #fde047;\n  box-shadow: 0 0 8px rgba(253, 224, 71, 0.45);\n}\n.aqm-cell.is-UR {\n  background: #f472b6;\n  box-shadow: 0 0 8px rgba(244, 114, 182, 0.55);\n}\n.aqm-cell.is-SEC {\n  background:\n    linear-gradient(\n      180deg,\n      #c4b5fd,\n      #67e8f9);\n  box-shadow: 0 0 10px rgba(196, 181, 253, 0.9);\n}\n.aqm-tracker-legend {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 14px;\n  margin: 10px 0 0;\n  font-size: 11px;\n  color: var(--aqm-dim);\n}\n.aqm-tracker-legend > span {\n  display: inline-flex;\n  align-items: center;\n  gap: 6px;\n}\n.aqm-tracker-legend .aqm-cell {\n  width: 8px;\n  height: 12px;\n}\n.aqm-history-tabs {\n  display: flex;\n  gap: 4px;\n  width: fit-content;\n  padding: 4px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.35);\n}\n.aqm-history-tabbtn {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  padding: 7px 16px;\n  border: 0;\n  border-radius: 999px;\n  background: transparent;\n  color: var(--aqm-dim);\n  font: inherit;\n  font-size: 13px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-history-tabbtn.is-on {\n  background: rgba(255, 255, 255, 0.1);\n  color: var(--aqm-text);\n}\n.aqm-history-tabcount {\n  min-width: 20px;\n  padding: 1px 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n  font-size: 11px;\n  text-align: center;\n}\n.aqm-history-stats {\n  display: grid;\n  grid-template-columns: repeat(5, minmax(0, 1fr));\n  gap: 8px;\n  margin: 14px 0;\n}\n.aqm-history-stat {\n  padding: 8px 10px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-history-stat small {\n  display: block;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-history-stat strong {\n  display: block;\n  margin-top: 3px;\n  font-size: 14px;\n}\n.aqm-history-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));\n  gap: 12px;\n  max-height: 440px;\n  padding: 2px 6px 2px 2px;\n  overflow-y: auto;\n}\n.aqm-history-tile {\n  display: block;\n  color: inherit;\n  text-decoration: none;\n}\n.aqm-history-tile > img,\n.aqm-history-blank {\n  display: block;\n  width: 100%;\n  aspect-ratio: 5 / 7;\n  border-radius: 10px;\n  object-fit: cover;\n}\n.aqm-history-tile:hover > img {\n  filter: brightness(1.12);\n}\n.aqm-history-blank {\n  display: grid;\n  place-items: center;\n  background: rgba(255, 255, 255, 0.05);\n  font-size: 22px;\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-history-after {\n  margin: 6px 0 0;\n  font-size: 13px;\n  font-weight: 900;\n  text-align: center;\n}\n.aqm-history-pack {\n  margin: 2px 0 0;\n  overflow: hidden;\n  font-size: 11px;\n  font-weight: 700;\n  text-align: center;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  color: var(--aqm-dim);\n}\n.aqm-history-pack.is-unknown {\n  opacity: 0.6;\n}\n.aqm-history-packs {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  margin-bottom: 10px;\n}\n.aqm-history-packbtn {\n  display: inline-flex;\n  align-items: center;\n  gap: 6px;\n  padding: 5px 12px;\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 999px;\n  background: transparent;\n  color: var(--aqm-dim);\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-history-packbtn.is-on {\n  border-color: transparent;\n  background: rgba(255, 255, 255, 0.1);\n  color: var(--aqm-text);\n}\n.aqm-history-empty {\n  margin: 14px 0 0;\n  font-size: 13px;\n  color: var(--aqm-dim);\n}\n@media (max-width: 640px) {\n  .aqm-rates {\n    grid-template-columns: 1fr;\n  }\n  .aqm-history-stats {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n  .aqm-history-grid {\n    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));\n  }\n}\n.aqm-root,\n.aqm-root * {\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;\n}\n.aqm-root::-webkit-scrollbar,\n.aqm-root *::-webkit-scrollbar {\n  width: 8px;\n  height: 8px;\n}\n.aqm-root::-webkit-scrollbar-track,\n.aqm-root *::-webkit-scrollbar-track {\n  background: transparent;\n}\n.aqm-root::-webkit-scrollbar-thumb,\n.aqm-root *::-webkit-scrollbar-thumb {\n  border: 2px solid transparent;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.18) padding-box;\n}\n.aqm-root::-webkit-scrollbar-thumb:hover,\n.aqm-root *::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.32) padding-box;\n}\n.aqm-root::-webkit-scrollbar-button,\n.aqm-root *::-webkit-scrollbar-button {\n  display: none;\n}\n@media (max-width: 640px) {\n  .aqm-pity-lines {\n    grid-template-columns: 1fr;\n    gap: 10px;\n  }\n}\n\n/* src/content/styles/15-booster-choice.css */\n.aqm-panel.aqm-panel-wide {\n  max-width: 1040px;\n}\n.aqm-goals {\n  margin-top: 4px;\n}\n.aqm-goal {\n  height: 38px;\n  padding: 0 16px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-chip.aqm-goal.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-pick {\n  margin-top: 10px;\n}\n.aqm-pick:empty {\n  display: none;\n}\n.aqm-pick .aqm-chip {\n  height: 36px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-pick .aqm-search {\n  width: min(520px, 100%);\n}\n.aqm-open-count {\n  margin-left: 2px;\n  padding: 1px 7px;\n  border-radius: 999px;\n  background: rgba(96, 165, 250, 0.25);\n  font-variant-numeric: tabular-nums;\n}\n.aqm-open-note {\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 6px;\n  font-size: 12px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  color: rgba(255, 255, 255, 0.6);\n}\n.aqm-suggest-box {\n  position: relative;\n  width: min(520px, 100%);\n}\n.aqm-suggest-box .aqm-search {\n  width: 100%;\n}\n.aqm-suggest {\n  position: absolute;\n  z-index: 5;\n  top: calc(100% + 6px);\n  left: 0;\n  right: 0;\n  max-height: 360px;\n  margin: 0;\n  padding: 6px;\n  overflow-y: auto;\n  list-style: none;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);\n}\n.aqm-suggest[hidden] {\n  display: none;\n}\n.aqm-suggest-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 6px 10px 6px 6px;\n  border-radius: 10px;\n  cursor: pointer;\n}\n.aqm-suggest-item:hover,\n.aqm-suggest-item[aria-selected=true] {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-suggest-item > img,\n.aqm-suggest-blank {\n  flex-shrink: 0;\n  width: 34px;\n  height: 48px;\n  border-radius: 5px;\n  object-fit: cover;\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-suggest-name {\n  flex: 1;\n  min-width: 0;\n  overflow: hidden;\n  font-size: 14px;\n  font-weight: 700;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n.aqm-suggest-name small {\n  display: block;\n  font-size: 11px;\n  font-weight: 600;\n  color: var(--aqm-dim);\n}\n.aqm-suggest-rarities {\n  display: flex;\n  flex-shrink: 0;\n  gap: 4px;\n}\n.aqm-sentence {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 14px;\n  margin-top: 12px;\n}\n.aqm-sentence > p {\n  margin: 0;\n  font-size: 13px;\n  color: #93c5fd;\n}\n.aqm-new .aqm-chip {\n  height: 28px;\n  padding: 0 10px;\n  font-size: 11px;\n}\n.aqm-sorts {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 14px;\n}\n.aqm-sorts .aqm-filter-name {\n  width: auto;\n  margin-right: 4px;\n}\n.aqm-sort {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 2px;\n  min-width: 170px;\n  padding: 9px 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: rgba(255, 255, 255, 0.03);\n  color: #fff;\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-sort strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-sort small {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sort:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-sort.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-sort.is-on small {\n  color: #dbeafe;\n}\n.aqm-verdict {\n  margin-top: 16px;\n  padding: 14px 18px;\n  border: 1px solid rgba(34, 197, 94, 0.55);\n  border-radius: 16px;\n  background: rgba(34, 197, 94, 0.06);\n  font-size: 14px;\n  line-height: 1.6;\n  color: #e4e4e7;\n}\n.aqm-verdict p {\n  margin: 0;\n}\n.aqm-verdict strong {\n  color: #fff;\n}\n.aqm-ranking {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 14px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-rank {\n  display: grid;\n  grid-template-columns: 22px 44px minmax(0, 1fr) auto;\n  align-items: start;\n  gap: 4px 14px;\n  padding: 14px 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 16px;\n  background: var(--aqm-card);\n}\n.aqm-rank.is-best {\n  border-color: rgba(34, 197, 94, 0.6);\n}\n.aqm-rank-n {\n  padding-top: 14px;\n  font-size: 13px;\n  font-weight: 800;\n  color: var(--aqm-muted);\n}\n.aqm-rank .aqm-pack {\n  width: 44px;\n  height: 62px;\n  border-radius: 7px;\n}\n.aqm-rank .aqm-pack-plain span {\n  font-size: 7px;\n}\n.aqm-rank-main {\n  min-width: 0;\n}\n.aqm-rank-main > p {\n  margin: 0;\n}\n.aqm-rank-title {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  gap: 4px 10px;\n}\n.aqm-rank-title strong {\n  font-size: 16px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-price {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-badge {\n  padding: 2px 8px;\n  border-radius: 6px;\n  font-size: 10px;\n  font-weight: 900;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.aqm-badge.is-best {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-badge.is-cheap {\n  background: rgba(96, 165, 250, 0.16);\n  color: #bfdbfe;\n}\n.aqm-rank-head {\n  margin-top: 4px !important;\n  font-size: 14px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rank-sub {\n  margin-top: 2px !important;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-bar {\n  height: 5px;\n  margin-top: 10px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.07);\n  overflow: hidden;\n}\n.aqm-rank-bar > span {\n  display: block;\n  height: 100%;\n  border-radius: inherit;\n  background:\n    linear-gradient(\n      90deg,\n      #22c55e,\n      #eab308);\n}\n.aqm-rank-side {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  padding-top: 10px;\n  text-align: right;\n  white-space: nowrap;\n}\n.aqm-rank-side strong {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-side small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-ref {\n  margin-top: 10px;\n  font-size: 12px;\n  color: #93c5fd;\n}\n.aqm-rank-more {\n  margin-top: 8px;\n}\n.aqm-rank-more > summary {\n  width: fit-content;\n  font-size: 12px;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-rank-more > summary:hover {\n  color: #fff;\n}\n.aqm-rank-more[open] > summary {\n  margin-bottom: 8px;\n}\n.aqm-rank-more .aqm-label {\n  margin-top: 10px;\n}\n.aqm-rank-more .aqm-muted {\n  margin-top: 8px;\n}\n.aqm-odds-grid {\n  display: grid;\n  grid-template-columns: repeat(6, minmax(0, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-odds-grid li {\n  padding: 6px 8px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-odds-grid li > * {\n  display: block;\n}\n.aqm-odds-grid strong {\n  margin-top: 2px;\n  font-size: 13px;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-odds-grid small {\n  font-size: 10px;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-rank {\n    grid-template-columns: 36px minmax(0, 1fr);\n    padding: 12px;\n  }\n  .aqm-rank-n {\n    display: none;\n  }\n  .aqm-rank .aqm-pack {\n    width: 36px;\n    height: 51px;\n  }\n  .aqm-rank-side {\n    grid-column: 2;\n    flex-direction: row;\n    flex-wrap: wrap;\n    align-items: baseline;\n    gap: 2px 8px;\n    padding-top: 6px;\n  }\n  .aqm-rank-ref {\n    margin-top: 0;\n  }\n  .aqm-sort {\n    flex: 1 1 140px;\n    min-width: 0;\n  }\n  .aqm-odds-grid {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/16-settings.css */\n.aqm-settings-list {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n}\n.aqm-switch {\n  display: flex;\n  align-items: flex-start;\n  gap: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n  cursor: pointer;\n}\n.aqm-switch input {\n  margin-top: 3px;\n  accent-color: #2563eb;\n}\n.aqm-switch.is-off {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-settings-groups {\n  columns: 2 340px;\n  column-gap: 14px;\n}\n.aqm-settings-group {\n  break-inside: avoid;\n  margin: 0 0 14px;\n  padding: 6px 0;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-settings-title {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 0;\n  padding: 10px 16px 6px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.12em;\n  text-transform: uppercase;\n  color: #93c5fd;\n}\n.aqm-settings-title span {\n  font-size: 15px;\n  letter-spacing: 0;\n}\n.aqm-setting {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  padding: 10px 16px;\n  cursor: pointer;\n}\n.aqm-setting + .aqm-setting {\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-setting:hover {\n  background: rgba(255, 255, 255, 0.025);\n}\n.aqm-setting.is-off {\n  cursor: default;\n  opacity: 0.45;\n}\n.aqm-setting-text {\n  display: grid;\n  flex: 1;\n  gap: 2px;\n  min-width: 0;\n}\n.aqm-setting-text strong {\n  font-size: 14px;\n  color: var(--aqm-text);\n}\n.aqm-setting-text small {\n  font-size: 12px;\n  line-height: 1.35;\n  color: var(--aqm-dim);\n}\n.aqm-toggle {\n  position: relative;\n  flex: none;\n  width: 40px;\n  height: 24px;\n  margin: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.14);\n  appearance: none;\n  -webkit-appearance: none;\n  cursor: pointer;\n  transition: background 0.2s;\n}\n.aqm-toggle::before {\n  content: "";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #fff;\n  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);\n  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-toggle:checked {\n  background: #2563eb;\n}\n.aqm-toggle:checked::before {\n  transform: translateX(16px);\n}\n.aqm-toggle:focus-visible {\n  outline: 2px solid #93c5fd;\n  outline-offset: 2px;\n}\n.aqm-toggle:disabled {\n  cursor: default;\n}\n.aqm-settings-foot {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 4px;\n}\n.aqm-settings-foot p {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-settings-actions {\n  display: flex;\n  gap: 8px;\n}\n\n/* src/content/styles/17-who-pulled.css */\n.aqm-pulled {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-pull {\n  display: grid;\n  grid-template-columns: 40px minmax(0, 1fr) auto;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-pull-card img {\n  display: block;\n  width: 40px;\n  height: 56px;\n  border-radius: 8px;\n  object-fit: cover;\n}\n.aqm-pull-main {\n  min-width: 0;\n}\n.aqm-pull-main > p {\n  margin: 0;\n}\n.aqm-pull-series {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n.aqm-pull-who {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  font-size: 13px;\n  font-weight: 700;\n  text-align: right;\n}\n.aqm-pull-player {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n.aqm-pull-player .aqm-avatar-sm {\n  width: 24px;\n  height: 24px;\n  border-radius: 7px;\n}\n.aqm-pull-who a {\n  color: #fff;\n  text-decoration: none;\n}\n.aqm-pull-who a:hover {\n  text-decoration: underline;\n}\n.aqm-pull-who small {\n  font-size: 11px;\n  font-weight: 400;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/18-favorites.css */\n.aqm-star {\n  position: absolute;\n  top: 4px;\n  right: 6px;\n  z-index: 3;\n  display: grid;\n  place-items: center;\n  width: 24px;\n  height: 24px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.55);\n  color: #a1a1aa;\n  font-size: 15px;\n  line-height: 1;\n  cursor: pointer;\n}\n.aqm-star:hover {\n  color: #fde047;\n}\n.aqm-star.is-on {\n  color: #facc15;\n}\n.aqm-fav-bar {\n  display: flex;\n  gap: 8px;\n  margin-bottom: 8px;\n  overflow-x: auto;\n  scrollbar-width: none;\n  -webkit-overflow-scrolling: touch;\n}\n.aqm-fav-bar::-webkit-scrollbar {\n  display: none;\n}\n.aqm-fav-bar .aqm-chip {\n  flex: 0 0 auto;\n  white-space: nowrap;\n  height: 32px;\n  text-transform: none;\n  letter-spacing: 0;\n  font-size: 13px;\n  color: #fde047;\n}\n.aqm-fav-bar .aqm-chip b {\n  margin-left: 4px;\n  color: #fff;\n}\n.aqm-fav-found {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 8px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-fav-found:empty {\n  display: none;\n}\n.aqm-fav-found li {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 6px 10px 6px 6px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-fav-found img {\n  width: 32px;\n  height: 44px;\n  border-radius: 6px;\n  object-fit: cover;\n}\n.aqm-fav-found li > span {\n  flex: 1;\n  min-width: 0;\n}\n.aqm-fav-found strong,\n.aqm-fav-found small {\n  display: block;\n}\n.aqm-fav-found small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-filter-name.aqm-gap {\n  margin-left: 10px;\n}\n.aqm-fav-list {\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n  margin-top: 14px;\n}\n.aqm-fav-series {\n  padding: 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-fav-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 12px;\n}\n.aqm-fav-head > img {\n  width: 40px;\n  height: 56px;\n  border-radius: 8px;\n  object-fit: cover;\n}\n.aqm-fav-title {\n  flex: 1 1 200px;\n  min-width: 0;\n}\n.aqm-fav-title strong {\n  display: block;\n  font-size: 16px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-fav-title small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-fav-head .aqm-fav-unstar {\n  color: #facc15;\n  font-size: 16px;\n}\n.aqm-fav-series > .aqm-muted {\n  margin-top: 8px;\n}\n.aqm-fav-series > .aqm-muted:empty {\n  display: none;\n}\n.aqm-fav-cards {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));\n  gap: 10px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-fav-card {\n  position: relative;\n  min-width: 0;\n}\n.aqm-fav-card img {\n  display: block;\n  width: 100%;\n  aspect-ratio: 63 / 88;\n  border-radius: 10px;\n  object-fit: cover;\n  filter: grayscale(0.85) brightness(0.6);\n}\n.aqm-fav-card.is-owned img {\n  filter: none;\n}\n.aqm-fav-card > p {\n  margin: 4px 0 0;\n}\n.aqm-fav-card .aqm-mini-name {\n  font-size: 12px;\n}\n.aqm-want {\n  position: absolute;\n  top: 6px;\n  right: 6px;\n  display: grid;\n  place-items: center;\n  width: 30px;\n  height: 30px;\n  padding: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.6);\n  font-size: 15px;\n  filter: grayscale(1);\n  opacity: 0.75;\n  cursor: pointer;\n}\n.aqm-want.is-on {\n  background: rgba(37, 99, 235, 0.85);\n  filter: none;\n  opacity: 1;\n}\n.aqm-sort:disabled {\n  opacity: 0.55;\n  cursor: default;\n}\n@media (max-width: 640px) {\n  .aqm-pull {\n    grid-template-columns: 36px minmax(0, 1fr);\n  }\n  .aqm-pull-who {\n    grid-column: 2;\n    flex-direction: row;\n    align-items: baseline;\n    gap: 8px;\n  }\n  .aqm-fav-cards {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/19-album.css */\n.aqm-album {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 12px;\n}\n.aqm-album-btn {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.05);\n  color: #e4e4e7;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-album-btn:hover {\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-album-btn.is-on {\n  border-color: rgba(250, 204, 21, 0.45);\n  color: #fde047;\n}\n.aqm-album-btn.is-main {\n  border-color: transparent;\n  background: #2563eb;\n  color: #fff;\n}\n.aqm-album-btn:disabled {\n  opacity: 0.55;\n  cursor: default;\n}\n.aqm-album-note {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/20-who-has.css */\n.aqm-who-gap {\n  margin-top: 18px;\n}\n.aqm-who-note {\n  margin: 0 0 6px;\n}\n.aqm-who-cards .aqm-mini {\n  cursor: pointer;\n}\n.aqm-who-cards .aqm-mini:hover,\n.aqm-who-cards .aqm-mini:focus-visible {\n  background: rgba(96, 165, 250, 0.14);\n  outline: none;\n}\n.aqm-who-back {\n  margin-bottom: 12px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-who-card {\n  display: flex;\n  gap: 16px;\n  padding: 14px;\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-who-card img {\n  width: 92px;\n  border-radius: 10px;\n  aspect-ratio: 63 / 88;\n  object-fit: cover;\n}\n.aqm-who-card > div {\n  flex: 1;\n  min-width: 0;\n}\n.aqm-who-card p {\n  margin: 0 0 2px;\n}\n.aqm-pack-title {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-who-stats {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-metric {\n  padding: 8px 10px;\n  border-radius: 12px;\n  background: rgba(255, 255, 255, 0.04);\n}\n.aqm-metric small {\n  display: block;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-metric strong {\n  display: block;\n  margin-top: 2px;\n  font-size: 15px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-owners {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-owner {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  min-height: 42px;\n  padding: 6px 12px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-avatar-sm {\n  width: 30px;\n  height: 30px;\n  border-radius: 9px;\n}\n.aqm-owner .aqm-avatar-sm + a,\n.aqm-owner .aqm-avatar-sm + span {\n  min-width: 0;\n}\n.aqm-owner-serial {\n  min-width: 52px;\n  font-weight: 800;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-owner a {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  color: #e4e4e7;\n  font-weight: 700;\n  text-decoration: none;\n}\n.aqm-owner a:hover {\n  color: #fff;\n  text-decoration: underline;\n}\n.aqm-owner-right {\n  margin-left: auto;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  white-space: nowrap;\n}\n@media (max-width: 640px) {\n  .aqm-who-card img {\n    width: 72px;\n  }\n  .aqm-who-stats {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/21-search-queue.css */\n.aqm-dock,\n.aqm-update {\n  position: fixed;\n  right: 16px;\n  bottom: 16px;\n  z-index: 2147482500;\n  width: min(360px, calc(100vw - 32px));\n}\n.aqm-dock {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n.aqm-queue,\n.aqm-update {\n  padding: 12px 14px;\n  border: 1px solid rgba(96, 165, 250, 0.35);\n  border-radius: 16px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);\n  color: var(--aqm-text);\n  font-size: 13px;\n  animation: aqm-pop 0.16s ease-out;\n}\n.aqm-queue-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n}\n.aqm-queue-head strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-queue-btn {\n  height: 28px;\n  padding: 0 12px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: #fff;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-queue .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-album .aqm-fav-wait {\n  flex-basis: 100%;\n  width: 100%;\n  margin: 4px 0 0;\n}\n.aqm-fav-wait {\n  margin: 0 0 12px;\n  padding: 10px 12px;\n  border: 1px solid rgba(217, 119, 6, 0.4);\n  border-radius: 12px;\n}\n.aqm-fav-wait .aqm-queue-head + .aqm-bar,\n.aqm-fav-wait p + .aqm-queue-head {\n  margin-top: 12px;\n}\n.aqm-fav-wait .aqm-queue-actions {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  margin-top: 10px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-steps {\n  display: flex;\n  height: 8px;\n  margin-top: 10px;\n  overflow: hidden;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-steps > span {\n  transition: width 0.4s ease;\n}\n.aqm-steps .is-in,\n.aqm-steps-legend .is-in::before {\n  background: #22c55e;\n}\n.aqm-steps .is-sending,\n.aqm-steps-legend .is-sending::before {\n  background: #3b82f6;\n}\n.aqm-steps .is-waiting,\n.aqm-steps-legend .is-waiting::before {\n  background: #d97706;\n}\n.aqm-steps-legend {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 4px 14px;\n  margin-top: 8px;\n  font-size: 12px;\n}\n.aqm-steps-legend span::before {\n  content: "";\n  display: inline-block;\n  width: 8px;\n  height: 8px;\n  margin-right: 6px;\n  border-radius: 50%;\n}\n.aqm-fav-wait .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-fav-wait p {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n.aqm-want.is-wait {\n  background: rgba(217, 119, 6, 0.85);\n}\n.aqm-queue p,\n.aqm-update p {\n  margin: 8px 0 0;\n  font-size: 12px;\n  line-height: 1.45;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-dock,\n  .aqm-update {\n    right: 8px;\n    left: 8px;\n    bottom: 96px;\n    width: auto;\n  }\n}\n.aqm-fav-details {\n  text-transform: none;\n  letter-spacing: 0;\n  font-size: 12px;\n}\n.aqm-fav-list {\n  gap: 10px;\n}\n.aqm-fav-series .aqm-fav-cards {\n  margin-top: 14px;\n}\n\n/* src/content/styles/22-sell.css */\n.aqm-sales {\n  border-color: rgba(34, 197, 94, 0.35);\n}\n.aqm-sell-wait {\n  flex: none;\n  align-self: stretch;\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 12px;\n  line-height: 1.45;\n}\n.aqm-sell-wait > p:first-child {\n  margin: 0;\n}\n.aqm-sell-waiting {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));\n  gap: 2px 16px;\n  max-height: 140px;\n  margin: 8px 0 0;\n  padding: 0 6px 0 0;\n  overflow-y: auto;\n  list-style: none;\n  font-size: 12px;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar {\n  width: 6px;\n}\n.aqm-sell-waiting::-webkit-scrollbar-track {\n  background: transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb {\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.2);\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.35);\n}\n.aqm-sell-waiting::-webkit-scrollbar-button {\n  display: none;\n}\n.aqm-sell-last {\n  margin: 8px 0 0;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sell-waiting li {\n  display: flex;\n  justify-content: space-between;\n  gap: 8px;\n  min-width: 0;\n}\n.aqm-sell-waiting li > span:first-child {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n\n/* src/content/styles/23-booster-wheel.css */\n[data-aqm-hidden] {\n  position: absolute !important;\n  visibility: hidden !important;\n  pointer-events: none !important;\n}\n[data-aqm-veiled] {\n  visibility: hidden;\n}\n.aqm-piles {\n  position: relative;\n  flex: none;\n  align-self: auto;\n  max-width: none;\n  width: 100%;\n  padding: 28px 0 8px;\n  overflow: hidden;\n  overflow-x: clip;\n  overflow-y: visible;\n}\n@property --aqm-glow { syntax: "<color>"; inherits: true; initial-value: rgb(37 99 235 / 0.38); }\n.aqm-wheel {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  isolation: isolate;\n  transition: --aqm-glow 0.6s ease;\n}\n.aqm-wheel::before {\n  content: "";\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  z-index: -1;\n  width: min(560px, 100%);\n  aspect-ratio: 1;\n  background:\n    radial-gradient(\n      closest-side,\n      var(--aqm-glow, rgb(37 99 235 / 0.38)),\n      transparent);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n}\n.aqm-wheel-track {\n  display: grid;\n}\n.aqm-wheel-controls {\n  display: flex;\n  justify-content: center;\n  margin-top: 4px;\n}\n.aqm-pile {\n  display: flex;\n  grid-area: 1 / 1;\n  flex-direction: column;\n  align-items: center;\n  gap: 12px;\n  justify-self: center;\n  transition:\n    transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n    opacity 0.4s,\n    filter 0.4s;\n}\n.aqm-pile:not(.is-front) {\n  z-index: 0;\n  opacity: 0.4;\n  cursor: pointer;\n}\n.aqm-pile.is-front {\n  z-index: 1;\n}\n.aqm-pile.is-away {\n  opacity: 0;\n  pointer-events: none;\n}\n.aqm-pile:not(.is-front) .aqm-pile-art {\n  pointer-events: none;\n}\n.aqm-pile-art [class*=__packPose] {\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-pile-art .aqm-pose-follow {\n  transition: transform 0.15s ease-out;\n}\n.aqm-pile.is-front [data-aqm-float] {\n  animation: aqm-pack-float 2.35s ease-in-out infinite alternate;\n}\n@keyframes aqm-pack-float {\n  from {\n    transform: translate3d(0, 0, 0);\n  }\n  to {\n    transform: translate3d(0, -16px, 0);\n  }\n}\n@media (prefers-reduced-motion: reduce) {\n  .aqm-pile.is-front [data-aqm-float] {\n    animation: none;\n  }\n}\n.aqm-wheel-arrow {\n  position: absolute;\n  top: 45%;\n  z-index: 3;\n  width: 44px;\n  height: 44px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 50%;\n  background: rgba(15, 23, 42, 0.85);\n  color: #fff;\n  font: inherit;\n  font-size: 26px;\n  line-height: 1;\n  cursor: pointer;\n}\n.aqm-wheel-arrow:hover {\n  border-color: #3b82f6;\n  background: rgba(37, 99, 235, 0.35);\n}\n.aqm-wheel-arrow.is-prev {\n  left: 8px;\n}\n.aqm-wheel-arrow.is-next {\n  right: 8px;\n}\n.aqm-wheel-dots {\n  display: flex;\n  justify-content: center;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-wheel-dot {\n  width: 8px;\n  height: 8px;\n  padding: 0;\n  border: 0;\n  border-radius: 50%;\n  background: rgba(255, 255, 255, 0.25);\n  cursor: pointer;\n}\n.aqm-wheel-dot.is-on {\n  width: 22px;\n  border-radius: 999px;\n  background: #3b82f6;\n}\n.aqm-piles.is-still .aqm-pile {\n  transition: none;\n}\n@media (max-width: 640px) {\n  .aqm-wheel-controls > * {\n    flex-direction: column;\n  }\n  .aqm-wheel-arrow {\n    width: 36px;\n    height: 36px;\n    font-size: 22px;\n  }\n}\n.aqm-queue-btn.is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-queue-btn:disabled {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-scan-list {\n  display: grid;\n  gap: 4px;\n  margin: 10px 0 0;\n  padding: 0;\n  list-style: none;\n  font-size: 13px;\n}\n\n/* src/content/styles/24-card-listings.css */\n.aqm-listings {\n  margin-top: 16px;\n  padding: 16px 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.025);\n}\n.aqm-listings-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 4px 12px;\n  margin-bottom: 10px;\n}\n.aqm-listings-head .aqm-label {\n  margin: 0;\n}\n.aqm-listings .aqm-owners {\n  display: grid;\n  grid-template-columns: 1fr;\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-buy-cell {\n  display: inline-flex;\n  align-items: center;\n  gap: 12px;\n}\n.aqm-buy {\n  height: 30px;\n}\n.aqm-buy-refused {\n  margin: 8px 0 0;\n  color: #fca5a5;\n}\n\n/* src/content/styles/25-collection.css */\n.aqm-sort-progress.is-on {\n  border-color: #3b82f6;\n  background: rgba(59, 130, 246, 0.2);\n  color: #fff;\n}\n[data-aqm-owned-card],\n[data-aqm-locked-card] {\n  display: none !important;\n}\n[data-aqm-sale=on] {\n  display: inline-block !important;\n  margin-right: 8px !important;\n  vertical-align: middle;\n}\n.aqm-sale {\n  display: inline-block;\n  flex: none;\n  padding: 1px 7px;\n  border: 1px solid rgba(59, 130, 246, 0.6);\n  border-radius: 999px;\n  background: rgba(37, 99, 235, 0.22);\n  color: #93c5fd;\n  font-size: 9px;\n  font-weight: 800;\n  letter-spacing: 0.06em;\n  line-height: 1.6;\n  white-space: nowrap;\n  text-transform: uppercase;\n  vertical-align: middle;\n  pointer-events: none;\n}\n[data-aqm-pill-off] {\n  opacity: 0 !important;\n}\n[data-aqm-unpicked] {\n  background: transparent !important;\n  box-shadow: none !important;\n  color: var(--aqm-plain-color) !important;\n}\n.aqm-missing-tab.is-on {\n  border-radius: var(--aqm-pill-radius);\n  background: var(--aqm-pill-bg) !important;\n  box-shadow: var(--aqm-pill-shadow);\n  color: var(--aqm-picked-color) !important;\n}\n.aqm-recycle-bar {\n  display: flex;\n  justify-content: flex-end;\n  margin: 0 0 8px;\n}\n.aqm-recycle-spares.is-confirm {\n  background: #f59e0b !important;\n  color: #111 !important;\n}\n.aqm-recycle-note {\n  align-self: center;\n  color: #86efac;\n  font-size: 13px;\n  font-weight: 700;\n  white-space: nowrap;\n}\n.aqm-recycle-spares:disabled {\n  opacity: 0.75;\n  cursor: default;\n}\n\n/* src/content/styles/26-players.css */\n.aqm-users-code {\n  display: flex;\n  gap: 8px;\n}\n.aqm-users-stats {\n  margin-top: 4px;\n}\n.aqm-users {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-user {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-user .aqm-user-revoke {\n  flex: none;\n  padding: 6px 12px;\n  font-size: 12px;\n}\n.aqm-tag.aqm-revoked {\n  background: rgba(239, 68, 68, 0.18);\n  color: #fca5a5;\n}\n.aqm-user .aqm-avatar {\n  width: 32px;\n  height: 32px;\n}\n.aqm-user .aqm-name {\n  flex: 1;\n  font-size: 13px;\n}\n.aqm-kind-userscript {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-user-kinds {\n  display: flex;\n  flex-wrap: wrap;\n  justify-content: flex-end;\n  gap: 6px;\n}\n.aqm-online {\n  background: rgba(37, 99, 235, 0.2);\n  color: #93c5fd;\n}\n.aqm-user-seen {\n  min-width: 90px;\n  text-align: right;\n  color: var(--aqm-muted);\n}\n.aqm-device-wait {\n  margin-top: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: rgba(37, 99, 235, 0.12);\n  border: 1px solid rgba(96, 165, 250, 0.3);\n}\n.aqm-device-wait p {\n  margin: 0;\n}\n.aqm-device-wait p + p {\n  margin-top: 6px;\n}\n.aqm-device-wait strong,\n.aqm-device-code {\n  font:\n    800 15px ui-monospace,\n    "Cascadia Mono",\n    Consolas,\n    monospace;\n  letter-spacing: 0.08em;\n  color: #fff;\n}\n.aqm-update {\n  top: 16px;\n  bottom: auto;\n}\n@media (max-width: 640px) {\n  .aqm-update {\n    top: 8px;\n    bottom: auto;\n  }\n}\n\n/* src/content/styles/27-market.css */\n.aqm-unlist {\n  margin-left: 8px;\n}\n.aqm-panel.is-ask {\n  max-width: 520px;\n}\n.aqm-ask-text {\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 14px;\n  line-height: 1.5;\n}\n.aqm-ask-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 18px;\n}\n.aqm-ask-actions .aqm-queue-btn {\n  height: 36px;\n  padding: 0 18px;\n  font-weight: 700;\n}\n[data-aqm-bought] {\n  display: none !important;\n}\n.aqm-market-fav.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n[data-aqm-unfav] {\n  display: none !important;\n}\n.aqm-trade-filter.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-trade-filter.is-on.is-off {\n  opacity: 0.55;\n}\n[data-aqm-tradehide] {\n  display: none !important;\n}\n.aqm-auctions-head {\n  margin-top: 18px;\n}\n.aqm-auction-cell {\n  display: inline-flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n}\n.aqm-owner a.aqm-buy {\n  display: inline-flex;\n  align-items: center;\n  overflow: visible;\n  color: #fff;\n  font-weight: 800;\n  text-decoration: none;\n}\n\n/* src/content/styles/28-progress.css */\n[data-aqm-stats-title] {\n  position: relative;\n}\n.aqm-stats-open {\n  position: absolute !important;\n  top: 50% !important;\n  left: 100% !important;\n  margin: 0 0 0 20px !important;\n  transform: translateY(-50%) !important;\n  white-space: nowrap;\n  text-shadow: none;\n  background-clip: border-box;\n  -webkit-background-clip: border-box;\n}\n.aqm-stats-open.is-below {\n  position: static !important;\n  display: flex;\n  width: fit-content;\n  margin: 12px 0 0 !important;\n  transform: none !important;\n}\n.aqm-stats-open.is-in-row {\n  position: static !important;\n  margin: 0 !important;\n  transform: none !important;\n}\n.aqm-stats-open.is-early {\n  position: absolute !important;\n  top: var(--aqm-y) !important;\n  left: var(--aqm-x) !important;\n  margin: 0 !important;\n  z-index: 5;\n}\n.aqm-stats-open.is-early.is-below {\n  transform: none !important;\n  width: fit-content;\n}\n.aqm-stats-ico {\n  flex-shrink: 0;\n  width: 16px;\n  height: 16px;\n}\n.aqm-progress {\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n}\n.aqm-progress-hero {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  padding: 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-progress-pct {\n  font-size: 40px;\n  font-weight: 900;\n  line-height: 1.1;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-bar.aqm-bar-big {\n  height: 8px;\n  margin-top: 8px;\n}\n.aqm-progress-tiles {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));\n  gap: 10px;\n}\n.aqm-progress-tile {\n  padding: 12px 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-progress-tile .aqm-label {\n  margin: 0 0 4px;\n}\n.aqm-progress-tile strong {\n  display: block;\n  font-size: 24px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-progress-tile small {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-progress-h {\n  margin: 6px 0 0;\n  font-size: 14px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-progress-rarities {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-progress-rarity {\n  display: grid;\n  grid-template-columns: 130px 1fr auto;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 12px;\n  border-radius: 10px;\n  background: var(--aqm-card);\n}\n.aqm-progress-rname {\n  display: flex;\n  align-items: baseline;\n  gap: 8px;\n}\n.aqm-progress-rname small,\n.aqm-progress-rbar small,\n.aqm-progress-copies {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-progress-rbar p {\n  margin: 0;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-progress-rbar strong {\n  color: #fff;\n  font-weight: 900;\n}\n.aqm-progress-copies {\n  min-width: 64px;\n  text-align: right;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-bar-N > span {\n  background: #d4d4d8;\n}\n.aqm-bar-R > span {\n  background: #60a5fa;\n}\n.aqm-bar-SR > span {\n  background: #a78bfa;\n}\n.aqm-bar-SSR > span {\n  background: #facc15;\n}\n.aqm-bar-UR > span {\n  background: #f472b6;\n}\n.aqm-bar-SEC > span {\n  background:\n    linear-gradient(\n      90deg,\n      #c4b5fd,\n      #e2e8f0);\n}\n.aqm-days {\n  display: grid;\n  grid-template-columns: repeat(14, 1fr);\n  gap: 2px;\n  height: 150px;\n  padding: 12px 8px 8px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-day {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  min-width: 0;\n  border-radius: 6px;\n  outline: none;\n}\n.aqm-day:hover,\n.aqm-day:focus-visible {\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-day-val {\n  height: 16px;\n  font-size: 10px;\n  font-weight: 800;\n  color: #e4e4e7;\n  font-variant-numeric: tabular-nums;\n  white-space: nowrap;\n}\n.aqm-day-col {\n  display: flex;\n  align-items: flex-end;\n  justify-content: center;\n  flex: 1;\n  width: 100%;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.12);\n}\n.aqm-day-fill {\n  display: block;\n  width: min(18px, 70%);\n  border-radius: 4px 4px 0 0;\n  background: #3b82f6;\n}\n.aqm-day.is-today .aqm-day-fill {\n  background: #60a5fa;\n}\n.aqm-day.is-empty .aqm-day-col {\n  border-bottom-style: dashed;\n}\n.aqm-day-name {\n  margin-top: 4px;\n  font-size: 10px;\n  color: var(--aqm-dim);\n}\n.aqm-day.is-today .aqm-day-name {\n  color: #fff;\n  font-weight: 800;\n}\n@media (max-width: 640px) {\n  .aqm-progress-pct {\n    font-size: 32px;\n  }\n  .aqm-progress-rarity {\n    grid-template-columns: 1fr auto;\n  }\n  .aqm-progress-rbar {\n    grid-column: 1 / -1;\n    grid-row: 2;\n  }\n  .aqm-days {\n    height: 130px;\n    padding: 10px 4px 6px;\n  }\n  .aqm-day-val {\n    font-size: 9px;\n  }\n}\n.aqm-board-refresh {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px 12px;\n  margin: -4px 0 10px;\n  font-size: 12px;\n}\n.aqm-board-refresh:empty {\n  display: none;\n}\n.aqm-board-refresh .aqm-chip:disabled {\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* contenu.css */\n';
+    style.textContent = '/* src/content/styles/01-base.css */\n.aqm-root {\n  --aqm-bg: #0b0b0d;\n  --aqm-panel: #121214;\n  --aqm-card: #18181b;\n  --aqm-line: rgba(255, 255, 255, 0.07);\n  --aqm-text: #f4f4f5;\n  --aqm-muted: #a1a1aa;\n  --aqm-dim: #71717a;\n  --aqm-accent: #60a5fa;\n  --aqm-yes: #22c55e;\n  --aqm-no: #ef4444;\n  box-sizing: border-box;\n}\n.aqm-root *,\n.aqm-root *::before,\n.aqm-root *::after {\n  box-sizing: border-box;\n}\n\n/* src/content/styles/02-plus-menu.css */\n.aqm-plus {\n  cursor: pointer;\n  background: none;\n  border: 0;\n}\n.aqm-plus[aria-expanded=true] {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-nav-ico,\n.aqm-nav-ico svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-menu {\n  position: fixed;\n  z-index: 2147483000;\n  width: 290px;\n  padding: 6px;\n  border-radius: 18px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);\n  animation: aqm-pop 0.14s ease-out;\n}\n.aqm-menu-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  width: 100%;\n  padding: 10px 12px;\n  border: 0;\n  border-radius: 12px;\n  background: none;\n  color: var(--aqm-text);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-menu-item:hover,\n.aqm-menu-item:focus-visible {\n  background: rgba(255, 255, 255, 0.06);\n  outline: none;\n}\n.aqm-menu-item strong {\n  display: block;\n  font-size: 14px;\n  font-weight: 800;\n}\n.aqm-menu-item small {\n  display: block;\n  margin-top: 2px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-menu-ico {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  background: rgba(96, 165, 250, 0.12);\n  color: var(--aqm-accent);\n}\n.aqm-menu-ico svg {\n  width: 18px;\n  height: 18px;\n}\n@keyframes aqm-pop {\n  from {\n    opacity: 0;\n    transform: translateY(-4px) scale(0.98);\n  }\n}\n\n/* src/content/styles/03-window.css */\nhtml.aqm-lock {\n  overflow: hidden;\n}\n.aqm-overlay {\n  position: fixed;\n  inset: 0;\n  z-index: 2147482000;\n  display: flex;\n  align-items: flex-start;\n  justify-content: center;\n  padding: 48px 16px;\n  overflow-y: auto;\n  background: rgba(0, 0, 0, 0.72);\n  backdrop-filter: blur(6px);\n  color: var(--aqm-text);\n  animation: aqm-fade 0.16s ease-out;\n}\n@keyframes aqm-fade {\n  from {\n    opacity: 0;\n  }\n}\n.aqm-panel {\n  width: 100%;\n  max-width: 860px;\n  border-radius: 28px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);\n  overflow: hidden;\n}\n.aqm-head {\n  display: flex;\n  align-items: flex-start;\n  justify-content: space-between;\n  gap: 16px;\n  padding: 26px 28px 8px;\n}\n.aqm-title {\n  margin: 0;\n  font-size: 22px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  letter-spacing: -0.01em;\n  color: #fff;\n}\n.aqm-sub {\n  margin: 6px 0 0;\n  font-size: 14px;\n  color: var(--aqm-muted);\n}\n.aqm-close {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-close:hover {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.12);\n}\n.aqm-close svg {\n  width: 18px;\n  height: 18px;\n}\n.aqm-body {\n  padding: 12px 28px 28px;\n}\n.aqm-note {\n  margin: 14px 0 0;\n  font-size: 12px;\n  line-height: 1.5;\n  color: var(--aqm-dim);\n}\n.aqm-muted {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-label {\n  margin: 0 0 8px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  text-transform: uppercase;\n  color: var(--aqm-accent);\n}\n.aqm-empty {\n  padding: 28px;\n  text-align: center;\n  color: var(--aqm-muted);\n  list-style: none;\n}\n.aqm-chips {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 8px;\n}\n.aqm-chip {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: var(--aqm-muted);\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  cursor: pointer;\n}\n.aqm-chip:hover {\n  color: #fff;\n}\n.aqm-chip.is-on {\n  border-color: rgba(96, 165, 250, 0.4);\n  background: rgba(37, 99, 235, 0.22);\n  color: #fff;\n}\n.aqm-place {\n  display: grid;\n  place-items: center;\n  width: 30px;\n  height: 30px;\n  flex-shrink: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  font-size: 13px;\n  font-weight: 900;\n  color: var(--aqm-muted);\n}\n.aqm-place-1 {\n  background:\n    linear-gradient(\n      135deg,\n      #fde68a,\n      #f59e0b);\n  color: #422006;\n}\n.aqm-place-2 {\n  background:\n    linear-gradient(\n      135deg,\n      #f4f4f5,\n      #a1a1aa);\n  color: #18181b;\n}\n.aqm-place-3 {\n  background:\n    linear-gradient(\n      135deg,\n      #fdba74,\n      #c2410c);\n  color: #fff7ed;\n}\n\n/* src/content/styles/04-leaderboard.css */\n.aqm-board {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 16px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-row {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  padding: 12px 16px;\n  border-radius: 18px;\n  background: var(--aqm-card);\n  border: 1px solid transparent;\n}\n.aqm-row.is-me {\n  border-color: rgba(96, 165, 250, 0.35);\n  background:\n    linear-gradient(\n      90deg,\n      rgba(37, 99, 235, 0.14),\n      var(--aqm-card) 60%);\n}\n.aqm-avatar {\n  width: 40px;\n  height: 40px;\n  flex-shrink: 0;\n  border-radius: 12px;\n  object-fit: cover;\n  background: #27272a;\n}\n.aqm-name {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  flex: 1;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  font-size: 14px;\n  font-weight: 800;\n  color: #fff;\n  text-decoration: none;\n}\n.aqm-name:hover {\n  text-decoration: underline;\n}\n.aqm-tag {\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: rgba(96, 165, 250, 0.18);\n  color: #bfdbfe;\n  font-size: 10px;\n  font-weight: 900;\n  text-transform: uppercase;\n}\n.aqm-stats {\n  display: flex;\n  align-items: center;\n  gap: 20px;\n  flex-shrink: 0;\n}\n.aqm-stat {\n  min-width: 170px;\n  opacity: 0.6;\n}\n.aqm-stat.is-on {\n  opacity: 1;\n}\n.aqm-stat strong {\n  font-size: 18px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-stat small {\n  margin-left: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-bar {\n  display: block;\n  height: 4px;\n  margin-top: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n  overflow: hidden;\n}\n.aqm-bar > span {\n  display: block;\n  height: 100%;\n  border-radius: inherit;\n  background:\n    linear-gradient(\n      90deg,\n      #3b82f6,\n      #60a5fa);\n}\n.aqm-board-scope {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 12px;\n  margin: 40px auto 0;\n}\n.aqm-board-sort {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: center;\n  gap: 8px;\n  font-size: 12px;\n}\n.aqm-board-sort .aqm-chips {\n  flex-wrap: wrap;\n  justify-content: center;\n}\n.aqm-friends-board {\n  margin: 32px auto 0;\n}\n.aqm-board-game {\n  margin-top: 16px;\n  padding: 0;\n  list-style: none;\n}\n.aqm-friends-board[hidden],\n.aqm-friends-status[hidden],\n[data-aqm-board-off] {\n  display: none !important;\n}\n.aqm-friends-note {\n  margin: 0;\n  text-align: center;\n  font-size: 13px;\n}\n.aqm-friend-main {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n  flex: 1;\n}\n.aqm-friend-main .aqm-name {\n  flex: none;\n}\n.aqm-friend-main small {\n  font-size: 11px;\n}\n.aqm-friend-score {\n  flex-shrink: 0;\n  text-align: right;\n  white-space: nowrap;\n}\n.aqm-friend-score strong {\n  font-size: 18px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-friend-score small {\n  margin-left: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-friends-board .aqm-board-refresh {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 12px;\n  font-size: 12px;\n}\n@media (max-width: 640px) {\n  .aqm-friends-board .aqm-row {\n    gap: 10px;\n    padding: 10px 12px;\n  }\n  .aqm-friend-score strong {\n    font-size: 15px;\n  }\n}\n\n/* src/content/styles/05-boosters.css */\n.aqm-search {\n  flex: 1 1 260px;\n  height: 44px;\n  padding: 0 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: #fff;\n  font: inherit;\n  font-size: 14px;\n  outline: none;\n}\n.aqm-search:focus {\n  border-color: rgba(96, 165, 250, 0.5);\n}\n.aqm-search::placeholder {\n  color: var(--aqm-dim);\n}\n.aqm-pack {\n  width: 64px;\n  height: 92px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  object-fit: cover;\n}\n.aqm-pack-plain {\n  display: grid;\n  place-items: center;\n  background:\n    linear-gradient(\n      160deg,\n      #1e3a8a,\n      #0ea5e9 55%,\n      #e0f2fe);\n  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);\n}\n.aqm-pack-plain span {\n  font-size: 11px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);\n}\n.aqm-perles {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-pearl {\n  display: inline-block;\n  width: 10px;\n  height: 10px;\n  border-radius: 999px;\n  background:\n    radial-gradient(\n      circle at 35% 30%,\n      #fff,\n      #bfdbfe 45%,\n      #60a5fa);\n  box-shadow: 0 0 6px rgba(147, 197, 253, 0.6);\n}\n.aqm-strip {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-mini {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 6px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-mini img {\n  width: 34px;\n  height: 48px;\n  flex-shrink: 0;\n  border-radius: 5px;\n  object-fit: cover;\n}\n.aqm-mini > div {\n  min-width: 0;\n}\n.aqm-mini.is-owned img {\n  box-shadow: 0 0 0 2px var(--aqm-yes);\n}\n.aqm-mini-name {\n  margin: 0;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  font-size: 12px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rarity {\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-r-N {\n  color: #e4e4e7;\n}\n.aqm-r-R {\n  color: #60a5fa;\n}\n.aqm-r-SR {\n  color: #c4b5fd;\n}\n.aqm-r-SSR {\n  color: #fde047;\n}\n.aqm-r-UR {\n  color: #f9a8d4;\n}\n.aqm-r-SEC {\n  color: #e2e8f0;\n  text-shadow: 0 0 6px rgba(196, 181, 253, 0.8);\n}\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 16px 8px;\n  }\n  .aqm-head,\n  .aqm-body {\n    padding-left: 16px;\n    padding-right: 16px;\n  }\n  .aqm-row {\n    flex-wrap: wrap;\n  }\n  .aqm-stats {\n    width: 100%;\n    padding-left: 44px;\n  }\n  .aqm-stat {\n    min-width: 0;\n  }\n  .aqm-pack {\n    width: 48px;\n    height: 69px;\n  }\n}\n\n/* src/content/styles/06-card-trades-pulls.css */\n.aqm-card-who {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  cursor: pointer;\n}\n.aqm-card-who-icon,\n.aqm-card-who-icon svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-card-who-row {\n  margin-top: 12px;\n}\n.aqm-dot {\n  position: absolute;\n  top: 3px;\n  right: 3px;\n  z-index: 5;\n  min-width: 11px;\n  height: 11px;\n  border-radius: 999px;\n  border: 2px solid rgba(0, 0, 0, 0.85);\n  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);\n  pointer-events: auto;\n}\n.aqm-dot.is-yes {\n  background: var(--aqm-yes);\n}\n.aqm-dot.is-no {\n  background: var(--aqm-no);\n}\n.aqm-dot.has-count {\n  height: 13px;\n  padding: 0 3px;\n  font: 800 8px/9px system-ui, sans-serif;\n  color: #052e16;\n  text-align: center;\n}\n.aqm-pull-thumb {\n  zoom: 1.7;\n}\n\n/* src/content/styles/07-showcase.css */\n.aqm-hidden {\n  display: none !important;\n}\n.aqm-slot {\n  position: relative;\n  cursor: grab;\n  transition: transform 0.15s, opacity 0.15s;\n}\n.aqm-slot:active {\n  cursor: grabbing;\n}\n.aqm-slot.aqm-dragging {\n  opacity: 0.4;\n}\n.aqm-slot.aqm-over {\n  transform: translateY(-4px);\n  outline: 2px dashed #60a5fa;\n  outline-offset: 3px;\n  border-radius: 10px;\n}\n.aqm-moving .aqm-slot {\n  pointer-events: none;\n}\n.aqm-slot-x {\n  position: absolute;\n  top: 4px;\n  right: 4px;\n  z-index: 6;\n  display: grid;\n  place-items: center;\n  width: 22px;\n  height: 22px;\n  padding: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(127, 29, 29, 0.9);\n  color: #fecaca;\n  cursor: pointer;\n  opacity: 0;\n  transition: opacity 0.15s;\n}\n.aqm-slot-x svg {\n  width: 12px;\n  height: 12px;\n}\n.aqm-slot:hover .aqm-slot-x,\n.aqm-slot-x:focus-visible {\n  opacity: 1;\n}\n@media (hover: none) {\n  .aqm-slot-x {\n    opacity: 1;\n  }\n}\n.aqm-slot {\n  user-select: none;\n  -webkit-user-select: none;\n  -webkit-touch-callout: none;\n}\n.aqm-ghost {\n  position: fixed;\n  top: 0;\n  left: 0;\n  z-index: 2147483200;\n  margin: 0;\n  pointer-events: none;\n  opacity: 0.92;\n  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.6));\n  will-change: transform;\n}\n.aqm-ghost .aqm-slot-x {\n  display: none;\n}\n[data-aqm-lite] > * {\n  content-visibility: auto;\n  contain-intrinsic-size: auto var(--aqm-cell-w, 120px) auto var(--aqm-cell-h, 200px);\n}\n\n/* src/content/styles/08-update.css */\n.aqm-update .aqm-queue-head strong {\n  color: #93c5fd;\n}\n.aqm-update-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-update-actions .aqm-queue-btn {\n  display: inline-flex;\n  align-items: center;\n  text-decoration: none;\n}\n.aqm-update-actions .is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-update-steps {\n  display: grid;\n  gap: 6px;\n  margin: 8px 0 0;\n  padding-left: 20px;\n  font-size: 13px;\n  line-height: 1.45;\n}\n.aqm-update .aqm-muted {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n\n/* src/content/styles/09-tour.css */\n.aqm-tour {\n  position: fixed;\n  inset: 0;\n  z-index: 2147483100;\n  color: var(--aqm-text);\n}\n.aqm-tour-block {\n  position: absolute;\n  inset: 0;\n}\n.aqm-tour-hole {\n  position: fixed;\n  border-radius: 16px;\n  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.9), 0 0 0 9999px rgba(0, 0, 0, 0.66);\n  pointer-events: none;\n  transition: all 0.25s ease;\n}\n.aqm-tour.is-dim .aqm-tour-block {\n  background: rgba(0, 0, 0, 0.66);\n}\n.aqm-tour-card {\n  position: fixed;\n  top: 0;\n  left: 0;\n  width: min(360px, calc(100vw - 24px));\n  padding: 18px 20px 16px;\n  border-radius: 20px;\n  background: var(--aqm-panel);\n  border: 1px solid rgba(96, 165, 250, 0.25);\n  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);\n  transition: transform 0.25s ease;\n}\n.aqm-tour-count {\n  margin: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  color: var(--aqm-accent);\n}\n.aqm-tour-title {\n  margin: 6px 0 0;\n  font-size: 18px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n}\n.aqm-tour-text {\n  margin: 8px 0 0;\n  font-size: 14px;\n  line-height: 1.5;\n  color: #d4d4d8;\n}\n.aqm-tour-actions {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin-top: 16px;\n}\n.aqm-tour-gap {\n  flex: 1;\n}\n.aqm-tour-skip,\n.aqm-tour-btn {\n  height: 36px;\n  padding: 0 14px;\n  border: 0;\n  border-radius: 999px;\n  font: inherit;\n  font-size: 13px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-tour-skip {\n  padding: 0 4px;\n  background: none;\n  color: var(--aqm-dim);\n}\n.aqm-tour-skip:hover {\n  color: #fff;\n}\n.aqm-tour-btn {\n  background: rgba(255, 255, 255, 0.08);\n  color: #fff;\n}\n.aqm-tour-btn.is-main {\n  background: #2563eb;\n}\n.aqm-tour-btn:hover {\n  filter: brightness(1.15);\n}\n\n/* src/content/styles/10-phone.css */\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 0;\n  }\n  .aqm-panel {\n    min-height: 100%;\n    border-radius: 0;\n    border: 0;\n  }\n  .aqm-head {\n    position: sticky;\n    top: 0;\n    z-index: 2;\n    padding-top: 18px;\n    background: var(--aqm-panel);\n  }\n  .aqm-title {\n    font-size: 19px;\n  }\n  .aqm-menu {\n    width: min(290px, calc(100vw - 16px));\n  }\n  .aqm-strip {\n    grid-template-columns: 1fr;\n  }\n  .aqm-pull-thumb {\n    zoom: 1.4;\n  }\n  .aqm-tour-actions {\n    flex-wrap: wrap;\n  }\n}\n\n/* src/content/styles/11-news.css */\n.aqm-news-version {\n  margin-top: 18px;\n}\n.aqm-news {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-news li {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n}\n.aqm-news .aqm-chip {\n  flex-shrink: 0;\n}\n.aqm-news-foot {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 20px;\n}\n@media (max-width: 640px) {\n  .aqm-news li {\n    flex-direction: column;\n    align-items: flex-start;\n  }\n}\n\n/* src/content/styles/12-boosters-filters.css */\n.aqm-filter-name {\n  width: 86px;\n  flex-shrink: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.1em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-chip-r {\n  font-style: italic;\n  font-weight: 900;\n}\n.aqm-chip-r.is-on {\n  border-color: currentColor;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-how {\n  margin-top: 16px;\n  padding: 12px 16px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n  color: #d4d4d8;\n}\n.aqm-how summary {\n  cursor: pointer;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-how ul {\n  margin: 10px 0 0;\n  padding-left: 18px;\n  line-height: 1.55;\n}\n.aqm-how li + li {\n  margin-top: 4px;\n}\n\n/* src/content/styles/13-strips.css */\n.aqm-grab {\n  cursor: grab;\n}\nhtml.aqm-grabbing,\nhtml.aqm-grabbing * {\n  cursor: grabbing !important;\n  user-select: none !important;\n  -webkit-user-select: none !important;\n}\n\n/* src/content/styles/14-pity.css */\n.aqm-pity {\n  width: min(460px, 100%);\n  margin: 14px auto 0;\n  padding: 12px 16px;\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid var(--aqm-line);\n  text-align: left;\n  color: var(--aqm-text);\n}\n.aqm-pity .aqm-label {\n  margin-bottom: 8px;\n  text-align: center;\n}\n.aqm-pity-lines {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: 14px;\n}\n.aqm-pity-line p {\n  margin: 0;\n  font-size: 13px;\n  font-weight: 700;\n  color: #e4e4e7;\n}\n.aqm-pity-line strong {\n  color: #fff;\n  font-weight: 900;\n}\n.aqm-pity-line .aqm-bar {\n  margin-top: 6px;\n}\n.aqm-pity-line small {\n  display: block;\n  margin-top: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n  font-variant-numeric: tabular-nums;\n}\n.aqm-pity-line:has(.aqm-r-UR) .aqm-bar > span {\n  background:\n    linear-gradient(\n      90deg,\n      #38bdf8,\n      #f472b6,\n      #facc15);\n}\n.aqm-pity-line:has(.aqm-r-SSR) .aqm-bar > span {\n  background:\n    linear-gradient(\n      90deg,\n      #eab308,\n      #fde047);\n}\n.aqm-pity-line.is-sec {\n  grid-column: 1 / -1;\n  padding-top: 10px;\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-pity-note {\n  margin: 10px 0 0;\n  font-size: 11px;\n  text-align: center;\n  color: var(--aqm-dim);\n}\n.aqm-pity-more {\n  display: flex;\n  justify-content: center;\n  margin-top: 10px;\n}\n.aqm-history {\n  display: grid;\n  gap: 14px;\n}\n.aqm-history-count {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-rates {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 10px;\n}\n.aqm-rate {\n  --aqm-rate:\n    148,\n    163,\n    184;\n  position: relative;\n  padding: 14px 16px;\n  border: 1px solid rgba(var(--aqm-rate), 0.22);\n  border-radius: 18px;\n  background:\n    radial-gradient(\n      120% 90% at 0% 0%,\n      rgba(var(--aqm-rate), 0.14),\n      transparent 60%),\n    var(--aqm-card);\n  overflow: hidden;\n}\n.aqm-rate.is-SSR {\n  --aqm-rate:\n    253,\n    224,\n    71;\n}\n.aqm-rate.is-UR {\n  --aqm-rate:\n    244,\n    114,\n    182;\n}\n.aqm-rate.is-SEC {\n  --aqm-rate:\n    196,\n    181,\n    253;\n}\n.aqm-rate-top {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  font-size: 15px;\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-rate-value {\n  margin: 10px 0 0;\n  font-size: 26px;\n  font-weight: 900;\n  line-height: 1;\n}\n.aqm-rate-value small {\n  font-size: 13px;\n  font-weight: 700;\n  color: var(--aqm-dim);\n}\n.aqm-rate-sub {\n  margin: 4px 0 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-rate-foot {\n  margin: 12px 0 0;\n  padding-top: 10px;\n  border-top: 1px solid var(--aqm-line);\n  font-size: 11px;\n  color: var(--aqm-dim);\n}\n.aqm-luck {\n  font-size: 10px;\n  font-style: normal;\n}\n.aqm-luck.is-good {\n  background: rgba(34, 197, 94, 0.18);\n  color: #86efac;\n}\n.aqm-luck.is-bad {\n  background: rgba(239, 68, 68, 0.18);\n  color: #fca5a5;\n}\n.aqm-history-box {\n  padding: 14px 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.02);\n}\n.aqm-history-row {\n  display: flex;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 8px;\n  margin-bottom: 10px;\n}\n.aqm-history-row .aqm-label {\n  margin: 0;\n}\n.aqm-tracker-strip {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(8px, 1fr));\n  gap: 3px;\n}\n.aqm-cell {\n  display: inline-block;\n  height: 16px;\n  min-width: 8px;\n  border-radius: 3px;\n  background: rgba(255, 255, 255, 0.07);\n  vertical-align: middle;\n}\n.aqm-cell.is-SSR {\n  background: #fde047;\n  box-shadow: 0 0 8px rgba(253, 224, 71, 0.45);\n}\n.aqm-cell.is-UR {\n  background: #f472b6;\n  box-shadow: 0 0 8px rgba(244, 114, 182, 0.55);\n}\n.aqm-cell.is-SEC {\n  background:\n    linear-gradient(\n      180deg,\n      #c4b5fd,\n      #67e8f9);\n  box-shadow: 0 0 10px rgba(196, 181, 253, 0.9);\n}\n.aqm-tracker-legend {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 14px;\n  margin: 10px 0 0;\n  font-size: 11px;\n  color: var(--aqm-dim);\n}\n.aqm-tracker-legend > span {\n  display: inline-flex;\n  align-items: center;\n  gap: 6px;\n}\n.aqm-tracker-legend .aqm-cell {\n  width: 8px;\n  height: 12px;\n}\n.aqm-history-tabs {\n  display: flex;\n  gap: 4px;\n  width: fit-content;\n  padding: 4px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.35);\n}\n.aqm-history-tabbtn {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  padding: 7px 16px;\n  border: 0;\n  border-radius: 999px;\n  background: transparent;\n  color: var(--aqm-dim);\n  font: inherit;\n  font-size: 13px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-history-tabbtn.is-on {\n  background: rgba(255, 255, 255, 0.1);\n  color: var(--aqm-text);\n}\n.aqm-history-tabcount {\n  min-width: 20px;\n  padding: 1px 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n  font-size: 11px;\n  text-align: center;\n}\n.aqm-history-stats {\n  display: grid;\n  grid-template-columns: repeat(5, minmax(0, 1fr));\n  gap: 8px;\n  margin: 14px 0;\n}\n.aqm-history-stat {\n  padding: 8px 10px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-history-stat small {\n  display: block;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-history-stat strong {\n  display: block;\n  margin-top: 3px;\n  font-size: 14px;\n}\n.aqm-history-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));\n  gap: 12px;\n  max-height: 440px;\n  padding: 2px 6px 2px 2px;\n  overflow-y: auto;\n}\n.aqm-history-tile {\n  display: block;\n  color: inherit;\n  text-decoration: none;\n}\n.aqm-history-tile > img,\n.aqm-history-blank {\n  display: block;\n  width: 100%;\n  aspect-ratio: 5 / 7;\n  border-radius: 10px;\n  object-fit: cover;\n}\n.aqm-history-tile:hover > img {\n  filter: brightness(1.12);\n}\n.aqm-history-blank {\n  display: grid;\n  place-items: center;\n  background: rgba(255, 255, 255, 0.05);\n  font-size: 22px;\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-history-after {\n  margin: 6px 0 0;\n  font-size: 13px;\n  font-weight: 900;\n  text-align: center;\n}\n.aqm-history-pack {\n  margin: 2px 0 0;\n  overflow: hidden;\n  font-size: 11px;\n  font-weight: 700;\n  text-align: center;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  color: var(--aqm-dim);\n}\n.aqm-history-pack.is-unknown {\n  opacity: 0.6;\n}\n.aqm-history-packs {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  margin-bottom: 10px;\n}\n.aqm-history-packbtn {\n  display: inline-flex;\n  align-items: center;\n  gap: 6px;\n  padding: 5px 12px;\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 999px;\n  background: transparent;\n  color: var(--aqm-dim);\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-history-packbtn.is-on {\n  border-color: transparent;\n  background: rgba(255, 255, 255, 0.1);\n  color: var(--aqm-text);\n}\n.aqm-history-empty {\n  margin: 14px 0 0;\n  font-size: 13px;\n  color: var(--aqm-dim);\n}\n@media (max-width: 640px) {\n  .aqm-rates {\n    grid-template-columns: 1fr;\n  }\n  .aqm-history-stats {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n  .aqm-history-grid {\n    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));\n  }\n}\n.aqm-root,\n.aqm-root * {\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;\n}\n.aqm-root::-webkit-scrollbar,\n.aqm-root *::-webkit-scrollbar {\n  width: 8px;\n  height: 8px;\n}\n.aqm-root::-webkit-scrollbar-track,\n.aqm-root *::-webkit-scrollbar-track {\n  background: transparent;\n}\n.aqm-root::-webkit-scrollbar-thumb,\n.aqm-root *::-webkit-scrollbar-thumb {\n  border: 2px solid transparent;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.18) padding-box;\n}\n.aqm-root::-webkit-scrollbar-thumb:hover,\n.aqm-root *::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.32) padding-box;\n}\n.aqm-root::-webkit-scrollbar-button,\n.aqm-root *::-webkit-scrollbar-button {\n  display: none;\n}\n@media (max-width: 640px) {\n  .aqm-pity-lines {\n    grid-template-columns: 1fr;\n    gap: 10px;\n  }\n}\n\n/* src/content/styles/15-booster-choice.css */\n.aqm-panel.aqm-panel-wide {\n  max-width: 1040px;\n}\n.aqm-goals {\n  margin-top: 4px;\n}\n.aqm-goal {\n  height: 38px;\n  padding: 0 16px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-chip.aqm-goal.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-pick {\n  margin-top: 10px;\n}\n.aqm-pick:empty {\n  display: none;\n}\n.aqm-pick .aqm-chip {\n  height: 36px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-pick .aqm-search {\n  width: min(520px, 100%);\n}\n.aqm-open-count {\n  margin-left: 2px;\n  padding: 1px 7px;\n  border-radius: 999px;\n  background: rgba(96, 165, 250, 0.25);\n  font-variant-numeric: tabular-nums;\n}\n.aqm-open-note {\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 6px;\n  font-size: 12px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  color: rgba(255, 255, 255, 0.6);\n}\n.aqm-suggest-box {\n  position: relative;\n  width: min(520px, 100%);\n}\n.aqm-suggest-box .aqm-search {\n  width: 100%;\n}\n.aqm-suggest {\n  position: absolute;\n  z-index: 5;\n  top: calc(100% + 6px);\n  left: 0;\n  right: 0;\n  max-height: 360px;\n  margin: 0;\n  padding: 6px;\n  overflow-y: auto;\n  list-style: none;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);\n}\n.aqm-suggest[hidden] {\n  display: none;\n}\n.aqm-suggest-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 6px 10px 6px 6px;\n  border-radius: 10px;\n  cursor: pointer;\n}\n.aqm-suggest-item:hover,\n.aqm-suggest-item[aria-selected=true] {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-suggest-item > img,\n.aqm-suggest-blank {\n  flex-shrink: 0;\n  width: 34px;\n  height: 48px;\n  border-radius: 5px;\n  object-fit: cover;\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-suggest-name {\n  flex: 1;\n  min-width: 0;\n  overflow: hidden;\n  font-size: 14px;\n  font-weight: 700;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n.aqm-suggest-name small {\n  display: block;\n  font-size: 11px;\n  font-weight: 600;\n  color: var(--aqm-dim);\n}\n.aqm-suggest-rarities {\n  display: flex;\n  flex-shrink: 0;\n  gap: 4px;\n}\n.aqm-sentence {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 14px;\n  margin-top: 12px;\n}\n.aqm-sentence > p {\n  margin: 0;\n  font-size: 13px;\n  color: #93c5fd;\n}\n.aqm-new .aqm-chip {\n  height: 28px;\n  padding: 0 10px;\n  font-size: 11px;\n}\n.aqm-sorts {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 14px;\n}\n.aqm-sorts .aqm-filter-name {\n  width: auto;\n  margin-right: 4px;\n}\n.aqm-sort {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 2px;\n  min-width: 170px;\n  padding: 9px 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: rgba(255, 255, 255, 0.03);\n  color: #fff;\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-sort strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-sort small {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sort:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-sort.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-sort.is-on small {\n  color: #dbeafe;\n}\n.aqm-verdict {\n  margin-top: 16px;\n  padding: 14px 18px;\n  border: 1px solid rgba(34, 197, 94, 0.55);\n  border-radius: 16px;\n  background: rgba(34, 197, 94, 0.06);\n  font-size: 14px;\n  line-height: 1.6;\n  color: #e4e4e7;\n}\n.aqm-verdict p {\n  margin: 0;\n}\n.aqm-verdict strong {\n  color: #fff;\n}\n.aqm-ranking {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 14px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-rank {\n  display: grid;\n  grid-template-columns: 22px 44px minmax(0, 1fr) auto;\n  align-items: start;\n  gap: 4px 14px;\n  padding: 14px 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 16px;\n  background: var(--aqm-card);\n}\n.aqm-rank.is-best {\n  border-color: rgba(34, 197, 94, 0.6);\n}\n.aqm-rank-n {\n  padding-top: 14px;\n  font-size: 13px;\n  font-weight: 800;\n  color: var(--aqm-muted);\n}\n.aqm-rank .aqm-pack {\n  width: 44px;\n  height: 62px;\n  border-radius: 7px;\n}\n.aqm-rank .aqm-pack-plain span {\n  font-size: 7px;\n}\n.aqm-rank-main {\n  min-width: 0;\n}\n.aqm-rank-main > p {\n  margin: 0;\n}\n.aqm-rank-title {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  gap: 4px 10px;\n}\n.aqm-rank-title strong {\n  font-size: 16px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-price {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-badge {\n  padding: 2px 8px;\n  border-radius: 6px;\n  font-size: 10px;\n  font-weight: 900;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.aqm-badge.is-best {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-badge.is-cheap {\n  background: rgba(96, 165, 250, 0.16);\n  color: #bfdbfe;\n}\n.aqm-rank-head {\n  margin-top: 4px !important;\n  font-size: 14px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rank-sub {\n  margin-top: 2px !important;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-bar {\n  height: 5px;\n  margin-top: 10px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.07);\n  overflow: hidden;\n}\n.aqm-rank-bar > span {\n  display: block;\n  height: 100%;\n  border-radius: inherit;\n  background:\n    linear-gradient(\n      90deg,\n      #22c55e,\n      #eab308);\n}\n.aqm-rank-side {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  padding-top: 10px;\n  text-align: right;\n  white-space: nowrap;\n}\n.aqm-rank-side strong {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-side small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-ref {\n  margin-top: 10px;\n  font-size: 12px;\n  color: #93c5fd;\n}\n.aqm-rank-more {\n  margin-top: 8px;\n}\n.aqm-rank-more > summary {\n  width: fit-content;\n  font-size: 12px;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-rank-more > summary:hover {\n  color: #fff;\n}\n.aqm-rank-more[open] > summary {\n  margin-bottom: 8px;\n}\n.aqm-rank-more .aqm-label {\n  margin-top: 10px;\n}\n.aqm-rank-more .aqm-muted {\n  margin-top: 8px;\n}\n.aqm-odds-grid {\n  display: grid;\n  grid-template-columns: repeat(6, minmax(0, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-odds-grid li {\n  padding: 6px 8px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-odds-grid li > * {\n  display: block;\n}\n.aqm-odds-grid strong {\n  margin-top: 2px;\n  font-size: 13px;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-odds-grid small {\n  font-size: 10px;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-rank {\n    grid-template-columns: 36px minmax(0, 1fr);\n    padding: 12px;\n  }\n  .aqm-rank-n {\n    display: none;\n  }\n  .aqm-rank .aqm-pack {\n    width: 36px;\n    height: 51px;\n  }\n  .aqm-rank-side {\n    grid-column: 2;\n    flex-direction: row;\n    flex-wrap: wrap;\n    align-items: baseline;\n    gap: 2px 8px;\n    padding-top: 6px;\n  }\n  .aqm-rank-ref {\n    margin-top: 0;\n  }\n  .aqm-sort {\n    flex: 1 1 140px;\n    min-width: 0;\n  }\n  .aqm-odds-grid {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/16-settings.css */\n.aqm-settings-list {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n}\n.aqm-switch {\n  display: flex;\n  align-items: flex-start;\n  gap: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n  cursor: pointer;\n}\n.aqm-switch input {\n  margin-top: 3px;\n  accent-color: #2563eb;\n}\n.aqm-switch.is-off {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-settings-groups {\n  columns: 2 340px;\n  column-gap: 14px;\n}\n.aqm-settings-group {\n  break-inside: avoid;\n  margin: 0 0 14px;\n  padding: 6px 0;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-settings-title {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 0;\n  padding: 10px 16px 6px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.12em;\n  text-transform: uppercase;\n  color: #93c5fd;\n}\n.aqm-settings-title span {\n  font-size: 15px;\n  letter-spacing: 0;\n}\n.aqm-setting {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  padding: 10px 16px;\n  cursor: pointer;\n}\n.aqm-setting + .aqm-setting {\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-setting:hover {\n  background: rgba(255, 255, 255, 0.025);\n}\n.aqm-setting.is-off {\n  cursor: default;\n  opacity: 0.45;\n}\n.aqm-setting-text {\n  display: grid;\n  flex: 1;\n  gap: 2px;\n  min-width: 0;\n}\n.aqm-setting-text strong {\n  font-size: 14px;\n  color: var(--aqm-text);\n}\n.aqm-setting-text small {\n  font-size: 12px;\n  line-height: 1.35;\n  color: var(--aqm-dim);\n}\n.aqm-toggle {\n  position: relative;\n  flex: none;\n  width: 40px;\n  height: 24px;\n  margin: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.14);\n  appearance: none;\n  -webkit-appearance: none;\n  cursor: pointer;\n  transition: background 0.2s;\n}\n.aqm-toggle::before {\n  content: "";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #fff;\n  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);\n  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-toggle:checked {\n  background: #2563eb;\n}\n.aqm-toggle:checked::before {\n  transform: translateX(16px);\n}\n.aqm-toggle:focus-visible {\n  outline: 2px solid #93c5fd;\n  outline-offset: 2px;\n}\n.aqm-toggle:disabled {\n  cursor: default;\n}\n.aqm-settings-foot {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 4px;\n}\n.aqm-settings-foot p {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-settings-actions {\n  display: flex;\n  gap: 8px;\n}\n\n/* src/content/styles/17-who-pulled.css */\n.aqm-pulled {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-pull {\n  display: grid;\n  grid-template-columns: 40px minmax(0, 1fr) auto;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-pull-card img {\n  display: block;\n  width: 40px;\n  height: 56px;\n  border-radius: 8px;\n  object-fit: cover;\n}\n.aqm-pull-main {\n  min-width: 0;\n}\n.aqm-pull-main > p {\n  margin: 0;\n}\n.aqm-pull-series {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n.aqm-pull-who {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  font-size: 13px;\n  font-weight: 700;\n  text-align: right;\n}\n.aqm-pull-player {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n.aqm-pull-player .aqm-avatar-sm {\n  width: 24px;\n  height: 24px;\n  border-radius: 7px;\n}\n.aqm-pull-who a {\n  color: #fff;\n  text-decoration: none;\n}\n.aqm-pull-who a:hover {\n  text-decoration: underline;\n}\n.aqm-pull-who small {\n  font-size: 11px;\n  font-weight: 400;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/18-favorites.css */\n.aqm-star {\n  position: absolute;\n  top: 4px;\n  right: 6px;\n  z-index: 3;\n  display: grid;\n  place-items: center;\n  width: 24px;\n  height: 24px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.55);\n  color: #a1a1aa;\n  font-size: 15px;\n  line-height: 1;\n  cursor: pointer;\n}\n.aqm-star:hover {\n  color: #fde047;\n}\n.aqm-star.is-on {\n  color: #facc15;\n}\n.aqm-fav-bar {\n  display: flex;\n  gap: 8px;\n  margin-bottom: 8px;\n  overflow-x: auto;\n  scrollbar-width: none;\n  -webkit-overflow-scrolling: touch;\n}\n.aqm-fav-bar::-webkit-scrollbar {\n  display: none;\n}\n.aqm-fav-bar .aqm-chip {\n  flex: 0 0 auto;\n  white-space: nowrap;\n  height: 32px;\n  text-transform: none;\n  letter-spacing: 0;\n  font-size: 13px;\n  color: #fde047;\n}\n.aqm-fav-bar .aqm-chip b {\n  margin-left: 4px;\n  color: #fff;\n}\n.aqm-fav-found {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 8px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-fav-found:empty {\n  display: none;\n}\n.aqm-fav-found li {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 6px 10px 6px 6px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-fav-found img {\n  width: 32px;\n  height: 44px;\n  border-radius: 6px;\n  object-fit: cover;\n}\n.aqm-fav-found li > span {\n  flex: 1;\n  min-width: 0;\n}\n.aqm-fav-found strong,\n.aqm-fav-found small {\n  display: block;\n}\n.aqm-fav-found small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-filter-name.aqm-gap {\n  margin-left: 10px;\n}\n.aqm-fav-list {\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n  margin-top: 14px;\n}\n.aqm-fav-series {\n  padding: 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-fav-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 12px;\n}\n.aqm-fav-head > img {\n  width: 40px;\n  height: 56px;\n  border-radius: 8px;\n  object-fit: cover;\n}\n.aqm-fav-title {\n  flex: 1 1 200px;\n  min-width: 0;\n}\n.aqm-fav-title strong {\n  display: block;\n  font-size: 16px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-fav-title small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-fav-head .aqm-fav-unstar {\n  color: #facc15;\n  font-size: 16px;\n}\n.aqm-fav-series > .aqm-muted {\n  margin-top: 8px;\n}\n.aqm-fav-series > .aqm-muted:empty {\n  display: none;\n}\n.aqm-fav-cards {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));\n  gap: 10px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-fav-card {\n  position: relative;\n  min-width: 0;\n}\n.aqm-fav-card img {\n  display: block;\n  width: 100%;\n  aspect-ratio: 63 / 88;\n  border-radius: 10px;\n  object-fit: cover;\n  filter: grayscale(0.85) brightness(0.6);\n}\n.aqm-fav-card.is-owned img {\n  filter: none;\n}\n.aqm-fav-card > p {\n  margin: 4px 0 0;\n}\n.aqm-fav-card .aqm-mini-name {\n  font-size: 12px;\n}\n.aqm-want {\n  position: absolute;\n  top: 6px;\n  right: 6px;\n  display: grid;\n  place-items: center;\n  width: 30px;\n  height: 30px;\n  padding: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.6);\n  font-size: 15px;\n  filter: grayscale(1);\n  opacity: 0.75;\n  cursor: pointer;\n}\n.aqm-want.is-on {\n  background: rgba(37, 99, 235, 0.85);\n  filter: none;\n  opacity: 1;\n}\n.aqm-sort:disabled {\n  opacity: 0.55;\n  cursor: default;\n}\n@media (max-width: 640px) {\n  .aqm-pull {\n    grid-template-columns: 36px minmax(0, 1fr);\n  }\n  .aqm-pull-who {\n    grid-column: 2;\n    flex-direction: row;\n    align-items: baseline;\n    gap: 8px;\n  }\n  .aqm-fav-cards {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/19-album.css */\n.aqm-album {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 12px;\n}\n.aqm-album-btn {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.05);\n  color: #e4e4e7;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-album-btn:hover {\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-album-btn.is-on {\n  border-color: rgba(250, 204, 21, 0.45);\n  color: #fde047;\n}\n.aqm-album-btn.is-main {\n  border-color: transparent;\n  background: #2563eb;\n  color: #fff;\n}\n.aqm-album-btn:disabled {\n  opacity: 0.55;\n  cursor: default;\n}\n.aqm-album-note {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/20-who-has.css */\n.aqm-who-gap {\n  margin-top: 18px;\n}\n.aqm-who-note {\n  margin: 0 0 6px;\n}\n.aqm-who-cards .aqm-mini {\n  cursor: pointer;\n}\n.aqm-who-cards .aqm-mini:hover,\n.aqm-who-cards .aqm-mini:focus-visible {\n  background: rgba(96, 165, 250, 0.14);\n  outline: none;\n}\n.aqm-who-back {\n  margin-bottom: 12px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-who-card {\n  display: flex;\n  gap: 16px;\n  padding: 14px;\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-who-card img {\n  width: 92px;\n  border-radius: 10px;\n  aspect-ratio: 63 / 88;\n  object-fit: cover;\n}\n.aqm-who-card > div {\n  flex: 1;\n  min-width: 0;\n}\n.aqm-who-card p {\n  margin: 0 0 2px;\n}\n.aqm-pack-title {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-who-stats {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-metric {\n  padding: 8px 10px;\n  border-radius: 12px;\n  background: rgba(255, 255, 255, 0.04);\n}\n.aqm-metric small {\n  display: block;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-metric strong {\n  display: block;\n  margin-top: 2px;\n  font-size: 15px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-owners {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-owner {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  min-height: 42px;\n  padding: 6px 12px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-avatar-sm {\n  width: 30px;\n  height: 30px;\n  border-radius: 9px;\n}\n.aqm-owner .aqm-avatar-sm + a,\n.aqm-owner .aqm-avatar-sm + span {\n  min-width: 0;\n}\n.aqm-owner-serial {\n  min-width: 52px;\n  font-weight: 800;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-owner a {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  color: #e4e4e7;\n  font-weight: 700;\n  text-decoration: none;\n}\n.aqm-owner a:hover {\n  color: #fff;\n  text-decoration: underline;\n}\n.aqm-owner-right {\n  margin-left: auto;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  white-space: nowrap;\n}\n@media (max-width: 640px) {\n  .aqm-who-card img {\n    width: 72px;\n  }\n  .aqm-who-stats {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/21-search-queue.css */\n.aqm-dock,\n.aqm-update {\n  position: fixed;\n  right: 16px;\n  bottom: 16px;\n  z-index: 2147482500;\n  width: min(360px, calc(100vw - 32px));\n}\n.aqm-dock {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n.aqm-queue,\n.aqm-update {\n  padding: 12px 14px;\n  border: 1px solid rgba(96, 165, 250, 0.35);\n  border-radius: 16px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);\n  color: var(--aqm-text);\n  font-size: 13px;\n  animation: aqm-pop 0.16s ease-out;\n}\n.aqm-queue-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n}\n.aqm-queue-head strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-queue-btn {\n  height: 28px;\n  padding: 0 12px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: #fff;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-queue .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-album .aqm-fav-wait {\n  flex-basis: 100%;\n  width: 100%;\n  margin: 4px 0 0;\n}\n.aqm-fav-wait {\n  margin: 0 0 12px;\n  padding: 10px 12px;\n  border: 1px solid rgba(217, 119, 6, 0.4);\n  border-radius: 12px;\n}\n.aqm-fav-wait .aqm-queue-head + .aqm-bar,\n.aqm-fav-wait p + .aqm-queue-head {\n  margin-top: 12px;\n}\n.aqm-fav-wait .aqm-queue-actions {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  margin-top: 10px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-steps {\n  display: flex;\n  height: 8px;\n  margin-top: 10px;\n  overflow: hidden;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-steps > span {\n  transition: width 0.4s ease;\n}\n.aqm-steps .is-in,\n.aqm-steps-legend .is-in::before {\n  background: #22c55e;\n}\n.aqm-steps .is-sending,\n.aqm-steps-legend .is-sending::before {\n  background: #3b82f6;\n}\n.aqm-steps .is-waiting,\n.aqm-steps-legend .is-waiting::before {\n  background: #d97706;\n}\n.aqm-steps-legend {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 4px 14px;\n  margin-top: 8px;\n  font-size: 12px;\n}\n.aqm-steps-legend span::before {\n  content: "";\n  display: inline-block;\n  width: 8px;\n  height: 8px;\n  margin-right: 6px;\n  border-radius: 50%;\n}\n.aqm-fav-wait .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-fav-wait p {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n.aqm-want.is-wait {\n  background: rgba(217, 119, 6, 0.85);\n}\n.aqm-queue p,\n.aqm-update p {\n  margin: 8px 0 0;\n  font-size: 12px;\n  line-height: 1.45;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-dock,\n  .aqm-update {\n    right: 8px;\n    left: 8px;\n    bottom: 96px;\n    width: auto;\n  }\n}\n.aqm-fav-details {\n  text-transform: none;\n  letter-spacing: 0;\n  font-size: 12px;\n}\n.aqm-fav-list {\n  gap: 10px;\n}\n.aqm-fav-series .aqm-fav-cards {\n  margin-top: 14px;\n}\n\n/* src/content/styles/22-sell.css */\n.aqm-sales {\n  border-color: rgba(34, 197, 94, 0.35);\n}\n.aqm-sell-wait {\n  flex: none;\n  align-self: stretch;\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 12px;\n  line-height: 1.45;\n}\n.aqm-sell-wait > p:first-child {\n  margin: 0;\n}\n.aqm-sell-waiting {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));\n  gap: 2px 16px;\n  max-height: 140px;\n  margin: 8px 0 0;\n  padding: 0 6px 0 0;\n  overflow-y: auto;\n  list-style: none;\n  font-size: 12px;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar {\n  width: 6px;\n}\n.aqm-sell-waiting::-webkit-scrollbar-track {\n  background: transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb {\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.2);\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.35);\n}\n.aqm-sell-waiting::-webkit-scrollbar-button {\n  display: none;\n}\n.aqm-sell-last {\n  margin: 8px 0 0;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sell-waiting li {\n  display: flex;\n  justify-content: space-between;\n  gap: 8px;\n  min-width: 0;\n}\n.aqm-sell-waiting li > span:first-child {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n\n/* src/content/styles/23-booster-wheel.css */\n[data-aqm-hidden] {\n  position: absolute !important;\n  visibility: hidden !important;\n  pointer-events: none !important;\n}\n[data-aqm-veiled] {\n  visibility: hidden;\n}\n.aqm-piles {\n  position: relative;\n  flex: none;\n  align-self: auto;\n  max-width: none;\n  width: 100%;\n  padding: 28px 0 8px;\n  overflow: hidden;\n  overflow-x: clip;\n  overflow-y: visible;\n}\n@property --aqm-glow { syntax: "<color>"; inherits: true; initial-value: rgb(37 99 235 / 0.38); }\n.aqm-wheel {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  isolation: isolate;\n  transition: --aqm-glow 0.6s ease;\n}\n.aqm-wheel::before {\n  content: "";\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  z-index: -1;\n  width: min(560px, 100%);\n  aspect-ratio: 1;\n  background:\n    radial-gradient(\n      closest-side,\n      var(--aqm-glow, rgb(37 99 235 / 0.38)),\n      transparent);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n}\n.aqm-wheel-track {\n  display: grid;\n}\n.aqm-wheel-controls {\n  display: flex;\n  justify-content: center;\n  margin-top: 4px;\n}\n.aqm-pile {\n  display: flex;\n  grid-area: 1 / 1;\n  flex-direction: column;\n  align-items: center;\n  gap: 12px;\n  justify-self: center;\n  transition:\n    transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n    opacity 0.4s,\n    filter 0.4s;\n}\n.aqm-pile:not(.is-front) {\n  z-index: 0;\n  opacity: 0.4;\n  cursor: pointer;\n}\n.aqm-pile.is-front {\n  z-index: 1;\n}\n.aqm-pile.is-away {\n  opacity: 0;\n  pointer-events: none;\n}\n.aqm-pile:not(.is-front) .aqm-pile-art {\n  pointer-events: none;\n}\n.aqm-pile-art [class*=__packPose] {\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-pile-art .aqm-pose-follow {\n  transition: transform 0.15s ease-out;\n}\n.aqm-pile.is-front [data-aqm-float] {\n  animation: aqm-pack-float 2.35s ease-in-out infinite alternate;\n}\n@keyframes aqm-pack-float {\n  from {\n    transform: translate3d(0, 0, 0);\n  }\n  to {\n    transform: translate3d(0, -16px, 0);\n  }\n}\n@media (prefers-reduced-motion: reduce) {\n  .aqm-pile.is-front [data-aqm-float] {\n    animation: none;\n  }\n}\n.aqm-wheel-arrow {\n  position: absolute;\n  top: 45%;\n  z-index: 3;\n  width: 44px;\n  height: 44px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 50%;\n  background: rgba(15, 23, 42, 0.85);\n  color: #fff;\n  font: inherit;\n  font-size: 26px;\n  line-height: 1;\n  cursor: pointer;\n}\n.aqm-wheel-arrow:hover {\n  border-color: #3b82f6;\n  background: rgba(37, 99, 235, 0.35);\n}\n.aqm-wheel-arrow.is-prev {\n  left: 8px;\n}\n.aqm-wheel-arrow.is-next {\n  right: 8px;\n}\n.aqm-wheel-dots {\n  display: flex;\n  justify-content: center;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-wheel-dot {\n  width: 8px;\n  height: 8px;\n  padding: 0;\n  border: 0;\n  border-radius: 50%;\n  background: rgba(255, 255, 255, 0.25);\n  cursor: pointer;\n}\n.aqm-wheel-dot.is-on {\n  width: 22px;\n  border-radius: 999px;\n  background: #3b82f6;\n}\n.aqm-piles.is-still .aqm-pile {\n  transition: none;\n}\n@media (max-width: 640px) {\n  .aqm-wheel-controls > * {\n    flex-direction: column;\n  }\n  .aqm-wheel-arrow {\n    width: 36px;\n    height: 36px;\n    font-size: 22px;\n  }\n}\n.aqm-queue-btn.is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-queue-btn:disabled {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-scan-list {\n  display: grid;\n  gap: 4px;\n  margin: 10px 0 0;\n  padding: 0;\n  list-style: none;\n  font-size: 13px;\n}\n\n/* src/content/styles/24-card-listings.css */\n.aqm-listings {\n  margin-top: 16px;\n  padding: 16px 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.025);\n}\n.aqm-listings-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 4px 12px;\n  margin-bottom: 10px;\n}\n.aqm-listings-head .aqm-label {\n  margin: 0;\n}\n.aqm-listings .aqm-owners {\n  display: grid;\n  grid-template-columns: 1fr;\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-buy-cell {\n  display: inline-flex;\n  align-items: center;\n  gap: 12px;\n}\n.aqm-buy {\n  height: 30px;\n}\n.aqm-buy-refused {\n  margin: 8px 0 0;\n  color: #fca5a5;\n}\n\n/* src/content/styles/25-collection.css */\n.aqm-sort-progress.is-on {\n  border-color: #3b82f6;\n  background: rgba(59, 130, 246, 0.2);\n  color: #fff;\n}\n[data-aqm-owned-card],\n[data-aqm-locked-card] {\n  display: none !important;\n}\n[data-aqm-sale=on] {\n  display: inline-block !important;\n  margin-right: 8px !important;\n  vertical-align: middle;\n}\n.aqm-sale {\n  display: inline-block;\n  flex: none;\n  padding: 1px 7px;\n  border: 1px solid rgba(59, 130, 246, 0.6);\n  border-radius: 999px;\n  background: rgba(37, 99, 235, 0.22);\n  color: #93c5fd;\n  font-size: 9px;\n  font-weight: 800;\n  letter-spacing: 0.06em;\n  line-height: 1.6;\n  white-space: nowrap;\n  text-transform: uppercase;\n  vertical-align: middle;\n  pointer-events: none;\n}\n[data-aqm-pill-off] {\n  opacity: 0 !important;\n}\n[data-aqm-unpicked] {\n  background: transparent !important;\n  box-shadow: none !important;\n  color: var(--aqm-plain-color) !important;\n}\n.aqm-missing-summary {\n  display: flex;\n  flex: 1 0 100%;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px 8px;\n  width: 100%;\n  margin: 12px 0 4px;\n  color: #a1a1aa;\n  font-size: 12px;\n  font-weight: 600;\n}\n.aqm-missing-summary .aqm-label {\n  margin-right: 4px;\n}\n.aqm-missing-summary[hidden] {\n  display: none;\n}\n.aqm-missing-extra-note {\n  margin: 32px 0 0;\n  color: #93c5fd;\n  font-size: 13px;\n  font-weight: 700;\n}\n.aqm-missing-extra > ul {\n  margin-top: 16px;\n  padding: 0;\n  list-style: none;\n}\n.aqm-missing-plain {\n  display: block;\n  color: #fff;\n  font-size: 12px;\n  font-weight: 700;\n}\n.aqm-missing-plain img {\n  display: block;\n  width: 100%;\n  aspect-ratio: 63 / 88;\n  border-radius: 1rem;\n  object-fit: cover;\n}\n.aqm-missing-count {\n  display: inline-flex;\n  align-items: baseline;\n  gap: 5px;\n  padding: 4px 10px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  white-space: nowrap;\n}\n.aqm-missing-count strong {\n  color: #fff;\n  font-weight: 800;\n}\n.aqm-missing-count.is-total {\n  background: rgba(59, 130, 246, 0.15);\n  color: #bfdbfe;\n}\n.aqm-missing-tab.is-on {\n  border-radius: var(--aqm-pill-radius);\n  background: var(--aqm-pill-bg) !important;\n  box-shadow: var(--aqm-pill-shadow);\n  color: var(--aqm-picked-color) !important;\n}\n.aqm-recycle-bar {\n  display: flex;\n  justify-content: flex-end;\n  margin: 0 0 8px;\n}\n.aqm-recycle-bar[hidden] {\n  display: none;\n}\n.aqm-recycle-spares.is-confirm {\n  background: #f59e0b !important;\n  color: #111 !important;\n}\n.aqm-recycle-note {\n  align-self: center;\n  color: #86efac;\n  font-size: 13px;\n  font-weight: 700;\n  white-space: nowrap;\n}\n.aqm-recycle-spares:disabled {\n  opacity: 0.75;\n  cursor: default;\n}\n\n/* src/content/styles/26-players.css */\n.aqm-users-code {\n  display: flex;\n  gap: 8px;\n}\n.aqm-users-stats {\n  margin-top: 4px;\n}\n.aqm-users {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-user {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-user .aqm-user-revoke {\n  flex: none;\n  padding: 6px 12px;\n  font-size: 12px;\n}\n.aqm-tag.aqm-revoked {\n  background: rgba(239, 68, 68, 0.18);\n  color: #fca5a5;\n}\n.aqm-user .aqm-avatar {\n  width: 32px;\n  height: 32px;\n}\n.aqm-user .aqm-name {\n  flex: 1;\n  font-size: 13px;\n}\n.aqm-kind-userscript {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-user-kinds {\n  display: flex;\n  flex-wrap: wrap;\n  justify-content: flex-end;\n  gap: 6px;\n}\n.aqm-online {\n  background: rgba(37, 99, 235, 0.2);\n  color: #93c5fd;\n}\n.aqm-user-seen {\n  min-width: 90px;\n  text-align: right;\n  color: var(--aqm-muted);\n}\n.aqm-device-wait {\n  margin-top: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: rgba(37, 99, 235, 0.12);\n  border: 1px solid rgba(96, 165, 250, 0.3);\n}\n.aqm-device-wait p {\n  margin: 0;\n}\n.aqm-device-wait p + p {\n  margin-top: 6px;\n}\n.aqm-device-wait strong,\n.aqm-device-code {\n  font:\n    800 15px ui-monospace,\n    "Cascadia Mono",\n    Consolas,\n    monospace;\n  letter-spacing: 0.08em;\n  color: #fff;\n}\n.aqm-update {\n  top: 16px;\n  bottom: auto;\n}\n@media (max-width: 640px) {\n  .aqm-update {\n    top: 8px;\n    bottom: auto;\n  }\n}\n\n/* src/content/styles/27-market.css */\n.aqm-unlist {\n  margin-left: 8px;\n}\n.aqm-panel.is-ask {\n  max-width: 520px;\n}\n.aqm-ask-text {\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 14px;\n  line-height: 1.5;\n}\n.aqm-ask-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 18px;\n}\n.aqm-ask-actions .aqm-queue-btn {\n  height: 36px;\n  padding: 0 18px;\n  font-weight: 700;\n}\n[data-aqm-bought] {\n  display: none !important;\n}\n.aqm-market-fav.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-market-sort {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px;\n  margin-top: 8px;\n  color: #a1a1aa;\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.aqm-market-sort-button {\n  padding: 8px 16px;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: #a1a1aa;\n  font: inherit;\n  white-space: nowrap;\n  cursor: pointer;\n}\n.aqm-market-sort-button:hover {\n  background: rgba(255, 255, 255, 0.07);\n  color: #fff;\n}\n.aqm-market-sort-button.is-on {\n  background: rgba(59, 130, 246, 0.25);\n  color: #fff;\n}\n.aqm-market-sale {\n  margin-left: 6px;\n  color: #86efac;\n  font-weight: 600;\n  white-space: nowrap;\n}\n[data-aqm-sentinel-box] {\n  position: relative;\n}\n[data-aqm-sentinel-up] {\n  position: absolute !important;\n  top: 0;\n  left: 0;\n  width: 1px;\n  height: 1px;\n  pointer-events: none;\n}\n[data-aqm-unfav] {\n  display: none !important;\n}\n.aqm-trade-filter.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-trade-filter.is-on.is-off {\n  opacity: 0.55;\n}\n[data-aqm-tradehide] {\n  display: none !important;\n}\n.aqm-auctions-head {\n  margin-top: 18px;\n}\n.aqm-auction-cell {\n  display: inline-flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n}\n.aqm-owner a.aqm-buy {\n  display: inline-flex;\n  align-items: center;\n  overflow: visible;\n  color: #fff;\n  font-weight: 800;\n  text-decoration: none;\n}\n\n/* src/content/styles/28-progress.css */\n[data-aqm-stats-title] {\n  position: relative;\n}\n.aqm-stats-open {\n  position: absolute !important;\n  top: 50% !important;\n  left: 100% !important;\n  margin: 0 0 0 20px !important;\n  transform: translateY(-50%) !important;\n  white-space: nowrap;\n  text-shadow: none;\n  background-clip: border-box;\n  -webkit-background-clip: border-box;\n}\n.aqm-stats-open.is-below {\n  position: static !important;\n  display: flex;\n  width: fit-content;\n  margin: 12px 0 0 !important;\n  transform: none !important;\n}\n.aqm-stats-open.is-in-row {\n  position: static !important;\n  margin: 0 !important;\n  transform: none !important;\n}\n.aqm-stats-open.is-early {\n  position: absolute !important;\n  top: var(--aqm-y) !important;\n  left: var(--aqm-x) !important;\n  margin: 0 !important;\n  z-index: 5;\n}\n.aqm-stats-open.is-early.is-below {\n  transform: none !important;\n  width: fit-content;\n}\n.aqm-stats-ico {\n  flex-shrink: 0;\n  width: 16px;\n  height: 16px;\n}\n.aqm-progress {\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n}\n.aqm-progress-hero {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  padding: 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-progress-pct {\n  font-size: 40px;\n  font-weight: 900;\n  line-height: 1.1;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-bar.aqm-bar-big {\n  height: 8px;\n  margin-top: 8px;\n}\n.aqm-progress-tiles {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));\n  gap: 10px;\n}\n.aqm-progress-tile {\n  padding: 12px 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-progress-tile .aqm-label {\n  margin: 0 0 4px;\n}\n.aqm-progress-tile strong {\n  display: block;\n  font-size: 24px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-progress-tile small {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-progress-h {\n  margin: 6px 0 0;\n  font-size: 14px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-progress-rarities {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-progress-rarity {\n  display: grid;\n  grid-template-columns: 130px 1fr auto;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 12px;\n  border-radius: 10px;\n  background: var(--aqm-card);\n}\n.aqm-progress-rname {\n  display: flex;\n  align-items: baseline;\n  gap: 8px;\n}\n.aqm-progress-rname small,\n.aqm-progress-rbar small,\n.aqm-progress-copies {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-progress-rbar p {\n  margin: 0;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-progress-rbar strong {\n  color: #fff;\n  font-weight: 900;\n}\n.aqm-progress-copies {\n  min-width: 64px;\n  text-align: right;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-bar-N > span {\n  background: #d4d4d8;\n}\n.aqm-bar-R > span {\n  background: #60a5fa;\n}\n.aqm-bar-SR > span {\n  background: #a78bfa;\n}\n.aqm-bar-SSR > span {\n  background: #facc15;\n}\n.aqm-bar-UR > span {\n  background: #f472b6;\n}\n.aqm-bar-SEC > span {\n  background:\n    linear-gradient(\n      90deg,\n      #c4b5fd,\n      #e2e8f0);\n}\n.aqm-days {\n  display: grid;\n  grid-template-columns: repeat(14, 1fr);\n  gap: 2px;\n  height: 150px;\n  padding: 12px 8px 8px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-day {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  min-width: 0;\n  border-radius: 6px;\n  outline: none;\n}\n.aqm-day:hover,\n.aqm-day:focus-visible {\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-day-val {\n  height: 16px;\n  font-size: 10px;\n  font-weight: 800;\n  color: #e4e4e7;\n  font-variant-numeric: tabular-nums;\n  white-space: nowrap;\n}\n.aqm-day-col {\n  display: flex;\n  align-items: flex-end;\n  justify-content: center;\n  flex: 1;\n  width: 100%;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.12);\n}\n.aqm-day-fill {\n  display: block;\n  width: min(18px, 70%);\n  border-radius: 4px 4px 0 0;\n  background: #3b82f6;\n}\n.aqm-day.is-today .aqm-day-fill {\n  background: #60a5fa;\n}\n.aqm-day.is-empty .aqm-day-col {\n  border-bottom-style: dashed;\n}\n.aqm-day-name {\n  margin-top: 4px;\n  font-size: 10px;\n  color: var(--aqm-dim);\n}\n.aqm-day.is-today .aqm-day-name {\n  color: #fff;\n  font-weight: 800;\n}\n@media (max-width: 640px) {\n  .aqm-progress-pct {\n    font-size: 32px;\n  }\n  .aqm-progress-rarity {\n    grid-template-columns: 1fr auto;\n  }\n  .aqm-progress-rbar {\n    grid-column: 1 / -1;\n    grid-row: 2;\n  }\n  .aqm-days {\n    height: 130px;\n    padding: 10px 4px 6px;\n  }\n  .aqm-day-val {\n    font-size: 9px;\n  }\n}\n.aqm-board-refresh {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px 12px;\n  margin: -4px 0 10px;\n  font-size: 12px;\n}\n.aqm-board-refresh:empty {\n  display: none;\n}\n.aqm-board-refresh .aqm-chip:disabled {\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* contenu.css */\n';
     document.head.appendChild(style);
     (() => {
       const TOUR = [
@@ -2569,6 +2696,19 @@ window.__aquamanUserscript = true;
         }
       ];
       const CHANGES = [
+        {
+          version: "1.7.0",
+          items: [
+            ["Marché : dans « Tes cartes à vendre », les cartes que tu vends déjà (au marché ou en enchère) sont marquées « Déjà en vente », et « Trier par » les range selon un ou plusieurs critères : les plus recherchées, les plus ou moins possédées, la valeur estimée ou le nom. Se règle dans Plus › Réglages. Proposé par volcanofr."],
+            ["Recycler des cartes : en mode « Mes doublons », plus aucune carte n’est cochée sans que tu la voies. Le jeu cochait d’office les doublons pas encore affichés (la liste se charge 48 par 48) : Aquaman charge toute la liste à l’ouverture et la décoche, puis « Tout sélectionner » agit sur toute la liste."],
+            ["Garantie anti-malchance : comme dans le jeu, seuls les boosters classiques (gratuits ou de la boutique) et les packs à thème à 250 Perles comptent pour la SSR et l’UR garanties. Les packs spéciaux (Légendaire, Halloween…) ne les font plus avancer. Aquaman retient maintenant le pack de chaque booster ouvert : le compte devient exact au fil des ouvertures."],
+            ["Collection : avec le filtre « Manquantes », le compte des cartes qui te manquent par rareté s’affiche sous les onglets (« 70 N · 293 R · … · 948 au total »), sans avoir à faire défiler tout l’album.", "series"],
+            ["Collection : dans « Album complet » filtré par rareté, le jeu ne renvoie pas toutes les cartes et en oublie des manquantes. Avec « Manquantes », Aquaman ajoute à la suite celles que le jeu n’affiche pas, avec le même aspect (lien vers la carte compris).", "series"],
+            ["Ma progression : la colonne « ex. » compte un exemplaire par carte, les doublons ne comptent plus. Les cartes gagnées en achetant ou en échangeant juste après une ouverture de boosters sont comptées dans la journée, au lieu d’attendre le relevé suivant.", "progression"],
+            ["Classement : « Ranger par » sous « Tous / Amis ». Entre amis : par points, par cartes ou par séries complètes (les albums dont le badge est récupéré). Pour « Tous » : par points (le classement du jeu) ou par cartes (le top 100 du jeu rangé par nombre de cartes). « Ma place » suit le tri choisi.", "classement"],
+            ["Classement des amis : le cadre « Ma place » en haut de la page montre ta place parmi tes amis et l’ami à dépasser (« Plus que 10 points pour dépasser… »), et « Voir ma ligne » mène à ta ligne.", "classement"]
+          ]
+        },
         {
           version: "1.6.0",
           items: [
@@ -3500,6 +3640,188 @@ window.__aquamanUserscript = true;
         const titles = new Set(on2 ? [...favIds].map((id) => seriesTitles.get(id)).filter(Boolean) : []);
         for (const { tile, texts } of marketTiles()) tile.toggleAttribute("data-aqm-unfav", on2 && !tile.matches(PAGE_PARTS) && !tile.querySelector(PAGE_PARTS) && ![...texts].some((t) => titles.has(t)));
       }
+      let marketSalesKeys = /* @__PURE__ */ new Set();
+      const marketListingKeys = /* @__PURE__ */ new Set();
+      const marketAuctionKeys = /* @__PURE__ */ new Set();
+      const MARKET_SALES_PATH = /^\/jeu\/marche\/?$/;
+      const MARKET_SALES_MARK = "data-aqm-market-sale";
+      const AQM_MARKET_SORT_KEY = "aqm-market-sales-sort";
+      const AQM_MARKET_SORTS = [
+        ["searches-desc", "Recherchées ↓"],
+        ["owned-desc", "Possédées ↓"],
+        ["owned-asc", "Possédées ↑"],
+        ["value-desc", "Valeur (estimée) ↓"],
+        ["value-asc", "Valeur (estimée) ↑"],
+        ["name-asc", "Alphabétique A → Z"],
+        ["name-desc", "Alphabétique Z → A"]
+      ];
+      let aqmMarketSort = readMarketSort();
+      let marketSortMenu = null;
+      function readMarketSales() {
+        for (const [kind, target] of [
+          ["listings", marketListingKeys],
+          ["auctions", marketAuctionKeys]
+        ]) {
+          try {
+            const keys = JSON.parse(document.documentElement.getAttribute(`data-aqm-market-sales-${kind}`) ?? "[]");
+            target.clear();
+            for (const key of keys) if (typeof key === "string") target.add(key);
+          } catch {
+          }
+        }
+        marketSalesKeys = /* @__PURE__ */ new Set([...marketListingKeys, ...marketAuctionKeys]);
+      }
+      function cardSaleKey(tile) {
+        const link = tile.querySelector('a[href^="/jeu/marche/"]');
+        return link?.getAttribute("href")?.split(/[?#]/)[0].split("/").pop() ?? null;
+      }
+      function readMarketSort() {
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(AQM_MARKET_SORT_KEY) ?? "[]");
+          return Array.isArray(saved) ? saved.filter((value, i) => AQM_MARKET_SORTS.some(([key]) => key === value) && saved.indexOf(value) === i) : [];
+        } catch {
+          return [];
+        }
+      }
+      function cardNumber(card, re, fallback = 0) {
+        const match = card.textContent.match(re);
+        return match ? Number(match[1].replace(/[^\d]/g, "")) : fallback;
+      }
+      function cardSortValue(card, sort) {
+        if (sort === "name-asc" || sort === "name-desc") {
+          const label = card.querySelector("a[aria-label]")?.getAttribute("aria-label") ?? "";
+          return label.split(/[:,]/, 1)[0].trim().toLocaleLowerCase("fr");
+        }
+        if (sort.startsWith("searches-")) {
+          const match = [...card.querySelectorAll("[title]")].map((el) => el.getAttribute("title") ?? "").map((text) => text.match(/(\d[\d\s ]*)\s+joueurs?\s+la\s+cherche(?:nt)?/i)).find(Boolean);
+          return match ? Number(match[1].replace(/[^\d]/g, "")) : 0;
+        }
+        if (sort === "owned-asc" || sort === "owned-desc") return cardNumber(card, /×\s*([\d\s ]+)/, 1);
+        return cardNumber(card, /≈\s*([\d\s ]+)/);
+      }
+      function sortSalesCards(section) {
+        const list = section.querySelector("ul");
+        if (!list) return;
+        const cards = [...list.children];
+        const sentinel = [...list.parentElement?.children ?? []].find((child) => child !== list && child.matches('div[aria-hidden="true"]') && !child.childElementCount);
+        if (sentinel) {
+          sentinel.toggleAttribute("data-aqm-sentinel-up", aqmMarketSort.length > 0);
+          list.parentElement.toggleAttribute("data-aqm-sentinel-box", aqmMarketSort.length > 0);
+        }
+        if (!aqmMarketSort.length) {
+          for (const card of cards) if (card.style.order) card.style.removeProperty("order");
+          return;
+        }
+        const ranked = cards.map((card, index) => ({ card, index }));
+        ranked.sort((a, b) => {
+          for (const sort of aqmMarketSort) {
+            const aValue = cardSortValue(a.card, sort);
+            const bValue = cardSortValue(b.card, sort);
+            const difference = typeof aValue === "string" && typeof bValue === "string" ? aValue.localeCompare(bValue, "fr") : aValue - bValue;
+            if (difference !== 0) return sort.endsWith("-desc") ? -difference : difference;
+          }
+          return a.index - b.index;
+        });
+        ranked.forEach(({ card }, i) => {
+          if (card.style.order !== String(i)) card.style.order = String(i);
+        });
+      }
+      function updateMarketSort(index, value) {
+        aqmMarketSort = aqmMarketSort.filter((sort, i) => i !== index && sort !== value);
+        if (value) aqmMarketSort.splice(Math.min(index, aqmMarketSort.length), 0, value);
+        try {
+          sessionStorage.setItem(AQM_MARKET_SORT_KEY, JSON.stringify(aqmMarketSort));
+        } catch {
+        }
+        markSalesCards();
+      }
+      function closeMarketSortMenu() {
+        if (!marketSortMenu) return;
+        marketSortMenu.anchor?.setAttribute("aria-expanded", "false");
+        marketSortMenu.remove();
+        marketSortMenu = null;
+      }
+      const sortBase = (value) => value.replace(/-(asc|desc)$/, "");
+      function openMarketSortMenu(anchor, index) {
+        closeMarketSortMenu();
+        const selected = new Set(aqmMarketSort.filter((_, i) => i !== index).map(sortBase));
+        const choices = [...index < aqmMarketSort.length ? [["", "Aucun tri"]] : [], ...AQM_MARKET_SORTS.filter(([value]) => !selected.has(sortBase(value)))];
+        marketSortMenu = h(
+          "div",
+          { class: "aqm-root aqm-menu aqm-market-sort-menu", role: "menu" },
+          ...choices.map(
+            ([value, label]) => h(
+              "button",
+              {
+                type: "button",
+                role: "menuitem",
+                class: "aqm-menu-item",
+                onclick: () => {
+                  closeMarketSortMenu();
+                  updateMarketSort(index, value);
+                }
+              },
+              label
+            )
+          )
+        );
+        marketSortMenu.anchor = anchor;
+        document.body.append(marketSortMenu);
+        anchor.setAttribute("aria-expanded", "true");
+        const r = anchor.getBoundingClientRect();
+        const below = r.bottom + 8 + marketSortMenu.offsetHeight < innerHeight;
+        marketSortMenu.style.top = `${below ? r.bottom + 8 : r.top - 8 - marketSortMenu.offsetHeight}px`;
+        marketSortMenu.style.left = `${Math.max(8, Math.min(innerWidth - marketSortMenu.offsetWidth - 8, r.left))}px`;
+      }
+      function renderMarketSort(section) {
+        const previousBox = section.querySelector(":scope > .aqm-market-sort");
+        const max = new Set(AQM_MARKET_SORTS.map(([value]) => sortBase(value))).size;
+        const count = Math.min(aqmMarketSort.length + 1, max);
+        const signature = JSON.stringify(aqmMarketSort);
+        if (previousBox?.dataset.aqmSortSignature === signature) return;
+        const box = h(
+          "div",
+          { class: "aqm-root aqm-market-sort", "data-aqm-sort-signature": signature },
+          h("strong", {}, "Trier par"),
+          ...Array.from({ length: count }, (_, index) => {
+            const current = aqmMarketSort[index];
+            const label = AQM_MARKET_SORTS.find(([value]) => value === current)?.[1] ?? "Ajouter un tri";
+            return h(
+              "button",
+              {
+                type: "button",
+                "aria-haspopup": "menu",
+                "aria-expanded": "false",
+                "aria-pressed": String(!!current),
+                class: `aqm-market-sort-button${current ? " is-on" : ""}`,
+                onclick: (event) => openMarketSortMenu(event.currentTarget, index)
+              },
+              `${index + 1}. ${label}`
+            );
+          })
+        );
+        if (previousBox) previousBox.replaceWith(box);
+        else section.firstElementChild ? section.firstElementChild.after(box) : section.append(box);
+      }
+      function markSalesCards() {
+        if (!MARKET_SALES_PATH.test(location.pathname)) return;
+        readMarketSales();
+        const section = document.querySelector('section[aria-labelledby="sales-cards"]');
+        if (!section) return;
+        renderMarketSort(section);
+        sortSalesCards(section);
+        for (const card of section.querySelectorAll("ul > li")) {
+          const old = card.querySelector(`[${MARKET_SALES_MARK}]`);
+          if (!marketSalesKeys.has(cardSaleKey(card))) {
+            old?.remove();
+            continue;
+          }
+          if (old) continue;
+          const status = card.querySelector("p.truncate");
+          if (!status) continue;
+          status.append(h("span", { class: "aqm-root aqm-market-sale", title: "Déjà en vente (au marché ou en enchère)", [MARKET_SALES_MARK]: "" }, "Déjà en vente"));
+        }
+      }
       const SELL_CARD = /^vendre une carte$/i;
       let unlisting = false;
       function markUnlistButton() {
@@ -3749,16 +4071,34 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         )
       );
       const BOARD_SCOPE_KEY = "aqm-board-scope";
-      let boardScope = (() => {
+      const BOARD_SORT_KEY = "aqm-board-sort";
+      const stored = (key, ok, fallback) => {
         try {
-          return sessionStorage.getItem(BOARD_SCOPE_KEY) === "friends" ? "friends" : "all";
+          const v = sessionStorage.getItem(key);
+          return ok.includes(v) ? v : fallback;
         } catch {
-          return "all";
+          return fallback;
         }
-      })();
+      };
+      let boardScope = stored(BOARD_SCOPE_KEY, ["all", "friends"], "all");
+      let boardSort = stored(BOARD_SORT_KEY, ["points", "cards", "series"], "points");
+      const sortNow = () => boardScope === "all" && boardSort === "series" ? "points" : boardSort;
+      const SORT_UNIT = {
+        points: ["point", "points", "pts"],
+        cards: ["carte", "cartes", "cartes"],
+        series: ["série complète", "séries complètes", "séries"]
+      };
+      const unitOf = (n, sort = sortNow()) => SORT_UNIT[sort][n > 1 ? 1 : 0];
+      const saveChoice = (key, v) => {
+        try {
+          sessionStorage.setItem(key, v);
+        } catch {
+        }
+      };
       const ROW_MODEL = 'section[aria-labelledby="top-title"] li[data-row]:not([data-me])';
       const PODIUM_MODEL = 'section[aria-label="Podium"]';
-      const GAME_SECTIONS = 'section[aria-label="Podium"], section[aria-labelledby="top-title"]';
+      const STATUS_MODEL = 'section[aria-labelledby="ma-place"]';
+      const GAME_SECTIONS = 'section[aria-label="Podium"], section[aria-labelledby="top-title"], section[aria-labelledby="ma-place"]';
       function markGameBoard() {
         if (location.pathname !== "/jeu/classement") return;
         const title = [...document.querySelectorAll("main h1")].find((el) => /classement/i.test(el.textContent));
@@ -3774,9 +4114,17 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           box = h("section", { class: "aqm-root aqm-friends-board", "aria-label": "Classement des amis" });
           bar.after(box);
         }
-        const friendsOn = boardScope === "friends";
-        if (bar.dataset.scope !== boardScope) {
-          bar.dataset.scope = boardScope;
+        const ours = boardScope === "friends" || sortNow() !== "points";
+        const shown = `${boardScope}|${sortNow()}`;
+        if (bar.dataset.shown !== shown) {
+          bar.dataset.shown = shown;
+          const pick = (key, set) => (v) => {
+            set(v);
+            saveChoice(key, v);
+            markGameBoard();
+            box.repaint?.();
+            if (boardScope === "all" && sortNow() === "points") requestAnimationFrame(() => dispatchEvent(new Event("resize")));
+          };
           bar.replaceChildren(
             chips(
               [
@@ -3784,30 +4132,81 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
                 ["friends", "Amis"]
               ],
               boardScope,
-              (v) => {
-                boardScope = v;
-                try {
-                  sessionStorage.setItem(BOARD_SCOPE_KEY, v);
-                } catch {
-                }
-                markGameBoard();
-                if (v === "all") requestAnimationFrame(() => dispatchEvent(new Event("resize")));
-              }
+              pick(BOARD_SCOPE_KEY, (v) => boardScope = v)
+            ),
+            h(
+              "div",
+              { class: "aqm-board-sort", "aria-label": "Ranger par" },
+              h("span", { class: "aqm-muted" }, "Ranger par"),
+              chips(
+                [["points", "Points"], ["cards", "Cartes"], ...boardScope === "friends" ? [["series", "Séries complètes"]] : []],
+                sortNow(),
+                pick(BOARD_SORT_KEY, (v) => boardSort = v)
+              )
             )
           );
         }
-        box.hidden = !friendsOn;
-        for (const s of document.querySelectorAll(GAME_SECTIONS)) if (s.hasAttribute("data-aqm-board-off") !== friendsOn) s.toggleAttribute("data-aqm-board-off", friendsOn);
-        if (friendsOn && !box.dataset.loaded) {
-          box.dataset.loaded = "1";
-          loadFriendsBoard(box);
+        box.hidden = !ours;
+        for (const s of document.querySelectorAll(GAME_SECTIONS)) if (s.hasAttribute("data-aqm-board-off") !== ours) s.toggleAttribute("data-aqm-board-off", ours);
+        if (ours && box.dataset.loaded !== boardScope) {
+          box.dataset.loaded = boardScope;
+          box.card?.remove();
+          box.card = null;
+          loadBoard(box, boardScope);
         }
-        if (friendsOn && box.repaint && !box.querySelector(".aqm-board-game") && document.querySelector(ROW_MODEL)) box.repaint();
+        const card = box.card;
+        if (card) {
+          card.hidden = !ours;
+          const status = document.querySelector(STATUS_MODEL);
+          if (status && status.nextElementSibling !== card) status.after(card);
+        }
+        if (ours && box.repaint && !box.querySelector(".aqm-board-game") && document.querySelector(ROW_MODEL)) box.repaint();
       }
       const ME_LOOK = ["bg-gradient-to-r", "from-blue-500/[0.18]", "via-blue-500/[0.07]", "to-transparent", "hover:bg-blue-500/[0.06]"];
       const PLAIN_LOOK = ["bg-white/[0.025]", "hover:bg-white/[0.055]"];
       const ME_BAR = ["from-sky-400", "to-white"];
       const PLAIN_BAR = ["from-blue-600", "to-sky-400"];
+      function statusCard(model, d) {
+        const sec = bareCopy(model);
+        sec.setAttribute("aria-labelledby", "aqm-ma-place");
+        sec.classList.add("aqm-friends-status");
+        const grid = [...sec.children].find((el) => el.tagName === "DIV");
+        const [where, , chase] = grid?.children ?? [];
+        const title = where?.querySelector("h2");
+        if (title) {
+          title.id = "aqm-ma-place";
+          const badge = title.querySelector("span");
+          if (badge) badge.textContent = d.place === 1 ? "N°1" : d.place <= 3 ? "Podium" : d.badge;
+        }
+        const [, big, among] = where?.children ?? [];
+        const num = big?.querySelector("span");
+        if (num) num.textContent = fmt(d.place);
+        const sup = big?.querySelector("sup");
+        if (sup) sup.textContent = d.place === 1 ? "er" : "e";
+        if (among) among.textContent = d.among;
+        const text = chase?.querySelector("p");
+        if (text) {
+          const strong = (t) => h("span", { class: "font-bold text-white" }, t);
+          if (!d.target) text.replaceChildren(`${d.first}${d.lead > 0 ? ", avec " : "."}`, ...d.lead > 0 ? [strong(`${fmt(d.lead)} ${unitOf(d.lead)}`), " d’avance sur le 2e."] : []);
+          else text.replaceChildren("Plus que ", strong(`${fmt(d.gap)} ${unitOf(d.gap)}`), " pour dépasser ", strong(d.target.name), ` (${d.target.place}e)`, d.need ? `, soit environ ${d.need}.` : ".");
+        }
+        const jump = chase?.querySelector("button");
+        if (jump) {
+          jump.replaceWith(jump.cloneNode(true));
+          chase.querySelector("button").addEventListener("click", () => document.querySelector(".aqm-friends-board [data-aqm-me], .aqm-friends-podium")?.scrollIntoView({ behavior: "smooth", block: "center" }));
+        }
+        return sec;
+      }
+      function cardsFor(gap, points) {
+        for (const code of ["N", "R", "SR", "SSR", "UR", "SEC"]) {
+          const per = Number(points?.[code]);
+          if (!per) continue;
+          const n = Math.ceil(gap / per);
+          if (n <= 5) return `${n} nouvelle${n > 1 ? "s" : ""} ${code}`;
+        }
+        const ur = Number(points?.UR);
+        return ur ? `${Math.ceil(gap / ur)} nouvelles UR` : null;
+      }
       function bareCopy(model) {
         const copy = model.cloneNode(true);
         for (const el of [copy, ...copy.querySelectorAll("*")]) {
@@ -3843,6 +4242,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           const name = who?.lastElementChild;
           if (name) name.textContent = d.name;
           if (score?.firstElementChild) score.firstElementChild.textContent = d.score;
+          setUnit(score, d.unit);
           [...head.children].slice(3).forEach((el) => el.remove());
           if (d.me) head.append(h("span", { class: "mt-2" }, h("span", { class: TOI_CLASS }, "Toi")));
         });
@@ -3881,38 +4281,59 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         if (stats) stats.replaceChildren(...d.lines.flatMap((t, i) => i ? [document.createElement("br"), t] : [t]));
         const value = score?.firstElementChild;
         if (value) value.textContent = d.score;
+        setUnit(score, d.unit);
         return li;
+      }
+      function setUnit(score, unit) {
+        if (!score || !unit) return;
+        const label = [...score.querySelectorAll("*")].find((el) => !el.children.length && /^\s*pts?\s*$/i.test(el.textContent));
+        if (label) label.textContent = unit;
+        else {
+          const node = [...score.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && /pts?/i.test(n.textContent));
+          if (node) node.textContent = node.textContent.replace(/pts?/i, unit);
+        }
       }
       let gameBoard = null;
       function readGameBoard(force) {
         if (force || !gameBoard || Date.now() - gameBoard.at > 12e4) gameBoard = { at: Date.now(), read: gameWrite("/leaderboard", "GET") };
         return gameBoard.read;
       }
-      async function loadFriendsBoard(box, force = false) {
-        const status = h("p", { class: "aqm-muted aqm-friends-note" }, "Chargement de tes amis…");
+      async function loadBoard(box, scope, force = false) {
+        const id = box.loadId = (box.loadId ?? 0) + 1;
+        const current = () => box.isConnected && box.loadId === id;
+        box.repaint = null;
+        const friends2 = scope === "friends";
+        const status = h("p", { class: "aqm-muted aqm-friends-note" }, friends2 ? "Chargement de tes amis…" : "Chargement du classement…");
         const podium = h("div", { class: "aqm-friends-podium-box" });
         const list = h("ol", { class: "aqm-board" });
         const foot = h("div", { class: "aqm-board-refresh" });
         box.replaceChildren(status, podium, list, foot);
         let board;
-        let mates;
+        let mates = null;
         try {
-          [board, mates] = await Promise.all([readGameBoard(force), ask({ type: "friends" })]);
+          [board, mates] = await Promise.all([readGameBoard(force), friends2 ? ask({ type: "friends" }) : null]);
         } catch (e) {
-          status.textContent = `Classement indisponible (${e.message}).`;
+          if (current()) status.textContent = `Classement indisponible (${e.message}).`;
           return;
         }
-        if (!box.isConnected) return;
+        if (!current()) return;
         const points = board?.points ?? {};
-        const top = new Map((Array.isArray(board?.top) ? board.top : []).map((e) => [e?.player?.id, e]));
-        const meEntry = board?.me?.player?.id === mates.me ? board.me : null;
-        const rows = [{ id: mates.me, me: true }, ...mates.friends].map((p) => {
+        const topList = Array.isArray(board?.top) ? board.top : [];
+        const top = new Map(topList.map((e) => [e?.player?.id, e]));
+        const myId2 = friends2 ? mates.me : board?.me?.player?.id ?? null;
+        const meEntry = board?.me?.player?.id && board.me.player.id === myId2 ? board.me : null;
+        const people = friends2 ? [{ id: mates.me, me: true }, ...mates.friends] : [...topList.map((e) => ({ id: e?.player?.id, name: e?.player?.name })), ...meEntry && !top.has(myId2) ? [{ id: myId2 }] : []].filter((p) => p.id).map((p) => ({ ...p, me: p.id === myId2 }));
+        const rows = people.map((p) => {
           const official = top.get(p.id) ?? (p.me ? meEntry : null);
           return { ...p, name: official?.player?.name ?? p.name, image: official?.player?.image ?? null, official, state: official?.score != null ? "ok" : "loading" };
         });
-        if (mates.friendsError) status.textContent = `Liste d'amis indisponible (${mates.friendsError}).`;
-        else if (!mates.friends.length) status.textContent = "Tu n'as pas encore d'amis dans le jeu : ajoute-en depuis leur profil pour te comparer à eux.";
-        else status.textContent = `${mates.friends.length} ami${mates.friends.length > 1 ? "s" : ""} · les points du classement du jeu.`;
+        const note = () => {
+          if (!friends2) return `Le top 100 du jeu${meEntry && !top.has(myId2) ? " et toi" : ""}, rangé par nombre de cartes.`;
+          if (mates.friendsError) return `Liste d'amis indisponible (${mates.friendsError}).`;
+          if (!mates.friends.length) return "Tu n'as pas encore d'amis dans le jeu : ajoute-en depuis leur profil pour te comparer à eux.";
+          const what = { points: "les points du classement du jeu", cards: "rangés par nombre de cartes", series: "rangés par séries complètes (badge récupéré)" }[sortNow()];
+          return `${mates.friends.length} ami${mates.friends.length > 1 ? "s" : ""} · ${what}.`;
+        };
         let rareSet = null;
         let exact = false;
         const calibrate = (by) => {
@@ -3923,7 +4344,11 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         const scoreOf = (by) => Object.entries(by ?? {}).reduce((n, [r, c]) => n + (Number(points[r]) || 0) * c, 0);
         const apply = (row, p) => {
           row.best = p.best ?? row.best ?? null;
-          if (row.official) return;
+          if (!p.private && Number.isFinite(p.albums)) row.albums = p.albums;
+          if (row.official) {
+            if (p.private) row.albumsHidden = true;
+            return;
+          }
           if (p.private) row.state = "private";
           else if (!p.byRarity) row.state = "error";
           else Object.assign(row, { state: "ok", score: scoreOf(p.byRarity), cards: Object.values(p.byRarity).reduce((a, b) => a + b, 0), by: p.byRarity });
@@ -3931,43 +4356,78 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         let frame = 0;
         const later = () => frame || (frame = requestAnimationFrame(() => (frame = 0, paint())));
         const paint = () => {
-          if (!box.isConnected) return;
-          const value = (r) => r.state !== "ok" ? -1 : r.official ? r.official.score : r.score;
-          const sorted = [...rows].sort((a, b) => value(b) - value(a) || String(a.name).localeCompare(String(b.name)));
-          const leader = Math.max(1, ...sorted.map(value));
-          let place = 0;
-          const scoreText = (r) => `${r.official || exact ? "" : "≈ "}${fmt(value(r))}`;
-          const titleOf = (r) => r.official ? "Score du classement du jeu" : exact ? "Calculé depuis sa collection, avec le barème du jeu" : "Calculé depuis sa collection, avec le barème du jeu (peut différer un peu du jeu)";
+          if (!current()) return;
+          const sort = sortNow();
+          status.textContent = note();
+          const pointsOf = (r) => r.state !== "ok" ? null : r.official ? r.official.score : r.score;
+          const cardsOf = (r) => r.state !== "ok" ? null : r.official ? r.official.cards : r.cards;
+          const rareOf = (r) => r.official ? r.official.rare : rareSet && r.by ? rareSet.reduce((n, k) => n + (r.by[k] ?? 0), 0) : null;
+          const value = (r) => sort === "cards" ? cardsOf(r) : sort === "series" ? r.state === "ok" && Number.isFinite(r.albums) ? r.albums : null : pointsOf(r);
+          const has = (r) => value(r) != null;
+          const sorted = [...rows].sort((a, b) => has(b) - has(a) || (value(b) ?? 0) - (value(a) ?? 0) || (pointsOf(b) ?? -1) - (pointsOf(a) ?? -1) || String(a.name).localeCompare(String(b.name)));
+          const leader = Math.max(1, ...sorted.map((r) => value(r) ?? 0));
+          const approx = (r) => sort === "points" && !r.official && !exact;
+          const valueText = (r) => `${approx(r) ? "≈ " : ""}${fmt(value(r))}`;
+          const titleOf = (r) => sort === "series" ? "Séries complètes : les albums dont le badge est récupéré" : r.official ? sort === "cards" ? "Cartes du classement du jeu" : "Score du classement du jeu" : sort === "cards" ? "Cartes différentes, lues dans sa collection" : exact ? "Calculé depuis sa collection, avec le barème du jeu" : "Calculé depuis sa collection, avec le barème du jeu (peut différer un peu du jeu)";
+          const linesOf = (r) => {
+            const rare = rareOf(r);
+            return [
+              r.official?.rank ? `${fmt(r.official.rank)}e du jeu` : "hors du top 100",
+              sort !== "points" ? `${pointsOf(r) != null && !r.official && !exact ? "≈ " : ""}${fmt(pointsOf(r))} pts` : null,
+              sort !== "cards" ? `${fmt(cardsOf(r))} cartes` : null,
+              sort !== "series" && friends2 && Number.isFinite(r.albums) ? `${fmt(r.albums)} séries` : null,
+              sort === "points" && rare != null ? `${fmt(rare)} rares` : null
+            ].filter(Boolean);
+          };
+          const waiting = (r) => r.state === "private" ? "Collection privée" : r.state === "error" ? "Collection indisponible" : r.albumsHidden ? "Collection privée" : "Lecture…";
           const model = document.querySelector(ROW_MODEL);
           const podiumModel = document.querySelector(PODIUM_MODEL);
           list.className = model ? `${model.parentElement.className} aqm-board-game` : "aqm-board";
-          const ranked = sorted.filter((r) => r.state === "ok");
+          const ranked = sorted.filter(has);
           const onPodium = model && podiumModel && ranked.length >= 3 ? ranked.slice(0, 3) : [];
           podium.replaceChildren(
             ...onPodium.length ? [
               gamePodium(
                 podiumModel,
-                onPodium.map((r) => ({ id: r.id, me: !!r.me, name: r.name || "Joueur", score: fmt(value(r)), title: titleOf(r), card: r.official?.best?.card ?? r.best ?? null }))
+                onPodium.map((r) => ({ id: r.id, me: !!r.me, name: r.name || "Joueur", score: valueText(r), unit: SORT_UNIT[sort][2], title: titleOf(r), card: r.official?.best?.card ?? r.best ?? null }))
               )
             ] : []
           );
-          place = onPodium.length;
+          let place = onPodium.length;
+          const statusModel = document.querySelector(STATUS_MODEL);
+          const mine = ranked.findIndex((r) => r.me);
+          if (statusModel && mine >= 0) {
+            const above = ranked[mine - 1];
+            const gap = above ? value(above) - value(ranked[mine]) + 1 : 0;
+            const card = statusCard(statusModel, {
+              place: mine + 1,
+              badge: friends2 ? "Amis" : "Cartes",
+              among: friends2 ? `sur ${fmt(ranked.length)} avec tes amis` : `sur ${fmt(ranked.length)}, en cartes`,
+              first: friends2 ? { points: "Tu as la plus belle collection de tes amis", cards: "Tu as le plus de cartes de tes amis", series: "Tu as le plus de séries complètes de tes amis" }[sort] : "Tu as le plus de cartes du top 100",
+              target: above ? { name: above.name || "Joueur", place: mine } : null,
+              gap,
+              need: above && sort === "points" ? cardsFor(gap, points) : null,
+              lead: ranked[1] && mine === 0 ? value(ranked[0]) - value(ranked[1]) : 0
+            });
+            card.hidden = box.hidden;
+            box.card?.remove();
+            box.card = card;
+            statusModel.after(card);
+          }
           if (model) {
             list.replaceChildren(
               ...sorted.filter((r) => !onPodium.includes(r)).map((r) => {
-                const ok = r.state === "ok";
+                const ok = has(r);
                 if (ok) place++;
-                const o = r.official;
-                const cards = o ? o.cards : r.cards;
-                const rare = o ? o.rare : rareSet && r.by ? rareSet.reduce((n, k) => n + (r.by[k] ?? 0), 0) : null;
                 return gameRow(model, {
                   id: r.id,
                   me: !!r.me,
                   place: ok ? String(place) : "–",
                   name: r.name || "Joueur",
                   width: ok ? Math.min(100, Math.max(1.5, 100 * value(r) / leader)) : 0,
-                  lines: ok ? [o?.rank ? `${fmt(o.rank)}e du jeu` : "hors du top 100", `${fmt(cards)} cartes`, rare != null ? `${fmt(rare)} rares` : null].filter(Boolean) : [r.state === "private" ? "Collection privée" : r.state === "error" ? "Collection indisponible" : "Lecture…"],
-                  score: ok ? scoreText(r) : "–",
+                  lines: ok ? linesOf(r) : [waiting(r)],
+                  score: ok ? valueText(r) : "–",
+                  unit: SORT_UNIT[sort][2],
                   title: titleOf(r)
                 });
               })
@@ -3975,37 +4435,32 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           } else
             list.replaceChildren(
               ...sorted.map((r) => {
-                const ok = r.state === "ok";
+                const ok = has(r);
                 if (ok) place++;
-                const o = r.official;
-                const cards = o ? o.cards : r.cards;
-                const rare = o ? o.rare : rareSet && r.by ? rareSet.reduce((n, k) => n + (r.by[k] ?? 0), 0) : null;
-                const detail = ok ? [o?.rank ? `${fmt(o.rank)}e du jeu` : "hors du top 100", `${fmt(cards)} cartes`, rare != null ? `${fmt(rare)} rares` : null].filter(Boolean).join(" · ") : r.state === "private" ? "Collection privée" : r.state === "error" ? "Collection indisponible" : "Lecture de sa collection…";
                 return h(
                   "li",
-                  { class: `aqm-row${r.me ? " is-me" : ""}` },
+                  { class: `aqm-row${r.me ? " is-me" : ""}`, ...r.me ? { "data-aqm-me": "" } : {} },
                   h("span", { class: `aqm-place aqm-place-${place}` }, ok ? String(place) : "–"),
                   h("img", { class: "aqm-avatar", src: r.image || avatarUrl(r.id), alt: "", loading: "lazy" }),
                   h(
                     "div",
                     { class: "aqm-friend-main" },
                     h("a", { class: "aqm-name", href: `/profile/${encodeURIComponent(r.id)}` }, r.name || "Joueur", r.me ? h("span", { class: "aqm-tag" }, "Toi") : null),
-                    h("small", { class: "aqm-muted" }, detail),
+                    h("small", { class: "aqm-muted" }, ok ? linesOf(r).join(" · ") : waiting(r)),
                     ok ? h("span", { class: "aqm-bar" }, h("span", { style: `width:${(100 * value(r) / leader).toFixed(2)}%` })) : null
                   ),
-                  h(
-                    "div",
-                    { class: "aqm-friend-score", title: o ? "Score du classement du jeu" : exact ? "Calculé depuis sa collection, avec le barème du jeu" : "Calculé depuis sa collection, avec le barème du jeu (peut différer un peu du jeu)" },
-                    ok ? h("strong", {}, `${o || exact ? "" : "≈ "}${fmt(value(r))}`) : null,
-                    ok ? h("small", {}, "pts") : null
-                  )
+                  h("div", { class: "aqm-friend-score", title: titleOf(r) }, ok ? h("strong", {}, valueText(r)) : null, ok ? h("small", {}, SORT_UNIT[sort][2]) : null)
                 );
               })
             );
-          const reading = rows.filter((r) => r.state === "loading").length;
+          const reading = rows.filter((r) => r.state === "loading" || friends2 && sort === "series" && r.state === "ok" && !Number.isFinite(r.albums) && !r.albumsHidden).length;
           foot.replaceChildren(
-            h("span", { class: "aqm-muted" }, reading ? `Lecture de ${fmt(reading)} collection${reading > 1 ? "s" : ""}…` : "Les amis hors du top 100 : score calculé depuis leur collection."),
-            h("button", { type: "button", class: "aqm-chip", disabled: reading ? true : null, onclick: () => loadFriendsBoard(box, true) }, "Actualiser")
+            h(
+              "span",
+              { class: "aqm-muted" },
+              reading ? `Lecture de ${fmt(reading)} collection${reading > 1 ? "s" : ""}…` : friends2 ? "Les amis hors du top 100 : score calculé depuis leur collection." : "Le jeu ne donne que son top 100 : les joueurs plus loin n’y sont pas."
+            ),
+            h("button", { type: "button", class: "aqm-chip", disabled: reading ? true : null, onclick: () => loadBoard(box, scope, true) }, "Actualiser")
           );
         };
         box.repaint = later;
@@ -4015,8 +4470,9 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           known = await ask({ type: "board-known" });
         } catch {
         }
-        const usable = (p) => p && (p.private || p.byRarity && "best" in p) && Date.now() - p.at < (known.fresh ?? 36e5);
-        const todo = rows;
+        if (!current()) return;
+        const usable = (p) => p && (p.private || p.byRarity && "best" in p && "albums" in p) && Date.now() - p.at < (known.fresh ?? 36e5);
+        const todo = friends2 ? rows : [...rows].sort((a, b) => (b.official?.cards ?? 0) - (a.official?.cards ?? 0)).slice(0, 3).filter((r) => !r.official?.best?.card);
         for (const r of todo) {
           const p = known.players?.[r.id];
           if (!force && usable(p)) {
@@ -4029,7 +4485,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           todo.filter((r) => force || !usable(known.players?.[r.id])),
           4,
           async (row) => {
-            if (!box.isConnected) return;
+            if (!current()) return;
             try {
               const p = await ask({ type: "player", id: row.id, fresh: force });
               if (row.me) calibrate(p.byRarity);
@@ -5526,7 +5982,21 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         });
         if (completed) strip.scrollTo?.({ left: 0, behavior: "smooth" });
       }
+      const MISSING_FRESH = 2 * 6e4;
+      function forgetMissing() {
+        if (missingCounts) missingCounts.at = 0;
+        if (missingExtra) missingExtra.at = 0;
+      }
       const VIEW_TABS = /^(mes cartes|mes doublons|album complet)$/i;
+      const VIEW_TAB_TAGS = 'button, a, [role="radio"], [role="tab"]';
+      const tabText = (el) => el.textContent.replace(/\s+/g, " ").trim();
+      const viewTabs = () => [...document.querySelectorAll(VIEW_TAB_TAGS)].filter((b) => !b.closest(".aqm-root") && !b.classList.contains("aqm-missing-tab") && VIEW_TABS.test(tabText(b)) && !b.parentElement?.closest(VIEW_TAB_TAGS));
+      function pickedTab(tabs) {
+        const marked = tabs.find((b) => ["aria-checked", "aria-selected", "aria-pressed"].some((a) => b.getAttribute(a) === "true") || b.hasAttribute("aria-current") || b.getAttribute("data-state") === "active");
+        if (marked) return marked;
+        const looks = tabs.map((b) => b.className);
+        return tabs.length > 2 ? tabs.find((b) => looks.filter((c) => c === b.className).length === 1) : null;
+      }
       const MISSING_KEY = "aqm-missing-only";
       let missingOn = (() => {
         try {
@@ -5552,8 +6022,8 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         addEventListener(
           "click",
           (e) => {
-            const b = e.target.closest?.("button");
-            if (!b || clickingFull || b.closest(".aqm-root") || b.classList.contains("aqm-missing-tab") || !VIEW_TABS.test(b.textContent.trim())) return;
+            const b = e.target.closest?.(VIEW_TAB_TAGS);
+            if (!b || clickingFull || b.closest(".aqm-root") || b.classList.contains("aqm-missing-tab") || !VIEW_TABS.test(tabText(b))) return;
             setMissingOnly(false);
             setTimeout(markMissingTab, 50);
           },
@@ -5562,11 +6032,10 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
       });
       function markMissingTab() {
         if (!location.pathname.startsWith("/jeu/collection")) return;
-        const tabs = [...document.querySelectorAll("button")].filter((b) => !b.closest(".aqm-root") && VIEW_TABS.test(b.textContent.trim()));
-        const full = tabs.find((b) => /^album complet$/i.test(b.textContent.trim()));
+        const tabs = viewTabs();
+        const full = tabs.find((b) => /^album complet$/i.test(tabText(b)));
         if (!full) return;
-        const looks = tabs.map((b) => b.className);
-        const selected = tabs.find((b) => looks.filter((c) => c === b.className).length === 1 && tabs.length > 2) ?? full;
+        const selected = pickedTab(tabs) ?? full;
         if (missingOn && missingVisit !== pageVisit) {
           missingVisit = pageVisit;
           missingAt = Date.now();
@@ -5579,10 +6048,14 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         if (missingOn && selected !== full && Date.now() - missingAt > 2e3) setMissingOnly(false);
         const on2 = missingOnly();
         const plain = tabs.find((b) => b !== selected) ?? full;
-        let tab = full.parentElement.querySelector(":scope > .aqm-missing-tab");
+        const group = full.parentElement;
+        const ours = [...group.children].filter((el) => el.__aqmMissingTab || el.classList.contains("aqm-missing-tab"));
+        let tab = ours[0] ?? null;
+        for (const el of [...ours.slice(1), ...group.querySelectorAll(":scope > button:not([role]):not([class])")]) if (el !== tab && !el.textContent.trim()) el.remove();
         if (!tab) {
           tab = h("button", {
             type: "button",
+            class: `${plain.className} aqm-missing-tab`,
             onclick: () => {
               const now = !missingOnly();
               setMissingOnly(now);
@@ -5593,10 +6066,14 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
               }
               markMissingTab();
             }
-          });
+          }, "Manquantes");
+          tab.__aqmMissingTab = true;
           full.after(tab);
         }
-        const pill = [...full.querySelectorAll("*")].find((el) => getComputedStyle(el).position === "absolute");
+        fitTabs(full.parentElement, tab, full);
+        const slider = [...full.parentElement.children].find((el) => !tabs.includes(el) && el !== tab && !el.closest(".aqm-root") && getComputedStyle(el).position === "absolute");
+        const pill = [...full.querySelectorAll("*")].find((el) => getComputedStyle(el).position === "absolute") ?? (selected === full ? slider : null);
+        if (slider && slider !== pill) slider.toggleAttribute("data-aqm-pill-off", on2);
         const source = pill ?? (selected === full && !on2 ? full : null);
         if (source && !pillLook) {
           const cs = getComputedStyle(source);
@@ -5617,6 +6094,168 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         if (tab.textContent !== "Manquantes") tab.textContent = "Manquantes";
         tab.setAttribute("aria-pressed", String(on2));
         filterMissing(on2);
+        showMissingSummary(full.parentElement, on2);
+        showMissingExtras(on2);
+      }
+      let cardsShown = null;
+      let missingExtra = null;
+      let extraAsking = null;
+      let extraAskedAt = 0;
+      onStart(
+        () => addEventListener("message", (e) => {
+          if (e.source !== window || e.origin !== location.origin) return;
+          if (e.data?.aquaman === "cards-shown" && Array.isArray(e.data.ids) && sameQuery(String(e.data.query ?? ""), pageFilter())) {
+            cardsShown = { query: String(e.data.query ?? ""), ids: new Set(e.data.ids), names: new Map((e.data.names ?? []).filter((x) => Array.isArray(x)).map(([id, name, series]) => [id, [String(name ?? ""), String(series ?? "")]])) };
+            markMissingTab();
+          }
+        })
+      );
+      function pageFilter() {
+        const p = new URLSearchParams(location.search);
+        return { album: p.get("vue") === "album", manga: p.get("serie") || "", rarity: p.get("rarete") || "", kind: p.get("type") || "", q: (p.get("q") || "").trim().slice(0, 80) };
+      }
+      const sameQuery = (query, f) => {
+        const p = new URLSearchParams(query);
+        return !p.has("owned") && (p.get("manga") || "") === f.manga && (p.get("rarity") || "") === f.rarity && (p.get("type") || "") === f.kind && (p.get("q") || "") === f.q;
+      };
+      function askMissingExtra(f, key) {
+        if (extraAsking || Date.now() - extraAskedAt < 1e4) return;
+        extraAskedAt = Date.now();
+        extraAsking = (async () => {
+          for (let tries = 0; tries < 10 && !stopped; tries++) {
+            const r = await ask({ type: "missing-cards", rarity: f.rarity, kind: f.kind, q: f.q, manga: f.manga });
+            missingExtra = { key, at: Date.now(), cards: r.cards ?? [], pending: r.pending ?? 0 };
+            markMissingTab();
+            if (!(r.pending > 0) || key !== JSON.stringify(pageFilter())) break;
+          }
+        })().catch(() => {
+        }).finally(() => extraAsking = null);
+      }
+      function showMissingExtras(on2) {
+        const page = document.querySelector("main") ?? document.body;
+        const old = page.querySelector(".aqm-missing-extra");
+        const f = pageFilter();
+        const key = JSON.stringify(f);
+        const clear = () => old?.remove();
+        if (!on2 || !f.album) return clear();
+        if (!missingExtra || missingExtra.key !== key || Date.now() - missingExtra.at > MISSING_FRESH) askMissingExtra(f, key);
+        if (!cardsShown || !sameQuery(cardsShown.query, f) || missingExtra?.key !== key) return clear();
+        const links = [...page.querySelectorAll('a[href^="/jeu/carte/"]')].filter((a) => !a.closest(".aqm-root"));
+        const lists = [...new Set(links.map((a) => a.closest("ul")).filter(Boolean))];
+        if (!lists.length || links.length < cardsShown.ids.size) return clear();
+        const extras = missingExtra.cards.filter((c) => !cardsShown.ids.has(c.id));
+        if (!extras.length) return clear();
+        const sig = `${key}|${extras.map((c) => c.id).join(",")}`;
+        const last = lists[lists.length - 1];
+        if (old?.dataset.sig === sig && old.previousElementSibling === last) return;
+        const tileOf = (a) => a.closest("li");
+        const models = {};
+        for (const a of links) {
+          const label = a.getAttribute("aria-label") ?? "";
+          const code = Object.keys(RARITY_NAMES).find((c) => label.includes(`, ${RARITY_NAMES[c]}`));
+          const id = a.getAttribute("href").split("/").pop();
+          if (code && !models[code] && cardsShown.names.has(id) && tileOf(a)) models[code] = { li: tileOf(a), id };
+        }
+        const box = h(
+          "div",
+          { class: "aqm-root aqm-missing-extra", "data-sig": sig },
+          h("p", { class: "aqm-missing-extra-note" }, `${fmt(extras.length)} carte${extras.length > 1 ? "s" : ""} manquante${extras.length > 1 ? "s" : ""} que le jeu n’affiche pas ici, ajoutée${extras.length > 1 ? "s" : ""} par Aquaman`),
+          h("ul", { class: last.className }, extras.map((c) => missingTile(c, models[c.rarity] ?? Object.values(models)[0], cardsShown.names)))
+        );
+        old?.remove();
+        last.after(box);
+      }
+      function missingTile(c, model, names) {
+        const href = `/jeu/carte/${encodeURIComponent(c.id)}`;
+        const label = `${c.name}, ${RARITY_NAMES[c.rarity] ?? c.rarity}, pas encore obtenue`;
+        if (!model) return h("li", {}, h("a", { href, "aria-label": label, class: "aqm-missing-plain" }, h("img", { src: cardImageUrl(c.image), alt: c.name, loading: "lazy" }), h("span", {}, c.name)), h("p", { class: "aqm-muted" }, "Manquante"));
+        const li = bareCopy(model.li);
+        li.querySelectorAll(".aqm-sale").forEach((el) => el.remove());
+        const a = li.querySelector("a");
+        if (a) {
+          a.setAttribute("href", href);
+          a.setAttribute("aria-label", label);
+        }
+        const img = li.querySelector("img");
+        if (img) {
+          img.removeAttribute("srcset");
+          img.removeAttribute("sizes");
+          img.src = cardImageUrl(c.image);
+          img.alt = c.name;
+          img.loading = "lazy";
+        }
+        const [name, series] = names.get(model.id) ?? [];
+        const walker = document.createTreeWalker(li, NodeFilter.SHOW_TEXT);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          const t = n.textContent.trim();
+          if (name && t === name) n.textContent = c.name;
+          else if (series && t === series) n.textContent = c.series;
+        }
+        const tag = [...li.querySelectorAll("p")].find((p) => /^(manquante|[×x]\s*\d+)/i.test(p.textContent.trim()));
+        if (tag) tag.replaceChildren(h("span", { class: "text-zinc-600" }, "Manquante"), ...c.maxCopies ? [h("span", { class: "text-zinc-500" }, `${c.minted ?? 0}/${c.maxCopies}`)] : []);
+        return li;
+      }
+      let missingCounts = null;
+      let missingAsking = null;
+      let missingAskedAt = 0;
+      function askMissingCounts() {
+        if (missingAsking || Date.now() - missingAskedAt < 15e3) return;
+        missingAskedAt = Date.now();
+        missingAsking = (async () => {
+          for (let tries = 0; tries < 15 && !stopped; tries++) {
+            const counts = await ask({ type: "rarity-counts" });
+            missingCounts = { at: Date.now(), byRarity: counts.byRarity, pending: counts.pending, counted: counts.counted, series: counts.series };
+            markMissingTab();
+            if (!(counts.pending > 0) || counts.failed) break;
+          }
+        })().catch(() => {
+        }).finally(() => missingAsking = null);
+      }
+      onStart(
+        () => addEventListener("message", (e) => {
+          if (e.source === window && e.data?.aquaman === "collection-stale") forgetMissing();
+        })
+      );
+      function showMissingSummary(row, on2) {
+        const bar = row?.parentElement;
+        let box = bar?.parentElement?.querySelector(":scope > .aqm-missing-summary");
+        if (!on2) {
+          if (box) box.hidden = true;
+          return;
+        }
+        if (!bar?.parentElement) return;
+        if (!box) {
+          box = h("div", { class: "aqm-root aqm-missing-summary", role: "status" });
+          bar.after(box);
+        }
+        box.hidden = false;
+        if (!missingCounts || Date.now() - missingCounts.at > MISSING_FRESH) askMissingCounts();
+        const sig = JSON.stringify(missingCounts);
+        if (box.dataset.sig === sig) return;
+        box.dataset.sig = sig;
+        if (!missingCounts) return void box.replaceChildren("Comptage des cartes manquantes…");
+        const rows = Object.entries(missingCounts.byRarity ?? {}).map(([code, r]) => [code, Math.max(0, (r.total || 0) - (r.owned || 0))]).filter(([, n]) => n > 0);
+        const sum = rows.reduce((n, [, m]) => n + m, 0);
+        box.replaceChildren(
+          ...[
+            h("span", { class: "aqm-label" }, "Manquantes"),
+            ...rows.map(([code, n]) => h("span", { class: "aqm-missing-count" }, h("strong", {}, fmt(n)), rarityCode(code))),
+            h("span", { class: "aqm-missing-count is-total" }, h("strong", {}, fmt(sum)), "au total"),
+            missingCounts.pending > 0 ? h("small", { class: "aqm-muted" }, `(comptage : ${fmt(missingCounts.counted)} séries sur ${fmt(missingCounts.series)}…)`) : null
+          ].filter(Boolean)
+          // (replaceChildren écrirait « null »)
+        );
+      }
+      function fitTabs(group, tab, full) {
+        if (!group) return;
+        const cs = getComputedStyle(group);
+        if (cs.display.includes("grid")) {
+          const count = [...group.children].filter((el) => el === tab || el.getAttribute("role") === "radio" || el.matches("button, a")).length;
+          const cols = `repeat(${count}, minmax(0, auto))`;
+          if (group.style.gridTemplateColumns !== cols) group.style.gridTemplateColumns = cols;
+        } else if (Math.abs(tab.getBoundingClientRect().top - full.getBoundingClientRect().top) > 4) {
+          group.style.flexWrap = "nowrap";
+        }
       }
       let pillLook = null;
       let plainColor = "";
@@ -5661,7 +6300,8 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           },
           { rootMargin: "300px" }
         );
-        for (const el of elementsWithText(document.body, /^\s*manquante\s*$/i)) {
+        const extra = [...document.querySelectorAll(".aqm-missing-extra")].flatMap((box) => elementsWithText(box, /^\s*manquante\s*$/i));
+        for (const el of [...elementsWithText(document.body, /^\s*manquante\s*$/i), ...extra]) {
           if (el.childElementCount || el.hasAttribute("data-aqm-sale") || !/^manquante$/i.test(el.textContent.trim())) continue;
           el.setAttribute("data-aqm-sale", "");
           saleWatch.observe(el);
@@ -6004,10 +6644,10 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         if (soon) {
           clearTimeout(snapTimer);
           snapTimer = setTimeout(() => {
-            if (stopped || !on("collectionStats") || Date.now() - snapAt < 5 * 6e4) return;
+            if (stopped || !on("collectionStats")) return;
             snapAt = Date.now();
             send({ type: "collection-snapshot" });
-          }, 1e4);
+          }, Math.max(1e4, snapAt + 5 * 6e4 - Date.now()));
           return;
         }
         if (Date.now() - snapAt < 30 * 6e4) return;
@@ -6067,7 +6707,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
                   h("p", {}, h("strong", {}, fmt(r.owned)), r.total ? h("small", {}, ` / ${fmt(r.total)} · ${pct(r.owned / r.total)}`) : null),
                   bar(r.total ? r.owned / r.total : 0, ` aqm-bar-${code}`)
                 ),
-                h("span", { class: "aqm-progress-copies", title: "Exemplaires de cette rareté (doublons compris)" }, `${fmt(r.copies)} ex.`)
+                h("span", { class: "aqm-progress-copies", title: "Exemplaires de cette rareté, un par carte (les doublons ne comptent pas)" }, `${fmt(r.copies)} ex.`)
               )
             )
           );
@@ -6486,11 +7126,11 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         const doubles = [...document.querySelectorAll("button")].find((b) => !b.closest(".aqm-root") && /^doublons\b/i.test(b.textContent.trim()));
         const chips2 = doubles?.parentElement;
         if (!chips2 || ![...chips2.querySelectorAll("button")].some((b) => /^toutes$/i.test(b.textContent.trim()))) return null;
-        const tabText = (b) => b.textContent.trim().toLowerCase();
+        const tabText2 = (b) => b.textContent.trim().toLowerCase();
         for (let box = chips2.parentElement, up = 0; box && box !== document.body && up < 10; box = box.parentElement, up++) {
-          const tabs = [...box.querySelectorAll('button, [role="tab"]')].filter((b) => /^(tu donnes|tu demandes|perles et mot)$/.test(tabText(b)));
-          const gives = tabs.find((b) => tabText(b) === "tu donnes");
-          const asks = tabs.find((b) => tabText(b) === "tu demandes");
+          const tabs = [...box.querySelectorAll('button, [role="tab"]')].filter((b) => /^(tu donnes|tu demandes|perles et mot)$/.test(tabText2(b)));
+          const gives = tabs.find((b) => tabText2(b) === "tu donnes");
+          const asks = tabs.find((b) => tabText2(b) === "tu demandes");
           if (!gives || !asks) continue;
           const marked = tabs.find((b) => b.getAttribute("aria-selected") === "true" || b.getAttribute("data-state") === "active" || b.getAttribute("aria-pressed") === "true");
           const odd = tabs.find((b) => tabs.filter((x) => x.className === b.className).length === 1);
@@ -6668,7 +7308,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           if (p.over)
             return h(
               "div",
-              { class: "aqm-pity-line", title: `Le jeu garantit une ${code} tous les ${fmt(p.every)} boosters, mais Aquaman en a compté ${fmt(p.since)} depuis ta dernière ${code} : le jeu ne compte pas tous ces boosters pour sa garantie. Le compte repart à ta prochaine ${code}.` },
+              { class: "aqm-pity-line", title: `Le jeu garantit une ${code} tous les ${fmt(p.every)} boosters, mais Aquaman en a compté ${fmt(p.since)} depuis ta dernière ${code} (packs spéciaux exclus) : des boosters ouverts avant Aquaman 1.6.1 dont la sorte est inconnue étaient sans doute des packs spéciaux. Le compte repart à ta prochaine ${code}.` },
               h("p", {}, rarityCode(code), " garantie ", h("strong", {}, "au prochain booster"), " en principe"),
               h("span", { class: "aqm-bar" }, h("span", { style: "width:100%" })),
               h("small", {}, `${fmt(p.since)} boosters comptés depuis ta dernière ${code}, plus que les ${fmt(p.every)} du jeu`)
@@ -6714,6 +7354,8 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
               off: "Compté par Aquaman à chaque booster ouvert sur ce navigateur (partage entre appareils désactivé)."
             }[pityReport2.sync] ?? "Compté par Aquaman à chaque booster ouvert."
           ),
+          // (comme dans le jeu, la garantie SSR et UR ne compte pas les packs spéciaux)
+          pityReport2.skipped > 0 ? h("p", { class: "aqm-pity-note" }, `${fmt(pityReport2.skipped)} pack${pityReport2.skipped > 1 ? "s" : ""} spécia${pityReport2.skipped > 1 ? "ux" : "l"} (Légendaire, Halloween…) hors garantie, comme dans le jeu.`) : null,
           h("div", { class: "aqm-pity-more" }, h("button", { type: "button", class: "aqm-album-btn", onclick: openPityHistory }, "📜 Historique"))
         );
       }
@@ -6786,7 +7428,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         const tiles = (code) => {
           const { current } = r[code];
           const hits = hitsOf(code);
-          const full = hits.filter((x) => !x.first).map((x) => x.after);
+          const full = hits.filter((x) => !x.first && !x.special).map((x) => x.after);
           const stat = (label, value) => h("div", { class: "aqm-history-stat" }, h("small", {}, label), h("strong", {}, value));
           const all = r[code].hits.length;
           return [
@@ -6809,7 +7451,8 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
                   x.card?.id ? "a" : "div",
                   { class: "aqm-history-tile", ...link, title: tip },
                   x.card?.image ? h("img", { src: cardImageUrl(x.card.image), alt: x.card.name ?? "", loading: "lazy", decoding: "async" }) : h("div", { class: "aqm-history-blank" }, rarityCode(x.top)),
-                  h("p", { class: "aqm-history-after" }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after)),
+                  // (une carte d'un pack spécial : hors garantie, elle ne fait pas repartir le compte)
+                  h("p", { class: "aqm-history-after" }, x.special ? "Hors garantie" : x.first ? `≥ ${boosters(x.after)}` : boosters(x.after)),
                   h("p", { class: `aqm-history-pack${x.pack ? "" : " is-unknown"}` }, packName(x))
                 );
               })
@@ -7739,7 +8382,9 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
       }
       const RECYCLE_TITLE = /^recycler des cartes$/i;
       const recycleSeen = /* @__PURE__ */ new WeakSet();
-      let recycleOpened = 0;
+      let recycleIntent = "none";
+      let recyclePrepared = null;
+      let recycleJob = null;
       function tickBox(row) {
         const known = row.querySelector('input[type="checkbox"], [role="checkbox"], [aria-checked]');
         if (known) return known;
@@ -7763,7 +8408,15 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
       }
       function recycleCount(dialog) {
         const b = [...dialog.querySelectorAll("button")].find((x) => !x.closest(".aqm-root") && /^recycler\b/i.test(x.textContent.trim()));
-        return b ? Number(b.textContent.trim().match(/^recycler\s+([\d\s  ]+)/i)?.[1]?.replace(/\s/g, "") || 0) : null;
+        return b ? Number(b.textContent.trim().match(/^recycler\s+([\d\s  ]+)/i)?.[1]?.replace(/\s/g, "") || 0) : null;
+      }
+      function sparesMode(dialog) {
+        const modes = dialog.querySelector('[role="radiogroup"]');
+        if (!modes) return { total: null };
+        const spares = [...modes.querySelectorAll('[role="radio"]')].find((b) => /mes doublons/i.test(b.textContent));
+        if (spares?.getAttribute("aria-checked") !== "true") return null;
+        const total = Number(spares.textContent.match(/\(([\d\s  ]+)\)/)?.[1]?.replace(/\s/g, ""));
+        return { total: Number.isFinite(total) ? total : null };
       }
       function recycleParts() {
         const title = [...document.querySelectorAll("h1, h2, h3")].find((t) => !t.closest(".aqm-root") && RECYCLE_TITLE.test(t.textContent.trim()));
@@ -7778,35 +8431,82 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         }
         return { dialog, rows };
       }
-      function markRecycleDialog() {
-        if (!location.pathname.startsWith("/jeu")) return;
-        const parts = recycleParts();
-        if (!parts) return void (recycleOpened = 0);
-        if (!recycleOpened) recycleOpened = Date.now();
-        const { dialog, rows } = parts;
-        if (!rows.length) return;
+      function settleRows(rows) {
         for (const { row, box } of rows) {
           if (recycleSeen.has(row)) continue;
           recycleSeen.add(row);
-          if (Date.now() - recycleOpened < 3e3 && isTicked(box)) box.click();
+          if (isTicked(box) !== (recycleIntent === "all")) box.click();
         }
-        let btn = dialog.querySelector(".aqm-recycle-all");
+      }
+      const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 30)));
+      async function loadAllRecycleRows(dialog) {
+        const first = recycleParts()?.rows[0]?.row;
+        let scroller = first?.parentElement;
+        while (scroller && scroller !== dialog && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+        if (!scroller) return;
+        const top = scroller.scrollTop;
+        let last = -1;
+        for (let still = 0, guard = 0; still < 4 && guard < 400 && dialog.isConnected; guard++) {
+          const parts2 = recycleParts();
+          if (!parts2) break;
+          settleRows(parts2.rows);
+          if (parts2.rows.length === last) still++;
+          else [still, last] = [0, parts2.rows.length];
+          scroller.scrollTop = scroller.scrollHeight;
+          await nextFrame();
+        }
+        const parts = recycleParts();
+        if (parts) settleRows(parts.rows);
+        scroller.scrollTop = top;
+      }
+      function prepareRecycle(dialog) {
+        if (recyclePrepared === dialog) return Promise.resolve();
+        recycleJob ??= loadAllRecycleRows(dialog).catch(() => {
+        }).finally(() => {
+          recyclePrepared = dialog;
+          recycleJob = null;
+          markRecycleDialog();
+        });
+        return recycleJob;
+      }
+      function markRecycleDialog() {
+        if (!location.pathname.startsWith("/jeu")) return;
+        const parts = recycleParts();
+        if (!parts) {
+          recycleIntent = "none";
+          recyclePrepared = null;
+          return;
+        }
+        const { dialog, rows } = parts;
+        const mode = sparesMode(dialog);
+        let bar = dialog.querySelector(".aqm-recycle-bar");
+        if (bar) bar.hidden = !mode;
+        if (!mode || !rows.length) return;
+        settleRows(rows);
+        if (recyclePrepared !== dialog) prepareRecycle(dialog);
+        let btn = bar?.querySelector(".aqm-recycle-all");
         if (!btn) {
           btn = h("button", { type: "button", class: "aqm-queue-btn aqm-recycle-all", onclick: toggleRecycle });
-          rows[0].row.parentElement.before(h("div", { class: "aqm-root aqm-recycle-bar" }, btn));
+          bar = h("div", { class: "aqm-root aqm-recycle-bar" }, btn);
+          rows[0].row.parentElement.before(bar);
         }
         const count = recycleCount(dialog);
-        const all = count != null ? count > 0 && count >= rows.length : rows.every((r) => isTicked(r.box));
-        const label = all ? "Tout désélectionner" : `Tout sélectionner (${rows.length})`;
+        const all = count != null && mode.total != null ? count > 0 && count >= mode.total : rows.every((r) => isTicked(r.box));
+        const label = recycleJob ? "Préparation de la liste…" : all ? "Tout désélectionner" : "Tout sélectionner";
         if (btn.textContent !== label) btn.textContent = label;
+        btn.disabled = !!recycleJob;
       }
-      function toggleRecycle() {
-        const parts = recycleParts();
+      async function toggleRecycle() {
+        let parts = recycleParts();
         if (!parts) return;
+        await prepareRecycle(parts.dialog);
+        parts = recycleParts();
+        if (!parts) return;
+        const mode = sparesMode(parts.dialog) ?? { total: null };
         const count = recycleCount(parts.dialog);
-        const all = count != null ? count > 0 && count >= parts.rows.length : parts.rows.every((r) => isTicked(r.box));
-        if (count === 0 || all) for (const r of parts.rows) r.box.click();
-        else for (const r of parts.rows) if (!isTicked(r.box)) r.box.click();
+        const all = count != null && mode.total != null ? count > 0 && count >= mode.total : parts.rows.every((r) => isTicked(r.box));
+        recycleIntent = all ? "none" : "all";
+        for (const r of parts.rows) if (isTicked(r.box) !== (recycleIntent === "all")) r.box.click();
         setTimeout(markRecycleDialog, 50);
       }
       const AUTO_RARITIES = /* @__PURE__ */ new Set(["N", "R", "SR"]);
@@ -8185,6 +8885,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
             markBoosterKinds();
           }
         } else if (e.data.aquaman === "market-bought" && typeof e.data.name === "string") addBought(e.data.name, e.data.rarity);
+        else if (e.data.aquaman === "market-sales" && Array.isArray(e.data.keys) && on("marketSales")) markSalesCards();
         else if (e.data.aquaman === "feed" && Array.isArray(e.data.pulls)) send({ type: "feed-seen", pulls: e.data.pulls });
         else if (e.data.aquaman === "player-seen" && typeof e.data.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(e.data.id) && typeof e.data.name === "string" && e.data.name.trim())
           playersSeen.set(foldName(e.data.name), e.data.id);
@@ -8209,7 +8910,8 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           return;
         }
         if (e.key !== "Escape") return;
-        if (menu) closeMenu();
+        if (marketSortMenu) closeMarketSortMenu();
+        else if (menu) closeMenu();
         else if (overlay) closeOverlay();
       }
       function onBack() {
@@ -8220,6 +8922,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
       }
       function onOutside(e) {
         if (menu && !menu.contains(e.target) && !menu.anchor?.contains(e.target) && !e.target.closest?.(".aqm-tour")) closeMenu();
+        if (marketSortMenu && !marketSortMenu.contains(e.target) && !marketSortMenu.anchor?.contains(e.target)) closeMarketSortMenu();
       }
       let feedAt = 0;
       function pollFeedNow() {
@@ -8340,6 +9043,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         [markUnlistButton, "sellTools"],
         [hideBoughtCards, "hideBought"],
         [markMarketFavorites, "marketFavorites"],
+        [markSalesCards, "marketSales"],
         [markRecycleDialog, "recycleHelp"],
         [markBoosterKinds, "boosterWheel"],
         [markOpenMore, "openMore"],
@@ -8359,7 +9063,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         }
         const began = performance.now();
         runText = null;
-        for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, markGameBoard, pollFeedNow, sayHello2, checkAccess, lookForUpdate, startOnce]) {
+        for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, markSalesCards, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, markGameBoard, pollFeedNow, sayHello2, checkAccess, lookForUpdate, startOnce]) {
           if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
           if (!inGame && step !== markTrades && step !== checkAccess) continue;
           try {
@@ -8431,6 +9135,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         if (tour) cancelAnimationFrame(tour.raf);
         tour = null;
         menu = null;
+        closeMarketSortMenu();
         overlay = null;
         document.querySelectorAll(".aqm-root, .aqm-plus, .aqm-open-more, .aqm-trade-filter").forEach((el) => el.remove());
         document.querySelectorAll("[data-aqm-tradehide]").forEach((el) => el.removeAttribute("data-aqm-tradehide"));

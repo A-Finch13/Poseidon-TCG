@@ -5,7 +5,7 @@ import { cached, forget, game, myId } from './api.js';
 import { imageKey, ownership, playerSummary } from './collections.js';
 import { boardKnown, claimedAlbums, friends } from './leaderboard.js';
 import { collectionSnapshot } from './progress.js';
-import { collectionStats, rarityCounts } from './rarities.js';
+import { collectionStats, missingCards, rarityCounts } from './rarities.js';
 import { boosterReport, loadCatalog } from './boosters.js';
 import { pity, pityHistory, recordOpening, setPityRules } from './pity.js';
 import { favoritesReport, globalPacks, packKinds, playerOwnership, searchedImages, seriesStatus, setFavorite, wantRoom } from './favorites.js';
@@ -33,6 +33,10 @@ export async function answer(msg) {
         return await collectionStats();
       case 'rarity-counts':
         return await rarityCounts();
+      case 'missing-cards': {
+        const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+        return await missingCards({ rarity: text(msg.rarity, 4), type: text(msg.kind, 40), q: text(msg.q, 80), manga: text(msg.manga, 64) });
+      }
       case 'collection-snapshot': {
         const { point } = await collectionSnapshot();
         return { ok: true, owned: point.owned };

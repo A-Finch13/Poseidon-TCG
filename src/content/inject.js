@@ -26,12 +26,37 @@
   // lui-même leurs Perles et leurs cartes, et un état relu redessinerait la pile au milieu d'une ouverture.)
   const ASSETS = /^\/api-game\/v1\/(trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?)$/;
   const MARKET_LIST = /^\/api-game\/v1\/market\/listings$/;
+  const AUCTIONS = /^\/api-game\/v1\/auctions$/;
   // La carte de chaque vente que le marché a montrée en dernier (id d'annonce -> { name, rarity }), pour la carte d'un
   // achat.
   const listingCards = new Map();
   const WRITE = /^\/api-game\/v1\/(boosters\/[^/]+\/open|boosters\/open(-many)?|shop\/booster|trades(\/.*)?|market\/.*|auctions(\/.*)?|copies(\/.*)?|recycle)$/;
   const RARITIES = ['N', 'R', 'SR', 'SSR', 'UR', 'SEC'];
   const original = window.fetch;
+
+  // L'adresse complète d'une requête (avec ses paramètres), null si illisible.
+  const requestUrl = (input) => {
+    try {
+      return new URL(input instanceof Request ? input.url : String(input), location.href);
+    } catch {
+      return null;
+    }
+  };
+  // Les cartes que le joueur vend déjà : ses annonces (GET /market/listings?mine=1) ou ses enchères ouvertes (GET
+  // /auctions?mine=selling), par id de carte ; gardées sur <html> (le code de la page peut démarrer après) et envoyées
+  // au code de la page (« Déjà en vente » dans « Tes cartes à vendre »). (proposé par volcanofr)
+  const emitMarketSales = (body, auctions) => {
+    const kind = auctions ? 'auctions' : 'listings';
+    const keys = [];
+    for (const sale of Array.isArray(body?.[kind]) ? body[kind] : []) {
+      if (auctions && sale?.status !== 'open') continue;
+      if (typeof sale?.card?.id === 'string') keys.push(sale.card.id);
+    }
+    try {
+      document.documentElement.setAttribute(`data-aqm-market-sales-${kind}`, JSON.stringify(keys));
+    } catch {}
+    post({ type: 'market-sales', kind, keys });
+  };
 
   // La sorte de boosters choisie sur l'accueil ('classic' pour les boosters sans sorte), '' pour toutes.
   const chosenKind = () => {
@@ -603,6 +628,28 @@
             .json()
             .then((body) => {
               for (const l of Array.isArray(body?.listings) ? body.listings : []) if (l?.id && l.card?.name) listingCards.set(String(l.id), { name: l.card.name, rarity: l.card.rarity ?? null });
+              if (requestUrl(input)?.searchParams.get('mine') === '1') emitMarketSales(body, false);
+            })
+            .catch(() => {});
+        } else if (method === 'GET' && AUCTIONS.test(path) && requestUrl(input)?.searchParams.get('mine') === 'selling') {
+          res
+            .clone()
+            .json()
+            .then((body) => emitMarketSales(body, true))
+            .catch(() => {});
+        } else if (method === 'GET' && path === '/api-game/v1/cards' && location.pathname.startsWith('/jeu/collection')) {
+          // Les cartes que la vue de la collection a reçues (ses filtres et leurs ids) : les cartes manquantes que le jeu
+          // n'a pas renvoyées sont ajoutées par Aquaman à la suite (le filtre « Manquantes »).
+          let query = '';
+          try {
+            query = new URL(input instanceof Request ? input.url : String(input), location.href).search;
+          } catch {}
+          res
+            .clone()
+            .json()
+            .then((body) => {
+              const cards = Array.isArray(body?.cards) ? body.cards : [];
+              post({ type: 'cards-shown', query, ids: cards.map((c) => c?.id).filter((id) => typeof id === 'string'), names: cards.slice(0, 400).map((c) => [c?.id, c?.name, c?.series?.title ?? '']) });
             })
             .catch(() => {});
         } else if (method === 'GET' && FEED.test(path)) {

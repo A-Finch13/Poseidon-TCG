@@ -66,7 +66,7 @@ function renderPity() {
     if (p.over)
       return h(
         'div',
-        { class: 'aqm-pity-line', title: `Le jeu garantit une ${code} tous les ${fmt(p.every)} boosters, mais Aquaman en a compté ${fmt(p.since)} depuis ta dernière ${code} : le jeu ne compte pas tous ces boosters pour sa garantie. Le compte repart à ta prochaine ${code}.` },
+        { class: 'aqm-pity-line', title: `Le jeu garantit une ${code} tous les ${fmt(p.every)} boosters, mais Aquaman en a compté ${fmt(p.since)} depuis ta dernière ${code} (packs spéciaux exclus) : des boosters ouverts avant Aquaman 1.6.1 dont la sorte est inconnue étaient sans doute des packs spéciaux. Le compte repart à ta prochaine ${code}.` },
         h('p', {}, rarityCode(code), ' garantie ', h('strong', {}, 'au prochain booster'), ' en principe'),
         h('span', { class: 'aqm-bar' }, h('span', { style: 'width:100%' })),
         h('small', {}, `${fmt(p.since)} boosters comptés depuis ta dernière ${code}, plus que les ${fmt(p.every)} du jeu`)
@@ -117,6 +117,10 @@ function renderPity() {
         off: 'Compté par Aquaman à chaque booster ouvert sur ce navigateur (partage entre appareils désactivé).'
       }[pityReport.sync] ?? 'Compté par Aquaman à chaque booster ouvert.'
     ),
+    // (comme dans le jeu, la garantie SSR et UR ne compte pas les packs spéciaux)
+    pityReport.skipped > 0
+      ? h('p', { class: 'aqm-pity-note' }, `${fmt(pityReport.skipped)} pack${pityReport.skipped > 1 ? 's' : ''} spécia${pityReport.skipped > 1 ? 'ux' : 'l'} (Légendaire, Halloween…) hors garantie, comme dans le jeu.`)
+      : null,
     h('div', { class: 'aqm-pity-more' }, h('button', { type: 'button', class: 'aqm-album-btn', onclick: openPityHistory }, '📜 Historique'))
   );
 }
@@ -204,7 +208,7 @@ async function openPityHistory() {
   const tiles = (code) => {
     const { current } = r[code];
     const hits = hitsOf(code);
-    const full = hits.filter((x) => !x.first).map((x) => x.after);
+    const full = hits.filter((x) => !x.first && !x.special).map((x) => x.after);
     const stat = (label, value) => h('div', { class: 'aqm-history-stat' }, h('small', {}, label), h('strong', {}, value));
     const all = r[code].hits.length;
     return [
@@ -230,7 +234,8 @@ async function openPityHistory() {
                 x.card?.id ? 'a' : 'div',
                 { class: 'aqm-history-tile', ...link, title: tip },
                 x.card?.image ? h('img', { src: cardImageUrl(x.card.image), alt: x.card.name ?? '', loading: 'lazy', decoding: 'async' }) : h('div', { class: 'aqm-history-blank' }, rarityCode(x.top)),
-                h('p', { class: 'aqm-history-after' }, x.first ? `≥ ${boosters(x.after)}` : boosters(x.after)),
+                // (une carte d'un pack spécial : hors garantie, elle ne fait pas repartir le compte)
+                h('p', { class: 'aqm-history-after' }, x.special ? 'Hors garantie' : x.first ? `≥ ${boosters(x.after)}` : boosters(x.after)),
                 h('p', { class: `aqm-history-pack${x.pack ? '' : ' is-unknown'}` }, packName(x))
               );
             })

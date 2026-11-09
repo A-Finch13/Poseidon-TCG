@@ -14,6 +14,7 @@ import { seriesList } from './favorites.js';
 
 const RARITY_STEP = 40;
 const RARITY_AGAIN = 24 * 3600e3; // (les exemplaires d'une série peuvent changer sans que ses cartes possédées changent)
+const RARITY_FORMAT = 2; // (2 : un exemplaire par carte ; les comptes d'avant, doublons compris, sont refaits)
 let rarityBusy = Promise.resolve();
 
 export function rarityCounts(budget = RARITY_STEP) {
@@ -30,27 +31,30 @@ async function countRarities(budget) {
   const now = Date.now();
   const current = (s) => {
     const k = mine[s.id];
-    return !!k && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && now - k.at < RARITY_AGAIN;
+    return !!k && k.v === RARITY_FORMAT && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && now - k.at < RARITY_AGAIN;
   };
   const todo = series.filter((s) => !current(s));
   const batch = todo.slice(0, Math.max(0, budget));
   let failed = 0;
+  const misses = {}; // (les cartes manquantes des séries lues ici, gardées aussi : voir missingCards)
   for (let i = 0; i < batch.length; i += 3)
     await Promise.all(
       batch.slice(i, i + 3).map(async (s) => {
         try {
           const cards = (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? [];
+          misses[s.id] = missEntry(s, cards);
           const by = {}; // rareté -> [cartes uniques possédées, cartes, exemplaires]
           for (const c of cards) {
             if (!RANK[c?.rarity]) continue;
             const r = (by[c.rarity] ??= [0, 0, 0]);
             r[1]++;
+            // (un exemplaire par carte possédée : les doublons ne comptent pas)
             if (c.owned > 0) {
               r[0]++;
-              r[2] += c.owned;
+              r[2]++;
             }
           }
-          mine[s.id] = { owned: s.owned ?? 0, total: s.total ?? 0, at: Date.now(), by };
+          mine[s.id] = { v: RARITY_FORMAT, owned: s.owned ?? 0, total: s.total ?? 0, at: Date.now(), by };
         } catch {
           failed++;
         }
@@ -59,6 +63,7 @@ async function countRarities(budget) {
   const ids = new Set(series.map((s) => s.id));
   for (const k in mine) if (!ids.has(k)) delete mine[k]; // (une série que le jeu n'a plus)
   if (batch.length) await chrome.storage.local.set({ rarityCache: { ...rarityCache, [me]: mine } });
+  if (Object.keys(misses).length) await keepMisses(me, misses, ids);
   const byRarity = Object.fromEntries(Object.keys(RANK).map((r) => [r, { owned: 0, total: 0, copies: 0 }]));
   for (const s of series)
     for (const [r, [owned, total, copies]] of Object.entries(mine[s.id]?.by ?? {})) {
@@ -68,6 +73,76 @@ async function countRarities(budget) {
     }
   const counted = series.filter((s) => mine[s.id]).length;
   return { byRarity, counted, series: series.length, pending: todo.length - batch.length + failed, failed };
+}
+
+// ---------- les cartes manquantes, série par série ----------
+// La vue « Album complet » du jeu lit toutes les cartes d'une rareté (ou du jeu) en une requête, que le jeu ne renvoie
+// pas en entier : des cartes manquantes n'y apparaissent jamais. Les cartes manquantes de chaque série (lues avec
+// /cards?manga=, comme pour le compte par rareté) sont gardées sur cet appareil, sous le compte, jamais envoyées au
+// relais ; relues quand les chiffres du jeu pour la série changent. MISS_STEP séries au plus par appel.
+
+const MISS_STEP = 60;
+let missBusy = Promise.resolve();
+const missEntry = (s, cards) => ({
+  owned: s.owned ?? 0,
+  total: s.total ?? 0,
+  at: Date.now(),
+  miss: cards
+    .filter((c) => c?.id && RANK[c.rarity] && !(c.owned > 0))
+    .map((c) => ({
+      id: c.id,
+      name: c.name ?? '',
+      image: c.image ?? null,
+      rarity: c.rarity,
+      types: Array.isArray(c.types) ? c.types : [],
+      series: c.series?.title ?? s.title ?? '',
+      maxCopies: c.maxCopies ?? null,
+      minted: c.minted ?? null
+    }))
+});
+
+async function keepMisses(me, misses, ids) {
+  const { missingCache = {} } = await chrome.storage.local.get('missingCache');
+  const mine = { ...(missingCache[me] ?? {}), ...misses };
+  if (ids) for (const k in mine) if (!ids.has(k)) delete mine[k];
+  await chrome.storage.local.set({ missingCache: { ...missingCache, [me]: mine } });
+}
+
+// Les cartes manquantes qui répondent aux filtres de la page ({ rarity, type, q, manga }), dans l'ordre du jeu (rareté,
+// puis nom) : { cards, pending } (pending : séries pas encore lues, à redemander).
+export function missingCards(filter = {}) {
+  const run = missBusy.then(() => readMissing(filter));
+  missBusy = run.catch(() => {});
+  return run;
+}
+
+async function readMissing({ rarity = '', type = '', q = '', manga = '' } = {}) {
+  const me = await myId();
+  const series = (await seriesList()).filter((s) => s?.id && (!manga || s.id === manga));
+  const { missingCache = {} } = await chrome.storage.local.get('missingCache');
+  const mine = missingCache[me] ?? {};
+  const current = (s) => {
+    const k = mine[s.id];
+    return !!k && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && Date.now() - k.at < RARITY_AGAIN;
+  };
+  const todo = series.filter((s) => !current(s));
+  const batch = todo.slice(0, MISS_STEP);
+  const fresh = {};
+  for (let i = 0; i < batch.length; i += 4)
+    await Promise.all(
+      batch.slice(i, i + 4).map(async (s) => {
+        try {
+          fresh[s.id] = missEntry(s, (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? []);
+        } catch {}
+      })
+    );
+  if (Object.keys(fresh).length) await keepMisses(me, fresh, manga ? null : new Set(series.map((s) => s.id)));
+  const words = String(q).trim().toLowerCase();
+  const cards = series
+    .flatMap((s) => (fresh[s.id] ?? mine[s.id])?.miss ?? [])
+    .filter((c) => (!rarity || c.rarity === rarity) && (!type || c.types.includes(type)) && (!words || c.name.toLowerCase().includes(words) || c.series.toLowerCase().includes(words)))
+    .sort((a, b) => RANK[b.rarity] - RANK[a.rarity] || a.name.localeCompare(b.name, 'fr'));
+  return { cards, pending: todo.length - Object.keys(fresh).length };
 }
 
 // La progression du joueur : cartes uniques et manquantes, séries complètes, cartes de chaque rareté (comptées

@@ -158,13 +158,15 @@ let snapAt = 0;
 let snapTimer = 0;
 function snapCollection(soon = false) {
   if (soon) {
+    // (5 min au moins entre deux : une lecture télécharge toute la collection, plus de 1 Mo pour une grande. Un
+    // changement trop proche de la lecture précédente — un achat ou un échange juste après une ouverture — n'est pas
+    // perdu : sa lecture attend la fin des 5 min.)
     clearTimeout(snapTimer);
     snapTimer = setTimeout(() => {
-      // (5 min au moins entre deux : une lecture télécharge toute la collection, plus de 1 Mo pour une grande)
-      if (stopped || !on('collectionStats') || Date.now() - snapAt < 5 * 60e3) return;
+      if (stopped || !on('collectionStats')) return;
       snapAt = Date.now();
       send({ type: 'collection-snapshot' });
-    }, 10e3);
+    }, Math.max(10e3, snapAt + 5 * 60e3 - Date.now()));
     return;
   }
   if (Date.now() - snapAt < 30 * 60e3) return;
@@ -233,7 +235,7 @@ async function openCollectionStats() {
             h('p', {}, h('strong', {}, fmt(r.owned)), r.total ? h('small', {}, ` / ${fmt(r.total)} · ${pct(r.owned / r.total)}`) : null),
             bar(r.total ? r.owned / r.total : 0, ` aqm-bar-${code}`)
           ),
-          h('span', { class: 'aqm-progress-copies', title: 'Exemplaires de cette rareté (doublons compris)' }, `${fmt(r.copies)} ex.`)
+          h('span', { class: 'aqm-progress-copies', title: 'Exemplaires de cette rareté, un par carte (les doublons ne comptent pas)' }, `${fmt(r.copies)} ex.`)
         )
       )
     );

@@ -1,0 +1,40 @@
+# Vérifie que l'extension se construit (npm run build) pour chaque pull request et chaque push sur main.
+# Proposé par volcanofr (PR #1), sans le changement de version automatique ni les commits du bot : la version et les
+# nouveautés (src/content/tour/changes.js) se choisissent à la main, et build.mjs refuse une version sans nouveautés.
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Keep the built extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: aquaman
+          path: |
+            dist/aquaman-chromium.zip
+            dist/aquaman-firefox.xpi
+            dist/aquaman.user.js

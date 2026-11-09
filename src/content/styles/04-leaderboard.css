@@ -98,8 +98,23 @@
 
 .aqm-board-scope {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   margin: 40px auto 0;
+}
+/* « Ranger par » : Points, Cartes, Séries complètes */
+.aqm-board-sort {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.aqm-board-sort .aqm-chips {
+  flex-wrap: wrap;
+  justify-content: center;
 }
 .aqm-friends-board {
   margin: 32px auto 0;
@@ -111,6 +126,7 @@
   list-style: none;
 }
 .aqm-friends-board[hidden],
+.aqm-friends-status[hidden],
 [data-aqm-board-off] {
   display: none !important;
 }

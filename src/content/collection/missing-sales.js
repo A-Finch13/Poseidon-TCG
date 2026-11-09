@@ -18,7 +18,9 @@ function markMissingSales() {
     },
     { rootMargin: '300px' }
   );
-  for (const el of elementsWithText(document.body, /^\s*manquante\s*$/i)) {
+  // (et les cartes manquantes ajoutées par Aquaman, que la recherche dans la page saute comme tout ce qui est à lui)
+  const extra = [...document.querySelectorAll('.aqm-missing-extra')].flatMap((box) => elementsWithText(box, /^\s*manquante\s*$/i));
+  for (const el of [...elementsWithText(document.body, /^\s*manquante\s*$/i), ...extra]) {
     if (el.childElementCount || el.hasAttribute('data-aqm-sale') || !/^manquante$/i.test(el.textContent.trim())) continue;
     el.setAttribute('data-aqm-sale', '');
     saleWatch.observe(el);

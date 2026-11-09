@@ -5,6 +5,19 @@
 // visite'].
 const CHANGES = [
   {
+    version: '1.7.0',
+    items: [
+      ['Marché : dans « Tes cartes à vendre », les cartes que tu vends déjà (au marché ou en enchère) sont marquées « Déjà en vente », et « Trier par » les range selon un ou plusieurs critères : les plus recherchées, les plus ou moins possédées, la valeur estimée ou le nom. Se règle dans Plus › Réglages. Proposé par volcanofr.'],
+      ['Recycler des cartes : en mode « Mes doublons », plus aucune carte n’est cochée sans que tu la voies. Le jeu cochait d’office les doublons pas encore affichés (la liste se charge 48 par 48) : Aquaman charge toute la liste à l’ouverture et la décoche, puis « Tout sélectionner » agit sur toute la liste.'],
+      ['Garantie anti-malchance : comme dans le jeu, seuls les boosters classiques (gratuits ou de la boutique) et les packs à thème à 250 Perles comptent pour la SSR et l’UR garanties. Les packs spéciaux (Légendaire, Halloween…) ne les font plus avancer. Aquaman retient maintenant le pack de chaque booster ouvert : le compte devient exact au fil des ouvertures.'],
+      ['Collection : avec le filtre « Manquantes », le compte des cartes qui te manquent par rareté s’affiche sous les onglets (« 70 N · 293 R · … · 948 au total »), sans avoir à faire défiler tout l’album.', 'series'],
+      ['Collection : dans « Album complet » filtré par rareté, le jeu ne renvoie pas toutes les cartes et en oublie des manquantes. Avec « Manquantes », Aquaman ajoute à la suite celles que le jeu n’affiche pas, avec le même aspect (lien vers la carte compris).', 'series'],
+      ['Ma progression : la colonne « ex. » compte un exemplaire par carte, les doublons ne comptent plus. Les cartes gagnées en achetant ou en échangeant juste après une ouverture de boosters sont comptées dans la journée, au lieu d’attendre le relevé suivant.', 'progression'],
+      ['Classement : « Ranger par » sous « Tous / Amis ». Entre amis : par points, par cartes ou par séries complètes (les albums dont le badge est récupéré). Pour « Tous » : par points (le classement du jeu) ou par cartes (le top 100 du jeu rangé par nombre de cartes). « Ma place » suit le tri choisi.', 'classement'],
+      ['Classement des amis : le cadre « Ma place » en haut de la page montre ta place parmi tes amis et l’ami à dépasser (« Plus que 10 points pour dépasser… »), et « Voir ma ligne » mène à ta ligne.', 'classement']
+    ]
+  },
+  {
     version: '1.6.0',
     items: [
       ['Aquaman se charge plus vite sur les pages du jeu : son code et ses styles arrivent en 2 fichiers au lieu de 72.'],

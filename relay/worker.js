@@ -119,7 +119,7 @@ async function pity(env, body) {
       events.map((e) => env.DB.prepare('INSERT OR IGNORE INTO pity (player, id, at, top, card) VALUES (?1, ?2, ?3, ?4, ?5)').bind(player, e.id, Math.round(e.at), e.top, pityCard(e)))
     );
   const [{ results }, sec, { results: last }] = await Promise.all([
-    env.DB.prepare('SELECT id, at, top FROM pity WHERE player = ?1 ORDER BY at DESC LIMIT ?2').bind(player, KEEP).all(),
+    env.DB.prepare('SELECT id, at, top, card FROM pity WHERE player = ?1 ORDER BY at DESC LIMIT ?2').bind(player, KEEP).all(),
     env.DB.prepare(
       'SELECT (SELECT MAX(at) FROM pity WHERE player = ?1 AND top >= ?2) AS last, ' +
         '(SELECT COUNT(*) FROM pity WHERE player = ?1 AND at > COALESCE((SELECT MAX(at) FROM pity WHERE player = ?1 AND top >= ?2), -1)) AS since'
@@ -130,14 +130,19 @@ async function pity(env, body) {
     // ouverts sans Aquaman, sur un autre appareil)
     env.DB.prepare("SELECT rarity, MAX(pulled_at) AS at FROM pulls WHERE player_id = ?1 AND rarity IN ('SSR', 'UR', 'SEC') GROUP BY rarity").bind(player).all()
   ]);
-  return { events: results.reverse(), sec: { since: sec?.since ?? 0, known: sec?.last != null }, pulls: Object.fromEntries(last.map((r) => [r.rarity, r.at])) };
+  // (avec la sorte de booster de chaque ouverture : la garantie ne compte pas les packs spéciaux)
+  const withPack = results.reverse().map(({ card, ...e }) => {
+    const { pack } = readPityCard(card);
+    return pack ? { ...e, pack } : e;
+  });
+  return { events: withPack, sec: { since: sec?.since ?? 0, known: sec?.last != null }, pulls: Object.fromEntries(last.map((r) => [r.rarity, r.at])) };
 }
 
-// La meilleure carte d'une ouverture SSR, UR ou SEC ({ id, name, image, rarity }) et la sorte de booster d'où elle
-// vient (pack : { id, name }), vérifiées, en JSON ; null pour les autres.
+// La meilleure carte d'une ouverture SSR, UR ou SEC ({ id, name, image, rarity }) et la sorte de booster de chaque
+// ouverture (pack : { id, name } ; les packs spéciaux ne comptent pas pour la garantie), vérifiées, en JSON ; null
+// quand il n'y a ni l'une ni l'autre.
 function pityCard(e) {
-  if (e.top < 4) return null;
-  const c = e?.card;
+  const c = e.top >= 4 ? e?.card : null;
   const card = c && CARD.test(String(c.id ?? '')) && RARE.has(c.rarity) ? { id: c.id, name: text(c.name, 120), image: text(c.image, 200), rarity: c.rarity } : {};
   const p = e?.pack;
   if (p && KIND.test(String(p.id ?? ''))) card.pack = { id: p.id, name: text(p.name, 60) };
