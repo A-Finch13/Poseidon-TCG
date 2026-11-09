@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  push:
+    branches-ignore:
+      - "feat/**"
+      - "fix/**"
+      - "patch/**"
+  workflow_run:
+    workflows: ["Version Bump"]
+    types: [completed]
+    branches:
+      - "feat/**"
+      - "fix/**"
+      - "patch/**"
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success'
+      )
+
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@v4
+
+    - name: Use latest Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: lts/*
+        check-latest: true
+        cache: npm
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run build
+      run: npm run build --if-present
+
+    - name: Run tests
+      run: npm run test --if-present
+
+    - name: Configure Git
+      if: github.event_name != 'pull_request'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "320306991+github-actions[bot]@users.noreply.github.com"
+
+    - name: Commit and push build artifacts
+      if: github.event_name != 'pull_request'
+      run: |
+        git add -all
+
+        if git diff --cached --quiet; then
+          echo "No changes to commit."
+          exit 0
+        fi
+
+        git commit -m "chore: update build artifacts"
+        git push origin HEAD:${GITHUB_REF#refs/heads/}

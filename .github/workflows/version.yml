@@ -1,0 +1,116 @@
+name: Version Bump
+
+on:
+  push:
+    branches:
+      - "feat/**"
+      - "fix/**"
+      - "patch/**"
+
+concurrency:
+  group: version-bump-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    name: Bump version
+    runs-on: ubuntu-latest
+
+    env:
+      MANIFEST_FILES: manifest.json manifest.firefox.json
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "320306991+github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine version bump
+        id: bump
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/feat/* ]]; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update manifests
+        id: update
+        env:
+          BUMP_TYPE: ${{ steps.bump.outputs.type }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const files = process.env.MANIFEST_FILES.split(' ');
+
+          let newVersion = undefined;
+
+          for (const file of files) {
+            const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+
+            const match = manifest.version.match(/^(\d+)\.(\d+)\.(\d+)$/);
+
+            if (!match) {
+              throw new Error(`Invalid version in ${file}: ${manifest.version}`);
+            }
+
+            let [, major, minor, patch] = match.map(Number);
+
+            if (process.env.BUMP_TYPE === 'major') {
+              major++;
+              minor = 0;
+              patch = 0;
+            } else if (process.env.BUMP_TYPE === 'minor') {
+              minor++;
+              patch = 0;
+            } else {
+              patch++;
+            }
+
+            manifest.version = `${major}.${minor}.${patch}`;
+
+            fs.writeFileSync(
+              file,
+              JSON.stringify(manifest, null, 2) + '\n'
+            );
+
+            console.log(`${file}: ${match[0]} -> ${manifest.version}`);
+
+            if (newVersion && newVersion !== manifest.version) {
+              throw new Error('Manifests have different versions after bumping.');
+            }
+
+            newVersion = manifest.version;
+          }
+
+          if (!newVersion) {
+            throw new Error('No manifest files configured.');
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `version=${newVersion}\n`
+          );
+          NODE
+
+      - name: Commit and push changes
+        env:
+          VERSION: ${{ steps.update.outputs.version }}
+        run: |
+          git add $MANIFEST_FILES
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: bump version to $VERSION"
+          git push origin "HEAD:${GITHUB_REF}"
