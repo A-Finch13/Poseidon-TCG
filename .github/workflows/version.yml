@@ -1,15 +1,10 @@
 name: Version Bump
 
 on:
-  push:
+  pull_request_target:
+    types: [closed]
     branches:
-      - "feat/**"
-      - "fix/**"
-      - "patch/**"
-
-concurrency:
-  group: version-bump-${{ github.ref }}
-  cancel-in-progress: false
+      - main
 
 permissions:
   contents: write
@@ -19,12 +14,24 @@ jobs:
     name: Bump version
     runs-on: ubuntu-latest
 
+    # Only run when a PR is merged into main
+    if: >-
+      github.event.pull_request.merged == true &&
+      (
+        startsWith(github.event.pull_request.head.ref, 'feat/') ||
+        startsWith(github.event.pull_request.head.ref, 'fix/') ||
+        startsWith(github.event.pull_request.head.ref, 'patch/')
+      )
+
     env:
       MANIFEST_FILES: manifest.json manifest.firefox.json
 
     steps:
-      - name: Check out this repository
+      - name: Check out main
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Configure Git
         run: |
@@ -33,9 +40,11 @@ jobs:
 
       - name: Determine version bump
         id: bump
+        env:
+          BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/heads/feat/* ]]; then
+          if [[ "$BRANCH_NAME" == feat/* ]]; then
             echo "type=minor" >> "$GITHUB_OUTPUT"
           else
             echo "type=patch" >> "$GITHUB_OUTPUT"
@@ -51,7 +60,7 @@ jobs:
 
           const files = process.env.MANIFEST_FILES.split(' ');
 
-          let newVersion = undefined;
+          let newVersion;
 
           for (const file of files) {
             const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -77,18 +86,18 @@ jobs:
 
             manifest.version = `${major}.${minor}.${patch}`;
 
+            if (newVersion && newVersion !== manifest.version) {
+              throw new Error('Manifests have different versions after bumping.');
+            }
+
+            newVersion = manifest.version;
+
             fs.writeFileSync(
               file,
               JSON.stringify(manifest, null, 2) + '\n'
             );
 
             console.log(`${file}: ${match[0]} -> ${manifest.version}`);
-
-            if (newVersion && newVersion !== manifest.version) {
-              throw new Error('Manifests have different versions after bumping.');
-            }
-
-            newVersion = manifest.version;
           }
 
           if (!newVersion) {
@@ -113,4 +122,4 @@ jobs:
           fi
 
           git commit -m "chore: bump version to $VERSION"
-          git push origin "HEAD:${GITHUB_REF}"
+          git push origin HEAD:main
