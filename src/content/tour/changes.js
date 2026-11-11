@@ -5,6 +5,16 @@
 // visite'].
 const CHANGES = [
   {
+    version: '1.7.1',
+    items: [
+      ['Marché : dans « Mes ventes », les filtres « Achat fixe » et « Enchères » au-dessus de tes ventes n’affichent que tes ventes à prix fixe, ou que tes enchères (en cours et terminées). Un second clic remet tout. Se règle dans Plus › Réglages (« Tes ventes »).'],
+      ['Marché : dans l’onglet « Enchères », le filtre « Mes mises » (avant les raretés) ne montre que les enchères encore en cours où tu as fait une offre, y compris celles que le jeu ne charge pas dans la liste (Aquaman les ajoute à la suite). Se règle dans Plus › Réglages.'],
+      ['Marché : dans « Mes offres », le filtre « En cours » cache les enchères terminées (vendues, sans offre ou retirées), et celles où tu es en tête passent en premier.'],
+      ['Plus › Récap des ventes : les Perles que tu gagnes chaque jour au marché, sur 30 jours, en graphique (Global, Prix fixe ou Enchères) avec le détail jour par jour. Les ventes des 30 derniers jours sont reprises du jeu dès la première ouverture, puis Aquaman les garde.'],
+      ['Garantie anti-malchance : une SSR ou une UR tirée dans un pack spécial (Légendaire, Halloween…) ne remet plus le compteur à zéro. Elle apparaît dans les « beaux tirages » du jeu, et Aquaman la prenait pour une carte tirée sans lui.']
+    ]
+  },
+  {
     version: '1.7.0',
     items: [
       ['Marché : dans « Tes cartes à vendre », les cartes que tu vends déjà (au marché ou en enchère) sont marquées « Déjà en vente », et « Trier par » les range selon un ou plusieurs critères : les plus recherchées, les plus ou moins possédées, la valeur estimée ou le nom. Se règle dans Plus › Réglages. Proposé par volcanofr.'],

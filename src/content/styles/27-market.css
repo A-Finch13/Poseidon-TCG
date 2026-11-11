@@ -121,3 +121,169 @@
   font-weight: 800;
   text-decoration: none;
 }
+/* Marché › Mes ventes : filtres « Achat fixe » et « Enchères ». */
+.aqm-sales-kind {
+  margin-top: 0;
+}
+.aqm-kind-hidden {
+  display: none !important;
+}
+/* Marché › Enchères : filtre « Mes mises ». */
+.aqm-my-bids.is-on {
+  background: #1e3a5f !important;
+  color: #fff !important;
+}
+.aqm-bid-hidden {
+  display: none !important;
+}
+/* Marché › Mes offres : filtre « En cours ». */
+.aqm-open-bids {
+  margin: 0 0 16px;
+}
+.aqm-bid-ended {
+  display: none !important;
+}
+
+/* ---------- Récap des ventes (menu Plus) : Perles gagnées par jour ---------- */
+.aqm-recap-card {
+  padding: 14px 16px 10px;
+  border: 1px solid var(--aqm-line);
+  border-radius: 14px;
+  background: var(--aqm-card);
+}
+.aqm-recap-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.aqm-recap-title {
+  margin: 0;
+  color: #60a5fa;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.aqm-recap-total {
+  color: var(--aqm-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-recap-kinds {
+  display: inline-flex;
+  gap: 2px;
+  margin: 10px 0 6px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.aqm-recap-kind {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: #a1a1aa;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.aqm-recap-kind:hover {
+  color: #fff;
+}
+.aqm-recap-kind.is-on {
+  background: #1e3a5f;
+  color: #fff;
+}
+.aqm-recap-chart {
+  display: grid;
+  grid-template-columns: repeat(30, 1fr);
+  gap: 2px;
+  height: 150px;
+  padding-top: 22px;
+}
+.aqm-recap-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  border-radius: 4px;
+  outline: none;
+}
+.aqm-recap-day:not(.is-future):hover,
+.aqm-recap-day:focus-visible {
+  background: rgba(255, 255, 255, 0.05);
+}
+.aqm-recap-col {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex: 1;
+  width: 100%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.aqm-recap-bar {
+  display: block;
+  width: min(22px, 76%);
+  border-radius: 4px 4px 0 0;
+  background: #3b82f6;
+}
+.aqm-recap-val {
+  position: absolute;
+  left: 50%;
+  margin-bottom: 3px;
+  transform: translateX(-50%);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.aqm-recap-name {
+  margin-top: 6px;
+  color: var(--aqm-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-recap-day.is-today .aqm-recap-name {
+  color: #fff;
+  font-weight: 800;
+}
+.aqm-recap-details {
+  margin-top: 10px;
+  font-size: 13px;
+}
+.aqm-recap-details summary {
+  cursor: pointer;
+  color: var(--aqm-text);
+}
+.aqm-recap-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.aqm-recap-table td {
+  padding: 5px 4px;
+  border-top: 1px solid var(--aqm-line);
+}
+.aqm-recap-table td.n,
+.aqm-recap-table td.p {
+  text-align: right;
+  color: var(--aqm-muted);
+}
+.aqm-recap-table tr.is-today td {
+  color: #fff;
+  font-weight: 700;
+}
+.aqm-recap-table tr.is-empty td {
+  color: var(--aqm-dim);
+}
+@media (max-width: 640px) {
+  .aqm-recap-day.is-odd:not(.is-today) .aqm-recap-name {
+    visibility: hidden;
+  }
+}

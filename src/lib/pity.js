@@ -80,15 +80,19 @@ function secReport(mine, chance) {
 // manquée…) mais vue dans les « beaux tirages » du jeu (pulls : le dernier tirage de chaque rareté, d'après le relais)
 // : le compte repart d'elle. Plus de 10 minutes après la dernière qu'Aquaman a vue, pour ne pas reprendre la même
 // (l'heure du jeu et celle de l'appareil diffèrent un peu).
+// seen : toutes les ouvertures vues par Aquaman, packs spéciaux compris (events n'a que celles que la garantie compte).
+// Un tirage d'un pack spécial qu'Aquaman a vu ouvrir n'est donc pas pris pour une carte manquée : il ne fait pas
+// repartir le compte.
 const PULL_SLACK = 10 * 60e3;
-function sinceLast(events, top, pullAt) {
+function sinceLast(events, top, pullAt, seen = events) {
   let last = -1;
   for (let i = events.length - 1; i >= 0; i--)
     if (events[i].top === top) {
       last = i;
       break;
     }
-  if (Number.isFinite(pullAt) && pullAt > (last >= 0 ? events[last].at : -Infinity) + PULL_SLACK && events.length && pullAt >= events[0].at)
+  const seenPull = Number.isFinite(pullAt) && seen.some((e) => e.top === top && Math.abs(e.at - pullAt) <= PULL_SLACK);
+  if (Number.isFinite(pullAt) && !seenPull && pullAt > (last >= 0 ? events[last].at : -Infinity) + PULL_SLACK && events.length && pullAt >= events[0].at)
     return { since: events.filter((e) => e.at > pullAt).length, known: true, missed: true };
   return { since: last >= 0 ? events.length - 1 - last : events.length, known: last >= 0, missed: false };
 }
@@ -123,7 +127,7 @@ function pityReport(mine, rules, sync, chance = null, packs = null) {
   const counted = events.filter(pityCounts(packs));
   out.skipped = events.length - counted.length;
   for (const code of Object.keys(PITY)) {
-    const { since, known, missed } = sinceLast(counted, RANK[code], mine.pulls?.[code]);
+    const { since, known, missed } = sinceLast(counted, RANK[code], mine.pulls?.[code], events);
     // (au-delà de la garantie : le jeu a forcément donné une carte de cette rareté, qu'Aquaman n'a pas vue)
     out[code] = { since, known, missed, over: since >= rules[code], every: rules[code], left: Math.max(1, rules[code] - since) };
   }
@@ -181,7 +185,17 @@ export async function pity(fresh = false) {
   const state = await pityState();
   const on = (await getSettings()).syncPity;
   if (on) await exchangePity(state, fresh);
-  return pityReport(state.mine, state.rules, on, await secChance(), await pityPacks());
+  return pityReport(await withGuessedPacks(state.mine), state.rules, on, await secChance(), await pityPacks());
+}
+
+// Les ouvertures avec le pack déduit de leur carte pour les SSR, UR et SEC gardées sans lui (avant 1.4.7, voir
+// guessPacks) : une carte d'un pack spécial ne fait pas repartir le compte, comme dans l'historique. (sur une copie :
+// la déduction n'est pas enregistrée)
+async function withGuessedPacks(mine) {
+  if (!mine.events.some((e) => e.top >= RANK.SSR && !e.pack && e.card?.id)) return mine;
+  const events = mine.events.map((e) => ({ ...e }));
+  await guessPacks(events).catch(() => {});
+  return { ...mine, events };
 }
 
 // L'historique du joueur : pour les SSR, UR et SEC, chacune obtenue avec les boosters ouverts pour elle depuis la
@@ -287,7 +301,7 @@ export async function recordOpening(boosters, best = [], packs = [], ids = []) {
       return { id: gameId ?? `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...(card ? { card } : {}), ...(pack ? { pack } : {}) };
     })
     .filter((e, i, all) => !known.has(e.id) && all.findIndex((x) => x.id === e.id) === i);
-  if (!added.length) return pityReport(mine, rules, (await getSettings()).syncPity, await secChance(), await pityPacks());
+  if (!added.length) return pityReport(await withGuessedPacks(mine), rules, (await getSettings()).syncPity, await secChance(), await pityPacks());
   mine.events = mergeEvents(mine.events, added);
   // Le compte de SEC du relais continue avec les nouvelles ouvertures jusqu'au prochain échange.
   if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
@@ -295,7 +309,7 @@ export async function recordOpening(boosters, best = [], packs = [], ids = []) {
   const on = (await getSettings()).syncPity;
   if (on) await exchangePity(state, true);
   else await savePity(state);
-  return pityReport(mine, rules, on, await secChance(), await pityPacks());
+  return pityReport(await withGuessedPacks(mine), rules, on, await secChance(), await pityPacks());
 }
 
 // Garde les chiffres du texte de la boutique (« une SSR tous les 60 boosters et une UR tous les 190 »).

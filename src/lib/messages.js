@@ -12,6 +12,7 @@ import { favoritesReport, globalPacks, packKinds, playerOwnership, searchedImage
 import { guardedSeries, setGuarded } from './locked.js';
 import { syncWants } from './wants.js';
 import { syncMarket } from './market.js';
+import { salesRecap, salesSync } from './sales.js';
 import { pollFeed, recordFeed } from './feed.js';
 import { scanPullers, whoPulled } from './pullers.js';
 import { cardAuctions, cardListings, cardOwners, cardSale, knownPlayers, ownersAmong, searchCards } from './who-has.js';
@@ -28,6 +29,10 @@ export async function answer(msg) {
         return { id: await myId() };
       case 'ownership':
         return await ownership();
+      case 'sales-sync':
+        return await salesSync();
+      case 'sales-recap':
+        return await salesRecap();
       case 'collection-stats':
         if (msg.fresh) forget('showcase:', 'series');
         return await collectionStats();

@@ -214,3 +214,70 @@ function markSalesCards() {
     status.append(h('span', { class: 'aqm-root aqm-market-sale', title: 'Déjà en vente (au marché ou en enchère)', [MARKET_SALES_MARK]: '' }, 'Déjà en vente'));
   }
 }
+
+// ---------- Marché › Mes ventes : filtres « Achat fixe » et « Enchères » ----------
+// Au-dessus des ventes du joueur (sections « À prix fixe », « Aux enchères » et « Enchères terminées » du jeu) : deux
+// pastilles, l'une ou l'autre, qui ne montrent que ses ventes à prix fixe ou que ses enchères. Les autres sections
+// (« Tes cartes à vendre », anciennes demandes d'achat) restent affichées. Gardé pour l'onglet.
+const SALES_KIND_KEY = 'aqm-market-sales-kind';
+const SALES_KINDS = [
+  { key: 'fixed', label: 'Achat fixe', title: 'Seulement tes ventes à prix fixe', ids: ['sales-fixed'] },
+  { key: 'auctions', label: 'Enchères', title: 'Seulement tes enchères (en cours et terminées)', ids: ['sales-auctions', 'sales-ended'] }
+];
+function readSalesKind() {
+  try {
+    const kind = sessionStorage.getItem(SALES_KIND_KEY);
+    return SALES_KINDS.some((k) => k.key === kind) ? kind : '';
+  } catch {
+    return '';
+  }
+}
+
+function markSalesKinds() {
+  const sections = new Map();
+  if (MARKET_SALES_PATH.test(location.pathname))
+    for (const k of SALES_KINDS) sections.set(k.key, k.ids.map((id) => document.querySelector(`section[aria-labelledby="${id}"]`)).filter(Boolean));
+  const fixed = sections.get('fixed') ?? [];
+  const auctions = sections.get('auctions') ?? [];
+  const first = fixed[0] ?? auctions[0];
+  // (un seul genre de ventes : rien à filtrer)
+  if (!fixed.length || !auctions.length || !first.parentElement) {
+    document.querySelectorAll('.aqm-sales-kind').forEach((el) => el.remove());
+    document.querySelectorAll('.aqm-kind-hidden').forEach((el) => el.classList.remove('aqm-kind-hidden'));
+    return;
+  }
+  const kind = readSalesKind();
+  const count = (list) => list.reduce((n, s) => n + s.querySelectorAll('ul > li').length, 0);
+  let row = first.parentElement.querySelector(':scope > .aqm-sales-kind');
+  if (!row) {
+    row = h(
+      'div',
+      { class: 'aqm-root aqm-market-sort aqm-sales-kind', role: 'group', 'aria-label': 'Filtrer mes ventes' },
+      h('strong', {}, 'Afficher'),
+      ...SALES_KINDS.map((k) =>
+        h('button', {
+          type: 'button',
+          class: 'aqm-market-sort-button',
+          'data-kind': k.key,
+          title: k.title,
+          onclick: () => {
+            try {
+              readSalesKind() === k.key ? sessionStorage.removeItem(SALES_KIND_KEY) : sessionStorage.setItem(SALES_KIND_KEY, k.key);
+            } catch {}
+            markSalesKinds();
+          }
+        })
+      )
+    );
+  }
+  if (row.nextElementSibling !== first) first.before(row);
+  for (const k of SALES_KINDS) {
+    const chip = row.querySelector(`[data-kind="${k.key}"]`);
+    const label = `${k.label} (${count(k.key === 'fixed' ? fixed : auctions)})`;
+    if (chip.textContent !== label) chip.textContent = label;
+    const isOn = kind === k.key;
+    chip.classList.toggle('is-on', isOn);
+    chip.setAttribute('aria-pressed', String(isOn));
+    for (const s of sections.get(k.key)) s.classList.toggle('aqm-kind-hidden', !!kind && !isOn);
+  }
+}

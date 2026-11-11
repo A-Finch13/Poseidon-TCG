@@ -22,6 +22,9 @@ const STEP_SETTING = new Map([
   [hideBoughtCards, 'hideBought'],
   [markMarketFavorites, 'marketFavorites'],
   [markSalesCards, 'marketSales'],
+  [markSalesKinds, 'marketSales'],
+  [markMyBids, 'myBids'],
+  [markOpenBids, 'myBids'],
   [markRecycleDialog, 'recycleHelp'],
   [markBoosterKinds, 'boosterWheel'],
   [markOpenMore, 'openMore'],
@@ -43,7 +46,7 @@ function run() {
   }
   const began = performance.now();
   runText = null;
-  for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, markSalesCards, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, markGameBoard, pollFeedNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+  for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, markSalesCards, markSalesKinds, markMyBids, markOpenBids, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, markGameBoard, pollFeedNow, syncSalesNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
     if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
     if (!inGame && step !== markTrades && step !== checkAccess) continue;
     try {
@@ -123,7 +126,7 @@ function shutdown() {
   menu = null;
   closeMarketSortMenu();
   overlay = null;
-  document.querySelectorAll('.aqm-root, .aqm-plus, .aqm-open-more, .aqm-trade-filter').forEach((el) => el.remove());
+  document.querySelectorAll('.aqm-root, .aqm-plus, .aqm-open-more, .aqm-trade-filter, .aqm-my-bids').forEach((el) => el.remove());
   document.querySelectorAll('[data-aqm-tradehide]').forEach((el) => el.removeAttribute('data-aqm-tradehide'));
   document.querySelectorAll('[class*="aqm-"]').forEach((el) => {
     for (const cls of [...el.classList]) if (cls.startsWith('aqm-')) el.classList.remove(cls);
