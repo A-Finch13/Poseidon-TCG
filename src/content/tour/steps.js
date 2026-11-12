@@ -18,12 +18,6 @@ const TOUR = [
     find: 'plus'
   },
   {
-    id: 'classement',
-    title: 'Classement des amis',
-    text: 'Sur la page Classement, « Amis » à côté de « Tous » : toi et tes amis, avec les points du jeu. Touche un nom pour ouvrir son profil.',
-    find: 'board'
-  },
-  {
     id: 'boosters',
     title: 'Quel booster ouvrir ?',
     text: 'Choisis ce que tu cherches (des cartes nouvelles, une rareté, un personnage, une série ou la valeur) : les boosters sont classés par taux de drop ou par prix, avec « ≈ 11 boosters à ouvrir en moyenne », le prix moyen en Perles et le meilleur et le pire taux en haut.',
@@ -36,38 +30,11 @@ const TOUR = [
     find: 'menu-1'
   },
   {
-    id: 'favoris',
-    title: 'Séries favorites',
-    text: 'Ajoute des séries à tes favoris (ici, ou avec l’étoile ☆ sur les séries de la page Collection) : elles sont les mêmes sur tous tes appareils. Tu vois leurs personnages, ceux qui te manquent, et un bouton met d’un coup toutes les cartes manquantes dans ta liste de recherches du jeu.',
-    find: 'menu-2'
-  },
-  {
-    id: 'etoiles',
-    title: 'L’étoile des séries',
-    text: 'Sur la page Collection, l’étoile ☆ ajoute une série à tes favoris ; le bouton « ★ Favoris » au-dessus ouvre la liste de leurs personnages. Quand une série est ouverte, son cadre « Album de la série » a aussi « Ajouter aux favoris » et « Rechercher les manquantes ».',
-    page: '/jeu/collection',
-    target: '.aqm-fav-bar, .aqm-star'
-  },
-  {
-    id: 'progression',
-    title: 'Ta progression',
-    text: 'À côté de « Ta collection », « Ma progression » montre le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes gagnées chaque jour.',
-    page: '/jeu/collection',
-    target: '.aqm-stats-open'
-  },
-  {
     id: 'tirages',
     title: 'Les beaux tirages',
     text: 'Sur l’accueil, les cartes des beaux tirages des joueurs sont affichées en plus grand.',
     page: '/jeu',
     target: '.aqm-pulls'
-  },
-  {
-    id: 'pity',
-    title: 'La garantie anti-malchance',
-    text: 'Sous le minuteur du booster offert : combien de boosters il te reste avant la SSR et l’UR garanties. Aquaman compte chaque booster que tu ouvres, et partage ce compte entre tes appareils (PC, téléphone, extension ou script) : partout le même chiffre. Tant qu’il n’a pas vu sortir de SSR ou d’UR, il affiche « au plus ».',
-    page: '/jeu',
-    target: '.aqm-pity'
   },
   {
     id: 'echanges',

@@ -2,7 +2,6 @@
 
 import { ORIGIN } from './common.js';
 import { account, ApiError, cached, forget, game, myId, validPlayer } from './api.js';
-import { keepOnBoard } from './leaderboard.js';
 
 // ---------- collections ----------
 
@@ -123,6 +122,5 @@ export async function playerSummary(id, fresh = false) {
   const summary = sc.private
     ? { id, name: sc.player?.name ?? null, private: true }
     : { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0, byRarity: distinctByRarity(sc), best: bestCard(sc) };
-  await keepOnBoard(summary);
   return { ...summary, at: Date.now() };
 }

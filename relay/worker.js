@@ -59,6 +59,7 @@ const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(b
 // Les réponses publiques peuvent être gardées une minute par les navigateurs.
 const shared = (body) => json(body, 200, { 'cache-control': 'public, max-age=60' });
 
+// Certains éléments sont gardés pour la rétro-compatibilité
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -68,6 +69,8 @@ export default {
       if (req.method === 'POST' && pathname === '/pity') return json(await pity(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/pity/all') return json(await pityAll(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/favorites') return json(await favorites(env, await readBody(req)));
+      if (req.method === 'GET' && pathname === '/favorites/transferred') return json(await favoritesTransferred(env, url.searchParams));
+      if (req.method === 'POST' && pathname === '/favorites/transfer') return json(await favoritesTransfer(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/wants') return json(await wants(env, await readBody(req)));
       if (req.method === 'POST' && pathname === '/lists') return json(await playerList(env, await readBody(req, HOLDINGS_BODY))); // (Ma progression : un compte pour chaque série)
       if (req.method === 'GET' && pathname === '/packs') return shared(await packDesigns(env));
@@ -185,6 +188,22 @@ async function favorites(env, body) {
     return { list, at: Math.round(at) };
   }
   return saved ? { list: JSON.parse(saved.list), at: saved.at } : { list: null, at: 0 };
+}
+
+// Vérifie si le joueur a transféré ses favoris
+async function favoritesTransferred(env, urlSearchParams) {
+  const player = String(urlSearchParams.get('player') ?? '');
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  const saved = await env.DB.prepare('SELECT transferred FROM favorites_transferred WHERE player = ?1').bind(player).first();
+  return saved ? { transferred: Boolean(saved.transferred) } : { transferred: false };
+}
+
+// Indique que le joueur a transféré ses favoris
+async function favoritesTransfer(env, body) {
+  const player = String(body?.player ?? '');
+  if (!PLAYER.test(player)) throw new Error('bad_player');
+  await env.DB.prepare('INSERT INTO favorites_transferred (player, transferred) VALUES (?1, 1) ON CONFLICT (player) DO UPDATE SET transferred = 1').bind(player).run();
+  return { transferred: true };
 }
 
 // Les dessins de chaque sorte de booster publiés par l'auteur : { kind: { v, pile, buttons, many, name, art, at } }.

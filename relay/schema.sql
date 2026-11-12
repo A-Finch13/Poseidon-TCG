@@ -1,3 +1,5 @@
+-- Certains éléments sont gardés pour la rétro-compatibilité
+
 -- Boosters ouverts par chaque joueur, partagés entre ses appareils (relay/worker.js).
 CREATE TABLE IF NOT EXISTS pity (
   player TEXT NOT NULL,
@@ -17,6 +19,12 @@ CREATE TABLE IF NOT EXISTS favorites (
   player TEXT PRIMARY KEY,
   list TEXT NOT NULL,
   at INTEGER NOT NULL
+);
+
+-- Séries favorites transférées pour chaque joueur (relay/worker.js).
+CREATE TABLE IF NOT EXISTS favorites_transferred (
+  player TEXT PRIMARY KEY,
+  transferred BOOLEAN NOT NULL DEFAULT 0
 );
 
 -- Le dessin de la pile de chaque sorte de booster, relevé et publié par l'auteur pour chaque Aquaman (relay/worker.js).

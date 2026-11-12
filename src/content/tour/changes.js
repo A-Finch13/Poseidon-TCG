@@ -5,6 +5,13 @@
 // visite'].
 const CHANGES = [
   {
+    version: '1.7.2',
+    items: [
+      ['Déduplication de fonctionnalités : certains fonctions d’Aquaman sont maintenant incluses sur le site.'],
+      ['Plusieurs bugs ont été corrigés.']
+    ]
+  },
+  {
     version: '1.7.1',
     items: [
       ['Marché : dans « Mes ventes », les filtres « Achat fixe » et « Enchères » au-dessus de tes ventes n’affichent que tes ventes à prix fixe, ou que tes enchères (en cours et terminées). Un second clic remet tout. Se règle dans Plus › Réglages (« Tes ventes »).'],
@@ -20,9 +27,6 @@ const CHANGES = [
       ['Marché : dans « Tes cartes à vendre », les cartes que tu vends déjà (au marché ou en enchère) sont marquées « Déjà en vente », et « Trier par » les range selon un ou plusieurs critères : les plus recherchées, les plus ou moins possédées, la valeur estimée ou le nom. Se règle dans Plus › Réglages. Proposé par volcanofr.'],
       ['Recycler des cartes : en mode « Mes doublons », plus aucune carte n’est cochée sans que tu la voies. Le jeu cochait d’office les doublons pas encore affichés (la liste se charge 48 par 48) : Aquaman charge toute la liste à l’ouverture et la décoche, puis « Tout sélectionner » agit sur toute la liste.'],
       ['Garantie anti-malchance : comme dans le jeu, seuls les boosters classiques (gratuits ou de la boutique) et les packs à thème à 250 Perles comptent pour la SSR et l’UR garanties. Les packs spéciaux (Légendaire, Halloween…) ne les font plus avancer. Aquaman retient maintenant le pack de chaque booster ouvert : le compte devient exact au fil des ouvertures.'],
-      ['Collection : avec le filtre « Manquantes », le compte des cartes qui te manquent par rareté s’affiche sous les onglets (« 70 N · 293 R · … · 948 au total »), sans avoir à faire défiler tout l’album.', 'series'],
-      ['Collection : dans « Album complet » filtré par rareté, le jeu ne renvoie pas toutes les cartes et en oublie des manquantes. Avec « Manquantes », Aquaman ajoute à la suite celles que le jeu n’affiche pas, avec le même aspect (lien vers la carte compris).', 'series'],
-      ['Ma progression : la colonne « ex. » compte un exemplaire par carte, les doublons ne comptent plus. Les cartes gagnées en achetant ou en échangeant juste après une ouverture de boosters sont comptées dans la journée, au lieu d’attendre le relevé suivant.', 'progression'],
       ['Classement : « Ranger par » sous « Tous / Amis ». Entre amis : par points, par cartes ou par séries complètes (les albums dont le badge est récupéré). Pour « Tous » : par points (le classement du jeu) ou par cartes (le top 100 du jeu rangé par nombre de cartes). « Ma place » suit le tri choisi.', 'classement'],
       ['Classement des amis : le cadre « Ma place » en haut de la page montre ta place parmi tes amis et l’ami à dépasser (« Plus que 10 points pour dépasser… »), et « Voir ma ligne » mène à ta ligne.', 'classement']
     ]
@@ -32,7 +36,6 @@ const CHANGES = [
     items: [
       ['Aquaman se charge plus vite sur les pages du jeu : son code et ses styles arrivent en 2 fichiers au lieu de 72.'],
       ['Mises à jour plus légères : l’extension compte 17 fichiers au lieu d’une centaine, le bouton « Mettre à jour » a moins à télécharger et à remplacer.'],
-      ['Collection : le filtre « Manquantes » reste actif quand tu reviens sur la collection (après un achat depuis la page d’une carte, par exemple).', 'series'],
       ['Collection : « Masquer cartes verrouillées », à côté des filtres des séries, cache les cartes dont tous tes exemplaires sont verrouillés.', 'series'],
       ['Classement : le jeu a maintenant son propre classement. Sur sa page, « Amis » à côté de « Tous » montre toi et tes amis avec les points du jeu (calculés depuis leur collection pour ceux hors du top 100), avec le style du classement du jeu : un podium pour les 3 premiers et leur plus belle carte, puis les lignes de chacun. Le classement d’Aquaman quitte le menu Plus.', 'classement'],
       ['L’onglet Plus passe tout à droite de la barre du jeu, après Classement.', 'plus'],
@@ -43,17 +46,14 @@ const CHANGES = [
     version: '1.5.0',
     items: [
       ['Collection : dans « Album de la série », « 🔒 Verrouiller les uniques » verrouille les cartes de la série dont tu n’as qu’un exemplaire, puis celles qui descendent à un seul exemplaire (vente, échange, recyclage). Un 2e clic arrête la surveillance.'],
-      ['Ma progression : les cartes gagnées chaque jour et le compte par rareté sont les mêmes sur tous tes appareils (réglage « Partage entre mes appareils › Ma progression »).', 'progression'],
       ['Boosters : après l’ouverture d’un ou plusieurs boosters, un bouton « ♻ Recycler les doublons » dans la fenêtre des cartes recycle en Perles les doublons des cartes tirées. Un 2e clic confirme ; le plus petit numéro de chaque carte est gardé, les cartes en vente ou verrouillées ne sont pas touchées.'],
       ['Réglages : « Recyclage automatique » (désactivé au départ) recycle tout seuls, sans clic, les doublons N, R et SR des cartes tirées à la fin de chaque ouverture ; les SSR, UR et SEC restent au bouton.'],
       ['Marché : l’écran noir après l’achat d’une carte depuis sa page (« Son prix au marché ») est corrigé. « Masquer ce que je viens d’acheter » et le filtre « ★ Favoris » ne touchent plus que la liste du marché, jamais le reste d’une page.'],
-      ['Téléphone : sur la page Collection, les filtres des séries restent sur une ligne qui défile (ils ne débordent plus sur les séries), et « Ma progression » se range avec les boutons du jeu.']
     ]
   },
   {
     version: '1.4.9',
     items: [
-      ['Collection : un bouton « Ma progression » à côté de « Ta collection » (aussi dans Plus) : le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes uniques gagnées chaque jour sur les 14 derniers jours.', 'progression'],
       ['Collection : le bouton « Masquer séries avec badge » cache les séries dont tu as déjà réclamé l’album.', 'series'],
       ['Classement : les joueurs déjà lus gardent leur place et leurs chiffres ; seuls ceux lus il y a plus d’1 h (et toi) sont relus, sans tout retélécharger. « Actualiser » relit tout le monde.', 'classement'],
       ['Classement : l’onglet « Perles » est retiré. Aquaman n’envoie plus ton stock de Perles, et celui déjà partagé est effacé du relais.'],
@@ -145,7 +145,7 @@ const CHANGES = [
     items: [
       ['Vendre mes doublons (fenêtre du jeu) : quand le marché est plein, le doublon refusé et ceux encore cochés après lui attendent dans Aquaman (50 au plus), sans recliquer, et sont mis en vente tout seuls, au prix choisi, dès qu’une de tes ventes se conclut. La file s’affiche dans la fenêtre, avec « Vider la file » et « Réessayer maintenant ».'],
       ['Recycler des cartes (fenêtre du jeu) : aucune carte n’est cochée à l’ouverture, et un bouton « Tout sélectionner » coche toute la liste.'],
-      ['Accueil : sous les garanties SSR et UR, le nombre de boosters depuis ta dernière SEC, sa fréquence moyenne et ta chance d’en avoir une dans les 100 prochains (la SEC n’a pas de garantie).', 'pity'],
+      ['Accueil : sous les garanties SSR et UR, le nombre de boosters depuis ta dernière SEC, sa fréquence moyenne et ta chance d’en avoir une dans les 100 prochains (la SEC n’a pas de garantie).'],
       ['Accueil : quand tes boosters sont de plusieurs catégories, les boosters gratuits s’affichent d’abord, et des flèches passent aux autres catégories (3 visibles à la fois : celle du centre et une de chaque côté), chacune avec son rendu, l’image de son pack et ses boutons « Ouvrir » et « Tout ouvrir », qui n’ouvrent que ceux-là, avec l’animation du jeu. Leur dessin est gardé et partagé entre tes appareils, pour s’afficher tout de suite.'],
       ['Accueil : un pack acheté dans la boutique s’affiche dès le retour à l’accueil, sans recharger la page.'],
       ['Marché : un bouton « Retirer mes ventes » à côté de « Vendre une carte » retire toutes tes ventes à prix fixe d’un coup. La file d’attente des doublons est mise en pause le temps du retrait, puis réactivée.'],
@@ -183,7 +183,7 @@ const CHANGES = [
       ['Qui a tiré… ? (menu Plus) : les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu gardés 30 jours.', 'qui'],
       ['Séries favorites : une étoile ☆ sur chaque série de la page Collection, et une page avec leurs personnages (toutes, manquantes, possédées, recherchées, par rareté), les mêmes sur tous tes appareils.', 'favoris'],
       ['Séries favorites : « Rechercher les manquantes » met d’un coup toutes les cartes qui te manquent dans ta liste de recherches du jeu ; 🔭 pour une seule carte.', 'favoris'],
-      ['Sur téléphone : la garantie anti-malchance s’affiche aussi quand la réserve de boosters est pleine.', 'pity']
+      ['Sur téléphone : la garantie anti-malchance s’affiche aussi quand la réserve de boosters est pleine.']
     ]
   },
   {
@@ -195,7 +195,7 @@ const CHANGES = [
       ['Collection : la bande des séries défile avec la molette, ou en l’attrapant avec un clic glissé.', 'series'],
       ['Ma vitrine : glisser-déposer des cartes, à la souris ou au doigt.', 'vitrine'],
       ['Accueil : les cartes des beaux tirages sont plus grandes.', 'tirages'],
-      ['Accueil : la garantie anti-malchance, avec le nombre de boosters avant ta prochaine SSR et ta prochaine UR garanties, le même sur tous tes appareils.', 'pity'],
+      ['Accueil : la garantie anti-malchance, avec le nombre de boosters avant ta prochaine SSR et ta prochaine UR garanties, le même sur tous tes appareils.'],
       ['Extension : le nombre de boosters à ouvrir sur l’icône, une notification quand il y en a de nouveaux, et le bouton « Mettre à jour » dans sa fenêtre.']
     ]
   }

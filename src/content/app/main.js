@@ -6,21 +6,13 @@
 // Les étapes de run() qu'un réglage désactive (SETTINGS dans src/lib/settings.js).
 const STEP_SETTING = new Map([
   [enlargePulls, 'bigPulls'],
-  [showPity, 'pity'],
-  [markSeriesStrip, 'seriesTools'],
-  [markFavoriteSeries, 'seriesTools'],
+  [markMissingSales, 'missingSales'],
   [markAlbum, 'albumButtons'],
   [watchGuards, 'albumButtons'],
-  [markMissingTab, 'missingTab'],
-  [markMissingSales, 'missingSales'],
-  [markCollectionStats, 'collectionStats'],
-  [snapCollection, 'collectionStats'],
   [markCardWho, 'cardWho'],
-  [markCardListings, 'cardListings'],
   [markSellDialog, 'sellTools'],
   [markUnlistButton, 'sellTools'],
   [hideBoughtCards, 'hideBought'],
-  [markMarketFavorites, 'marketFavorites'],
   [markSalesCards, 'marketSales'],
   [markSalesKinds, 'marketSales'],
   [markMyBids, 'myBids'],
@@ -31,7 +23,6 @@ const STEP_SETTING = new Map([
   [enhanceShowcaseEditor, 'showcaseDrag'],
   [markTrades, 'tradeMarks'],
   [markTradeFilters, 'tradeFilters'],
-  [markGameBoard, 'friendsBoard']
 ]);
 
 function run() {
@@ -46,7 +37,7 @@ function run() {
   }
   const began = performance.now();
   runText = null;
-  for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, markSalesCards, markSalesKinds, markMyBids, markOpenBids, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, markGameBoard, pollFeedNow, syncSalesNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+  for (const step of [addPlusTab, enlargePulls, markMissingSales, markAlbum, watchGuards, markCardWho, markSellDialog, markUnlistButton, hideBoughtCards, markSalesCards, markSalesKinds, markMyBids, markOpenBids, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, syncSalesNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
     if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
     if (!inGame && step !== markTrades && step !== checkAccess) continue;
     try {
@@ -163,18 +154,8 @@ function begin() {
     if (e.source === window && e.data?.aquaman === 'boosters-refreshed') onBoostersRefreshed(e.data.id, !!e.data.ok);
   });
   Promise.all([loadShotStore(), featReady]).then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
-  // « Ma progression » à côté du titre de la Collection dès que la page l'affiche (voir earlyStatsButton).
-  featReady.then(() => !stopped && earlyStatsButton());
   // Les séries et les favoris sont lus dès le démarrage du script, sur n'importe quelle page du jeu : les étoiles de la
   // Collection arrivent avec sa bande, même quand c'est la première page ouverte.
-  featReady.then(() => {
-    if (stopped || favLoading || seriesBySlug || !on('seriesTools') || !location.pathname.startsWith('/jeu')) return;
-    favLoading = true;
-    loadFavIds().finally(() => {
-      favLoading = false;
-      schedule();
-    });
-  });
   if (/^\/jeu\/?$/.test(location.pathname)) {
     let frame = 0;
     const early = new MutationObserver(() => {

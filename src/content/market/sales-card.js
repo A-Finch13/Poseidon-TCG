@@ -278,6 +278,6 @@ function markSalesKinds() {
     const isOn = kind === k.key;
     chip.classList.toggle('is-on', isOn);
     chip.setAttribute('aria-pressed', String(isOn));
-    for (const s of sections.get(k.key)) s.classList.toggle('aqm-kind-hidden', !!kind && !isOn);
+    for (const s of sections.get(k.key)) markEdit(s).classList.toggle('aqm-kind-hidden', !isOn);
   }
 }

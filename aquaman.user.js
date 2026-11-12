@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.7.1
+// @version      1.7.2
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -78,7 +78,6 @@ window.__aquamanUserscript = true;
         ["autoRecycle", "Recyclage automatique", "Désactivé au départ. Après chaque ouverture, les doublons N, R et SR des cartes tirées sont recyclés tout seuls, sans clic (le plus petit numéro est gardé ; SSR, UR et SEC restent au bouton)"],
         ["openMoreAuto", "Fermeture automatique", "Après un « Tout ouvrir », la fenêtre des cartes se ferme 5 s après la dernière (sur les 10 suivantes s’il en reste)"],
         ["packGlow", "Lueur du pack", "La lueur derrière le booster prend la couleur de son pack"],
-        ["pity", "Garantie anti-malchance", "Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages"],
         ["bigPulls", "Beaux tirages agrandis", "Les dernières cartes rares tirées par les joueurs, en plus grand"]
       ]
     },
@@ -86,12 +85,8 @@ window.__aquamanUserscript = true;
       title: "Collection",
       icon: "🗂️",
       items: [
-        ["seriesTools", "Bande des séries", "Étoiles des séries favorites, tri « Les plus avancées » et boutons « Masquer séries <= 5 persos », « Masquer séries avec badge » et « Masquer cartes verrouillées »"],
-        ["albumButtons", "Boutons de l’album", "« Ajouter aux favoris », « Rechercher les manquantes » et « Verrouiller les uniques »"],
-        ["missingTab", "Onglet « Manquantes »", "Seulement les cartes qu’il te manque"],
         ["missingSales", "Pastille « En vente »", "Sur les cartes manquantes vendues au marché"],
-        ["collectionStats", "Ma progression", "Bouton à côté de « Ta collection » : pourcentage, raretés, séries complètes et cartes gagnées chaque jour"],
-        ["friendsBoard", "Classement des amis", "Sur la page Classement, « Amis » à côté de « Tous » : toi et tes amis, avec les points du jeu"],
+        ["albumButtons", "Verrouillage des uniques", "Dans l’album d’une série, verrouiller les cartes dont tu n’as qu’un exemplaire et surveiller la série"],
         ["cardWho", "Bouton « Qui a cette carte ? »", "Sur la page des cartes SSR, UR et SEC : les joueurs qui l’ont"]
       ]
     },
@@ -100,10 +95,8 @@ window.__aquamanUserscript = true;
       icon: "🛒",
       items: [
         ["hideBought", "Masquer ce que je viens d’acheter", "Les autres annonces d’une carte achetée disparaissent"],
-        ["marketFavorites", "Filtre « ★ Favoris »", "Les ventes de tes séries favorites seulement"],
         ["myBids", "Filtres de tes enchères", "« Mes mises » dans Enchères (seulement les enchères en cours où tu as fait une offre) et « En cours » dans Mes offres"],
         ["marketSales", "Tes ventes", "Filtres « Achat fixe » et « Enchères » dans « Mes ventes », « Déjà en vente » sur les cartes que tu vends déjà (au marché ou en enchère), et « Trier par » (recherchées, possédées, valeur, nom)"],
-        ["cardListings", "Annonces sur la page d’une carte", "Les 5 annonces les moins chères, avec « Acheter », et les enchères en cours"],
         ["sellTools", "Vente des doublons", "File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »"]
       ]
     },
@@ -129,11 +122,8 @@ window.__aquamanUserscript = true;
       title: "Partage entre mes appareils",
       icon: "☁️",
       items: [
-        ["syncPity", "Garantie anti-malchance", "Le compte des boosters ouverts et l’historique"],
-        ["syncFavorites", "Séries favorites", "Les mêmes séries sur PC et téléphone"],
         ["syncWants", "Cartes recherchées", "La file d’attente des recherches"],
         ["syncMarket", "Marché", "Cartes achetées masquées et doublons en attente de vente"],
-        ["syncProgress", "Ma progression", "Les cartes gagnées chaque jour et le compte par rareté"],
         ["sharePulls", "Beaux tirages", "Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)"]
       ]
     }
@@ -148,50 +138,6 @@ window.__aquamanUserscript = true;
     const settings = { ...await getSettings(), ...patch };
     await chrome.storage.local.set({ settings });
     return settings;
-  }
-
-  // src/lib/leaderboard.js
-  var BOARD_FRESH = 36e5;
-  var BOARD_KEEP = 14 * 864e5;
-  var boardWrites = Promise.resolve();
-  function keepOnBoard(summary) {
-    const write = boardWrites.then(async () => {
-      const me = await myId();
-      const { board = {} } = await chrome.storage.local.get("board");
-      const now = Date.now();
-      const mine = { ...board[me] ?? {}, [summary.id]: { ...summary, at: now } };
-      for (const id in mine) if (!(now - mine[id].at < BOARD_KEEP)) delete mine[id];
-      await chrome.storage.local.set({ board: { ...board, [me]: mine } });
-    });
-    boardWrites = write.catch(() => {
-    });
-    return boardWrites;
-  }
-  async function boardKnown() {
-    const me = await myId();
-    const { board = {} } = await chrome.storage.local.get("board");
-    return { me, fresh: BOARD_FRESH, players: board[me] ?? {} };
-  }
-  async function claimedAlbums(fresh = false) {
-    const sc = await myShowcase(fresh ? 0 : 6e4);
-    const series = (sc.albums ?? []).map((a) => a?.series).filter(Boolean);
-    const covers = series.map((s) => imageKey(s.cover)?.replace(/\.[a-z0-9]+$/i, "")).filter(Boolean);
-    return { ids: series.map((s) => s.id).filter(Boolean), slugs: [.../* @__PURE__ */ new Set([...series.map((s) => s.slug).filter(Boolean), ...covers])] };
-  }
-  async function friends() {
-    const me = await myId();
-    let list = [];
-    let friendsError = null;
-    try {
-      list = (await cached(`friends:${me}`, 5 * 6e4, () => social("/friends"))).friends ?? [];
-    } catch (e) {
-      friendsError = e.message;
-    }
-    return {
-      me,
-      friendsError,
-      friends: list.filter((f) => validPlayer(f?.user?.id) && f.user.id !== me).map((f) => ({ id: f.user.id, name: f.user.name ?? null }))
-    };
   }
 
   // src/lib/collections.js
@@ -285,7 +231,6 @@ window.__aquamanUserscript = true;
     if (fresh) forget(`showcase:${id}`);
     const sc = await showcase(id);
     const summary = sc.private ? { id, name: sc.player?.name ?? null, private: true } : { id, name: sc.player?.name ?? null, private: false, owned: sc.owned ?? 0, total: sc.total ?? 0, albums: sc.albums?.length ?? 0, byRarity: distinctByRarity(sc), best: bestCard(sc) };
-    await keepOnBoard(summary);
     return { ...summary, at: Date.now() };
   }
 
@@ -362,6 +307,23 @@ window.__aquamanUserscript = true;
       if (!id) throw new ApiError(401, "unauthorized", "Connecte-toi au site pour utiliser Aquaman.");
       return id;
     })();
+  }
+
+  // src/lib/leaderboard.js
+  async function friends() {
+    const me = await myId();
+    let list = [];
+    let friendsError = null;
+    try {
+      list = (await cached(`friends:${me}`, 5 * 6e4, () => social("/friends"))).friends ?? [];
+    } catch (e) {
+      friendsError = e.message;
+    }
+    return {
+      me,
+      friendsError,
+      friends: list.filter((f) => validPlayer(f?.user?.id) && f.user.id !== me).map((f) => ({ id: f.user.id, name: f.user.name ?? null }))
+    };
   }
 
   // src/lib/boosters.js
@@ -620,9 +582,6 @@ window.__aquamanUserscript = true;
   }
 
   // src/lib/favorites.js
-  function seriesList() {
-    return cached("series", 2 * 6e4, async () => (await game("/series")).series ?? []);
-  }
   async function wantedIds() {
     const { wants } = await cached("wants", 3e4, () => game("/wants"));
     return new Set((wants ?? []).map((w) => w?.card?.id ?? w?.cardId).filter(Boolean));
@@ -693,29 +652,17 @@ window.__aquamanUserscript = true;
   function seriesCards(id) {
     return cached(`series-cards:${id}`, 6e4, async () => (await game(`/cards?manga=${encodeURIComponent(id)}`)).cards ?? []);
   }
-  var FAV_PULL = 6e4;
-  var favSyncedAt = 0;
-  async function localFavorites() {
-    const { favSeries, favAt } = await chrome.storage.local.get(["favSeries", "favAt"]);
-    return { list: Array.isArray(favSeries) ? favSeries : [], at: Number(favAt) || 0 };
-  }
-  async function exchangeFavorites(local) {
-    try {
-      const res = await fetch(`${RELAY}/favorites`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ player: await myId(), list: local.list, at: local.at })
-      });
-      if (!res.ok) throw new Error(`relay_${res.status}`);
-      const remote = await res.json();
-      favSyncedAt = Date.now();
-      if (Array.isArray(remote?.list) && Number(remote.at) > local.at) {
-        await chrome.storage.local.set({ favSeries: remote.list, favAt: Number(remote.at) });
-        return remote.list;
-      }
-    } catch {
-    }
-    return local.list;
+  async function seriesStatus(id) {
+    const [cards, wanted, guarded] = await Promise.all([seriesCards(id), searchedIds(), guardedSeries()]);
+    const missing = cards.filter((c) => !(c.owned > 0));
+    const toWantIds = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
+    return {
+      missing: missing.length,
+      toWant: toWantIds.length,
+      toWantIds,
+      cardIds: cards.map((c) => c.id).filter(Boolean),
+      guarded: Object.hasOwn(guarded, id)
+    };
   }
   async function globalPacks() {
     try {
@@ -733,54 +680,40 @@ window.__aquamanUserscript = true;
       return { kind: s.id, name: s.name ?? null, art: s.art ?? s.kindArt ?? s.image ?? (types[0] ? `/game/boosters/${types[0]}.webp` : null), types };
     });
   }
-  async function favoriteIds(fresh = false) {
-    const local = await localFavorites();
-    if (!(await getSettings()).syncFavorites || !fresh && Date.now() - favSyncedAt < FAV_PULL) return local.list;
-    return exchangeFavorites(local);
+
+  // src/lib/wants.js
+  var WANTS_PULL = 6e4;
+  var wantsSyncedAt = 0;
+  async function postWants(body) {
+    const res = await fetch(`${RELAY}/wants`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`relay_${res.status}`);
+    return res.json();
   }
-  var favChain = Promise.resolve();
-  function setFavorite(id, on) {
-    const run = favChain.then(async () => {
-      const list = (await localFavorites()).list.filter((x) => x !== id);
-      if (on) list.push(id);
-      const local = { list, at: Date.now() };
-      await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
-      if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
-      return list;
-    });
-    favChain = run.catch(() => {
-    });
-    return run;
-  }
-  async function favoritesReport(fresh = false) {
-    const [ids, all, wanted, waiting] = await Promise.all([favoriteIds(fresh), seriesList(), searchedIds(), waitingIds()]);
-    const series = ids.map((id) => all.find((s) => s.id === id)).filter(Boolean);
-    const cards = await Promise.all(series.map((s) => seriesCards(s.id).catch(() => [])));
-    return {
-      all: all.map((s) => ({ id: s.id, slug: s.slug, title: s.title, owned: s.owned ?? 0, total: s.total ?? 0 })),
-      favorites: series.map((s, i) => ({
-        id: s.id,
-        slug: s.slug,
-        title: s.title,
-        owned: s.owned ?? 0,
-        total: s.total ?? 0,
-        cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id), waiting: waiting.has(c.id) }))
-      }))
-    };
-  }
-  async function seriesStatus(id) {
-    const [cards, wanted, favorites] = await Promise.all([seriesCards(id), searchedIds(), favoriteIds()]);
-    const missing = cards.filter((c) => !(c.owned > 0));
-    const toWant = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
-    const guarded = await guardedSeries();
-    return {
-      missing: missing.length,
-      toWant: toWant.length,
-      toWantIds: toWant,
-      favorite: favorites.includes(id),
-      cardIds: cards.map((c) => c.id).filter(Boolean),
-      guarded: Object.hasOwn(guarded, id)
-    };
+  async function syncWants(fresh = false) {
+    if (!(await getSettings()).syncWants) return { off: true };
+    if (!fresh && Date.now() - wantsSyncedAt < WANTS_PULL) return { skipped: true };
+    wantsSyncedAt = Date.now();
+    const player = await myId();
+    const { wantWaiting = [], wantSent = [], wantsAt = 0, wantsFor } = await chrome.storage.local.get(["wantWaiting", "wantSent", "wantsAt", "wantsFor"]);
+    const mine = wantsFor === player;
+    const at = mine ? Number(wantsAt) || 0 : 0;
+    try {
+      let remote = await postWants({ player, waiting: mine ? wantWaiting : [], sent: mine ? wantSent : [], at });
+      const theirs = Array.isArray(remote?.waiting) ? remote : { waiting: [], sent: [], at: 0 };
+      if (!mine && wantsFor === void 0 && (wantWaiting.length || wantSent.length)) {
+        const join = (x, y) => [.../* @__PURE__ */ new Set([...x, ...y])];
+        remote = await postWants({ player, waiting: join(theirs.waiting, wantWaiting).slice(0, 200), sent: join(theirs.sent ?? [], wantSent), at: Date.now() });
+      } else if (Number(theirs.at) <= at) {
+        if (!mine) await chrome.storage.local.set({ wantsFor: player });
+        return { changed: false };
+      } else remote = theirs;
+      if (((await chrome.storage.local.get("wantsAt")).wantsAt ?? 0) !== wantsAt) return { changed: false };
+      await chrome.storage.local.set({ wantWaiting: remote.waiting ?? [], wantSent: remote.sent ?? [], wantsAt: Number(remote.at) || Date.now(), wantsFor: player });
+      return { changed: true };
+    } catch (e) {
+      wantsSyncedAt = 0;
+      return { error: e?.message || "relay" };
+    }
   }
 
   // src/lib/market.js
@@ -834,514 +767,6 @@ window.__aquamanUserscript = true;
     if (((await chrome.storage.local.get("sellWaitingAt")).sellWaitingAt ?? 0) !== sellWaitingAt) return false;
     await chrome.storage.local.set({ sellWaiting: remote.data ?? [], sellWaitingAt: Number(remote.at) || Date.now(), sellWaitingFor: player });
     return true;
-  }
-
-  // src/lib/progress.js
-  var STATS_DAYS = 120;
-  var dayKey = (t = Date.now()) => new Date(t).toLocaleDateString("sv-SE");
-  var completeSeries = (series, sc) => Array.isArray(series) && series.length ? series.filter((s) => s.total > 0 && s.owned >= s.total).length : sc?.albums?.length ?? 0;
-  async function recordDay(id, point) {
-    const { collectionDays = {} } = await chrome.storage.local.get("collectionDays");
-    const days = { ...collectionDays[id] ?? {} };
-    const key = dayKey(point.at);
-    days[key] = { first: days[key]?.first ?? point, last: point };
-    collectionDays[id] = Object.fromEntries(
-      Object.keys(days).sort().slice(-STATS_DAYS).map((k) => [k, days[k]])
-    );
-    await chrome.storage.local.set({ collectionDays });
-    return collectionDays[id];
-  }
-  async function collectionSnapshot() {
-    const id = await myId();
-    const [sc, series] = await Promise.all([myShowcase(), seriesList().catch(() => null)]);
-    const point = { owned: sc.owned ?? 0, total: sc.total ?? 0, complete: completeSeries(series, sc), at: Date.now() };
-    let days = await recordDay(id, point);
-    if (await syncProgress(id).catch(() => false)) days = (await chrome.storage.local.get("collectionDays")).collectionDays?.[id] ?? days;
-    return { id, sc, series, point, days };
-  }
-  var PROGRESS_PULL = 10 * 6e4;
-  var progressSyncedAt = 0;
-  var progressBusy = null;
-  var joinDays = (a, b) => {
-    const all = { ...a };
-    for (const [k, d] of Object.entries(b ?? {})) {
-      const o = all[k];
-      all[k] = o ? { first: o.first.at <= d.first.at ? o.first : d.first, last: o.last.at >= d.last.at ? o.last : d.last } : d;
-    }
-    return Object.fromEntries(
-      Object.keys(all).sort().slice(-STATS_DAYS).map((k) => [k, all[k]])
-    );
-  };
-  var joinCounts = (a, b) => {
-    const all = { ...a };
-    for (const [k, s] of Object.entries(b ?? {})) if (!all[k] || s.at > all[k].at) all[k] = s;
-    return all;
-  };
-  async function syncProgressList(player, name, key, toList, fromList, join) {
-    const remote = await postList({ player, name });
-    const theirs = fromList(Array.isArray(remote?.data) ? remote.data : []);
-    const store = (await chrome.storage.local.get(key))[key] ?? {};
-    const mine = store[player] ?? {};
-    const all = join(mine, theirs);
-    const same = (x) => JSON.stringify(toList(x)) === JSON.stringify(toList(all));
-    if (!same(theirs)) await postList({ player, name, data: toList(all), at: Math.max(Date.now(), (Number(remote?.at) || 0) + 1) });
-    if (same(mine)) return false;
-    const now = (await chrome.storage.local.get(key))[key] ?? {};
-    await chrome.storage.local.set({ [key]: { ...now, [player]: join(now[player] ?? {}, all) } });
-    return true;
-  }
-  function syncProgress(player, fresh = false) {
-    if (progressBusy) return progressBusy;
-    progressBusy = (async () => {
-      if (!(await getSettings()).syncProgress || !fresh && Date.now() - progressSyncedAt < PROGRESS_PULL) return false;
-      progressSyncedAt = Date.now();
-      try {
-        const days = await syncProgressList(
-          player,
-          "days",
-          "collectionDays",
-          (d) => Object.keys(d).sort().map((day) => ({ day, ...d[day] })),
-          (list) => Object.fromEntries(list.filter((x) => x?.day && x.first && x.last).map((x) => [x.day, { first: x.first, last: x.last }])),
-          joinDays
-        );
-        const counts = await syncProgressList(
-          player,
-          "rarities",
-          "rarityCache",
-          (c) => Object.keys(c).sort().map((id) => ({ id, ...c[id] })),
-          (list) => Object.fromEntries(list.filter((x) => x?.id).map(({ id, ...s }) => [id, s])),
-          joinCounts
-        );
-        return days || counts;
-      } catch {
-        progressSyncedAt = 0;
-        return false;
-      } finally {
-        progressBusy = null;
-      }
-    })();
-    return progressBusy;
-  }
-
-  // src/lib/rarities.js
-  var RARITY_STEP = 40;
-  var RARITY_AGAIN = 24 * 36e5;
-  var RARITY_FORMAT = 2;
-  var rarityBusy = Promise.resolve();
-  function rarityCounts(budget = RARITY_STEP) {
-    const run = rarityBusy.then(() => countRarities(budget));
-    rarityBusy = run.catch(() => {
-    });
-    return run;
-  }
-  async function countRarities(budget) {
-    const me = await myId();
-    const series = (await seriesList()).filter((s) => s?.id);
-    const { rarityCache = {} } = await chrome.storage.local.get("rarityCache");
-    const mine = { ...rarityCache[me] ?? {} };
-    const now = Date.now();
-    const current = (s) => {
-      const k = mine[s.id];
-      return !!k && k.v === RARITY_FORMAT && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && now - k.at < RARITY_AGAIN;
-    };
-    const todo = series.filter((s) => !current(s));
-    const batch = todo.slice(0, Math.max(0, budget));
-    let failed = 0;
-    const misses = {};
-    for (let i = 0; i < batch.length; i += 3)
-      await Promise.all(
-        batch.slice(i, i + 3).map(async (s) => {
-          try {
-            const cards = (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? [];
-            misses[s.id] = missEntry(s, cards);
-            const by = {};
-            for (const c of cards) {
-              if (!RANK[c?.rarity]) continue;
-              const r = by[c.rarity] ??= [0, 0, 0];
-              r[1]++;
-              if (c.owned > 0) {
-                r[0]++;
-                r[2]++;
-              }
-            }
-            mine[s.id] = { v: RARITY_FORMAT, owned: s.owned ?? 0, total: s.total ?? 0, at: Date.now(), by };
-          } catch {
-            failed++;
-          }
-        })
-      );
-    const ids = new Set(series.map((s) => s.id));
-    for (const k in mine) if (!ids.has(k)) delete mine[k];
-    if (batch.length) await chrome.storage.local.set({ rarityCache: { ...rarityCache, [me]: mine } });
-    if (Object.keys(misses).length) await keepMisses(me, misses, ids);
-    const byRarity = Object.fromEntries(Object.keys(RANK).map((r) => [r, { owned: 0, total: 0, copies: 0 }]));
-    for (const s of series)
-      for (const [r, [owned, total, copies]] of Object.entries(mine[s.id]?.by ?? {})) {
-        byRarity[r].owned += owned;
-        byRarity[r].total += total;
-        byRarity[r].copies += copies;
-      }
-    const counted = series.filter((s) => mine[s.id]).length;
-    return { byRarity, counted, series: series.length, pending: todo.length - batch.length + failed, failed };
-  }
-  var MISS_STEP = 60;
-  var missBusy = Promise.resolve();
-  var missEntry = (s, cards) => ({
-    owned: s.owned ?? 0,
-    total: s.total ?? 0,
-    at: Date.now(),
-    miss: cards.filter((c) => c?.id && RANK[c.rarity] && !(c.owned > 0)).map((c) => ({
-      id: c.id,
-      name: c.name ?? "",
-      image: c.image ?? null,
-      rarity: c.rarity,
-      types: Array.isArray(c.types) ? c.types : [],
-      series: c.series?.title ?? s.title ?? "",
-      maxCopies: c.maxCopies ?? null,
-      minted: c.minted ?? null
-    }))
-  });
-  async function keepMisses(me, misses, ids) {
-    const { missingCache = {} } = await chrome.storage.local.get("missingCache");
-    const mine = { ...missingCache[me] ?? {}, ...misses };
-    if (ids) {
-      for (const k in mine) if (!ids.has(k)) delete mine[k];
-    }
-    await chrome.storage.local.set({ missingCache: { ...missingCache, [me]: mine } });
-  }
-  function missingCards(filter = {}) {
-    const run = missBusy.then(() => readMissing(filter));
-    missBusy = run.catch(() => {
-    });
-    return run;
-  }
-  async function readMissing({ rarity = "", type = "", q = "", manga = "" } = {}) {
-    const me = await myId();
-    const series = (await seriesList()).filter((s) => s?.id && (!manga || s.id === manga));
-    const { missingCache = {} } = await chrome.storage.local.get("missingCache");
-    const mine = missingCache[me] ?? {};
-    const current = (s) => {
-      const k = mine[s.id];
-      return !!k && k.owned === (s.owned ?? 0) && k.total === (s.total ?? 0) && Date.now() - k.at < RARITY_AGAIN;
-    };
-    const todo = series.filter((s) => !current(s));
-    const batch = todo.slice(0, MISS_STEP);
-    const fresh = {};
-    for (let i = 0; i < batch.length; i += 4)
-      await Promise.all(
-        batch.slice(i, i + 4).map(async (s) => {
-          try {
-            fresh[s.id] = missEntry(s, (await game(`/cards?manga=${encodeURIComponent(s.id)}`)).cards ?? []);
-          } catch {
-          }
-        })
-      );
-    if (Object.keys(fresh).length) await keepMisses(me, fresh, manga ? null : new Set(series.map((s) => s.id)));
-    const words = String(q).trim().toLowerCase();
-    const cards = series.flatMap((s) => (fresh[s.id] ?? mine[s.id])?.miss ?? []).filter((c) => (!rarity || c.rarity === rarity) && (!type || c.types.includes(type)) && (!words || c.name.toLowerCase().includes(words) || c.series.toLowerCase().includes(words))).sort((a, b) => RANK[b.rarity] - RANK[a.rarity] || a.name.localeCompare(b.name, "fr"));
-    return { cards, pending: todo.length - Object.keys(fresh).length };
-  }
-  async function collectionStats() {
-    await syncProgress(await myId(), true).catch(() => false);
-    const [{ id, sc, series, point, days }, rarities] = await Promise.all([collectionSnapshot(), rarityCounts(0).catch(() => null)]);
-    const keys = Object.keys(days).sort();
-    const history2 = keys.map((k, i) => ({
-      day: k,
-      owned: days[k].last.owned,
-      complete: days[k].last.complete,
-      // cartes gagnées ce jour-là : depuis la dernière lecture de la veille, sinon depuis la première lecture du jour
-      gain: days[k].last.owned - (i > 0 ? days[keys[i - 1]].last.owned : days[k].first.owned),
-      since: i > 0 ? keys[i - 1] : null
-    }));
-    return {
-      id,
-      name: sc.player?.name ?? null,
-      owned: point.owned,
-      total: point.total,
-      missing: Math.max(0, point.total - point.owned),
-      complete: point.complete,
-      series: Array.isArray(series) ? series.length : null,
-      albums: sc.albums?.length ?? 0,
-      rarities,
-      // { byRarity, counted, series, pending } ou null
-      history: history2,
-      today: dayKey()
-    };
-  }
-
-  // src/lib/pity.js
-  var PITY = { SSR: 60, UR: 190 };
-  var PITY_EVENTS = 500;
-  var PITY_PULL = 6e4;
-  async function pityState() {
-    const id = await myId();
-    const { pity: pity2 = {}, pityRules } = await chrome.storage.local.get(["pity", "pityRules"]);
-    const mine = { events: [], unsynced: [], syncedAt: 0, syncError: null, ...pity2[id] };
-    return { id, all: pity2, mine, rules: { ...PITY, ...pityRules } };
-  }
-  async function savePity({ id, all, mine }) {
-    await chrome.storage.local.set({ pity: { ...all, [id]: mine } });
-  }
-  function secChance() {
-    return cached("sec-chance", 30 * 6e4, async () => {
-      const rarities = await game("/rarities").then((r) => r.rarities ?? []);
-      if (!rarities.some((r) => r.code === "SEC" && r.weight > 0)) return null;
-      const miss = slotOdds(rarities, new Set(rarities.map((r) => r.code)), RANK.R).reduce((p, slot) => p * (1 - (slot.SEC ?? 0)), 1);
-      return 1 - miss;
-    }).catch(() => null);
-  }
-  function rarityChances() {
-    return cached("rarity-chances", 30 * 6e4, async () => {
-      const rarities = await game("/rarities").then((r) => r.rarities ?? []);
-      if (!rarities.length) return null;
-      const slots = slotOdds(rarities, new Set(rarities.map((r) => r.code)), RANK.R);
-      const atLeast = (rank) => 1 - slots.reduce((miss, slot) => miss * (1 - Object.entries(slot).reduce((p, [c, v]) => p + ((RANK[c] ?? 0) >= rank ? v : 0), 0)), 1);
-      const out = {};
-      for (const code of ["SSR", "UR", "SEC"]) out[code] = atLeast(RANK[code]) - atLeast(RANK[code] + 1);
-      return out;
-    }).catch(() => null);
-  }
-  function secReport(mine, chance) {
-    const { events } = mine;
-    let last = -1;
-    for (let i = events.length - 1; i >= 0; i--)
-      if (events[i].top >= RANK.SEC) {
-        last = i;
-        break;
-      }
-    const local = { since: last >= 0 ? events.length - 1 - last : events.length, known: last >= 0 };
-    const pulled = sinceLast(events, RANK.SEC, mine.pulls?.SEC);
-    if (pulled.missed) return { since: pulled.since, known: true, chance };
-    const sec = mine.sec && mine.sec.since >= local.since ? mine.sec : local;
-    return { since: sec.since, known: !!sec.known, chance };
-  }
-  var PULL_SLACK = 10 * 6e4;
-  function sinceLast(events, top, pullAt, seen = events) {
-    let last = -1;
-    for (let i = events.length - 1; i >= 0; i--)
-      if (events[i].top === top) {
-        last = i;
-        break;
-      }
-    const seenPull = Number.isFinite(pullAt) && seen.some((e) => e.top === top && Math.abs(e.at - pullAt) <= PULL_SLACK);
-    if (Number.isFinite(pullAt) && !seenPull && pullAt > (last >= 0 ? events[last].at : -Infinity) + PULL_SLACK && events.length && pullAt >= events[0].at)
-      return { since: events.filter((e) => e.at > pullAt).length, known: true, missed: true };
-    return { since: last >= 0 ? events.length - 1 - last : events.length, known: last >= 0, missed: false };
-  }
-  var THEME_PRICE = 250;
-  var SPECIAL_NAME = /halloween|l[ée]gendaire|prestige|no[eë]l|saison|[ée]v[ée]nement/i;
-  function pityPacks() {
-    return cached("pity-packs", 30 * 6e4, async () => {
-      const shop = await game("/shop");
-      const specials = Array.isArray(shop?.specials) ? shop.specials : [];
-      const base = Number(shop?.boosterPrice) || 150;
-      return Object.fromEntries(specials.filter((s) => typeof s?.id === "string").map((s) => [s.id, Number(s.price) > 0 && Number(s.price) <= Math.max(THEME_PRICE, base)]));
-    }).catch(() => null);
-  }
-  function pityCounts(packs) {
-    return (e) => {
-      const id = e?.pack?.id;
-      if (!id || id === "classic") return true;
-      if (packs && id in packs) return packs[id];
-      return packs ? false : !SPECIAL_NAME.test(e.pack.name ?? "");
-    };
-  }
-  function pityReport(mine, rules, sync, chance = null, packs = null) {
-    const { events } = mine;
-    const out = { opened: events.length, sync: sync ? mine.syncError ? "error" : mine.syncedAt ? "ok" : "waiting" : "off", syncedAt: mine.syncedAt || null };
-    const counted = events.filter(pityCounts(packs));
-    out.skipped = events.length - counted.length;
-    for (const code of Object.keys(PITY)) {
-      const { since, known, missed } = sinceLast(counted, RANK[code], mine.pulls?.[code], events);
-      out[code] = { since, known, missed, over: since >= rules[code], every: rules[code], left: Math.max(1, rules[code] - since) };
-    }
-    out.SEC = secReport(mine, chance);
-    return out;
-  }
-  function cleanPack(p) {
-    const id = typeof p?.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(p.id) ? p.id : null;
-    return id ? { id, name: typeof p.name === "string" && p.name.trim() ? p.name.trim().slice(0, 60) : null } : null;
-  }
-  function mergeEvents(a, b) {
-    const byId = /* @__PURE__ */ new Map();
-    for (const e of [...a, ...b]) {
-      if (!e?.id) continue;
-      const known = byId.get(e.id);
-      if (!known) byId.set(e.id, { id: String(e.id), at: Number(e.at) || 0, top: Number(e.top) || 0, ...e.card ? { card: e.card } : {}, ...e.pack ? { pack: e.pack } : {} });
-      else if (!known.pack && e.pack) known.pack = e.pack;
-    }
-    return [...byId.values()].sort((x, y) => x.at - y.at).slice(-PITY_EVENTS);
-  }
-  async function exchangePity(state, force) {
-    const { mine } = state;
-    if (!force && !mine.unsynced.length && Date.now() - mine.syncedAt < PITY_PULL) return;
-    const waiting = new Set(mine.unsynced);
-    try {
-      const res = await fetch(`${RELAY}/pity`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ player: state.id, events: mine.events.filter((e) => waiting.has(e.id)) })
-      });
-      if (!res.ok) throw new Error(`relay_${res.status}`);
-      const { events, sec, pulls } = await res.json();
-      mine.events = mergeEvents(mine.events, Array.isArray(events) ? events : []);
-      mine.sec = Number.isFinite(sec?.since) ? { since: sec.since, known: !!sec.known } : null;
-      if (pulls && typeof pulls === "object") mine.pulls = Object.fromEntries(["SSR", "UR", "SEC"].filter((k) => Number.isFinite(pulls[k])).map((k) => [k, pulls[k]]));
-      mine.unsynced = mine.unsynced.filter((id) => !waiting.has(id));
-      mine.syncedAt = Date.now();
-      mine.syncError = null;
-    } catch (e) {
-      mine.syncError = e?.message || "relay";
-    }
-    await savePity(state);
-  }
-  async function pity(fresh = false) {
-    const state = await pityState();
-    const on = (await getSettings()).syncPity;
-    if (on) await exchangePity(state, fresh);
-    return pityReport(await withGuessedPacks(state.mine), state.rules, on, await secChance(), await pityPacks());
-  }
-  async function withGuessedPacks(mine) {
-    if (!mine.events.some((e) => e.top >= RANK.SSR && !e.pack && e.card?.id)) return mine;
-    const events = mine.events.map((e) => ({ ...e }));
-    await guessPacks(events).catch(() => {
-    });
-    return { ...mine, events };
-  }
-  async function pityHistory() {
-    const state = await pityState();
-    let events = state.mine.events;
-    let pulls = [];
-    if ((await getSettings()).syncPity)
-      try {
-        const all = await cached(`pity-all:${state.id}`, 6e4, async () => {
-          const res = await fetch(`${RELAY}/pity/all`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ player: state.id }) });
-          if (!res.ok) throw new Error(`relay_${res.status}`);
-          return res.json();
-        });
-        pulls = all.pulls ?? [];
-        const byId = /* @__PURE__ */ new Map();
-        for (const e of [...all.events ?? [], ...events]) {
-          if (!e?.id) continue;
-          const known = byId.get(e.id);
-          if (!known) byId.set(e.id, { at: Number(e.at) || 0, top: Number(e.top) || 0, card: e.card ?? null, pack: e.pack ?? null });
-          else {
-            if (!known.card && e.card) known.card = e.card;
-            if (!known.pack && e.pack) known.pack = e.pack;
-          }
-        }
-        events = [...byId.values()].sort((a, b) => a.at - b.at);
-      } catch {
-      }
-    const used = /* @__PURE__ */ new Set();
-    const cardOf = (e, code) => {
-      if (e.card) return e.card;
-      let best = null;
-      for (const [i, p] of pulls.entries()) {
-        if (used.has(i) || p.rarity !== code) continue;
-        const gap = Math.abs(p.at - e.at);
-        if (gap < 10 * 6e4 && (!best || gap < best.gap)) best = { i, gap, p };
-      }
-      if (!best) return null;
-      used.add(best.i);
-      return { id: best.p.id, name: best.p.name, image: best.p.image, rarity: code };
-    };
-    const codeOf = (top) => Object.keys(RANK).find((k) => RANK[k] === top);
-    for (const e of events) if (e.top >= RANK.SSR) e.card = cardOf(e, codeOf(e.top));
-    await guessPacks(events);
-    const out = { opened: events.length, since: events[0]?.at ?? null, recent: events.slice(-300).map((e) => e.top), chances: await rarityChances() };
-    const counts = pityCounts(await pityPacks());
-    for (const code of ["SSR", "UR", "SEC"]) {
-      const hits = [];
-      let count = 0;
-      for (const e of events) {
-        const counted = code === "SEC" || counts(e);
-        if (counted) count++;
-        if (e.top !== RANK[code]) continue;
-        hits.push({ at: e.at, top: codeOf(e.top) ?? code, card: e.card ?? null, pack: e.pack ?? null, after: counted ? count : 0, first: !hits.length, special: !counted });
-        if (counted) count = 0;
-      }
-      out[code] = { hits: hits.reverse(), current: count };
-    }
-    return out;
-  }
-  async function guessPacks(events) {
-    const missing = events.filter((e) => e.top >= RANK.SSR && !e.pack && e.card?.id);
-    if (!missing.length) return;
-    const catalog = await loadCatalog();
-    if (!catalog) return;
-    const byId = new Map(catalog.map((c) => [c.id, c]));
-    const designs = await globalPacks();
-    const halloween = Object.entries(designs ?? {}).find(([, d]) => /halloween/i.test(d?.name ?? ""))?.[0]?.replace(/--n\d+$/, "") ?? "halloween";
-    for (const e of missing) {
-      const c = byId.get(e.card.id);
-      if (!c) continue;
-      e.pack = c.halloween ? { id: halloween, name: "Halloween", guessed: true } : { id: "classic", name: "Classique", guessed: true };
-    }
-  }
-  async function recordOpening(boosters, best = [], packs = [], ids = []) {
-    const state = await pityState();
-    const { mine, rules } = state;
-    const now = Date.now();
-    const known = new Set(mine.events.map((e) => e.id));
-    const added = boosters.map((rarities, i) => {
-      const top = Math.max(0, ...rarities.map((r) => RANK[r] ?? 0));
-      const c = best[i];
-      const card = top >= RANK.SSR && c?.id ? { id: String(c.id), name: c.name ?? null, image: c.image ?? null, rarity: c.rarity } : null;
-      const pack = cleanPack(packs[i]);
-      const gameId = typeof ids[i] === "string" && /^[A-Za-z0-9_.:-]{1,60}$/.test(ids[i]) ? `g:${ids[i]}` : null;
-      return { id: gameId ?? `${(now + i).toString(36)}-${Math.random().toString(36).slice(2, 10)}`, at: now + i, top, ...card ? { card } : {}, ...pack ? { pack } : {} };
-    }).filter((e, i, all) => !known.has(e.id) && all.findIndex((x) => x.id === e.id) === i);
-    if (!added.length) return pityReport(await withGuessedPacks(mine), rules, (await getSettings()).syncPity, await secChance(), await pityPacks());
-    mine.events = mergeEvents(mine.events, added);
-    if (mine.sec) mine.sec = added.some((e) => e.top >= RANK.SEC) ? null : { ...mine.sec, since: mine.sec.since + added.length };
-    mine.unsynced = [.../* @__PURE__ */ new Set([...mine.unsynced, ...added.map((e) => e.id)])].slice(-PITY_EVENTS);
-    const on = (await getSettings()).syncPity;
-    if (on) await exchangePity(state, true);
-    else await savePity(state);
-    return pityReport(await withGuessedPacks(mine), rules, on, await secChance(), await pityPacks());
-  }
-  async function setPityRules(rules) {
-    const clean = Object.fromEntries(
-      Object.keys(PITY).filter((k) => Number(rules?.[k]) > 0).map((k) => [k, Number(rules[k])])
-    );
-    if (Object.keys(clean).length) await chrome.storage.local.set({ pityRules: clean });
-    return { ok: true };
-  }
-
-  // src/lib/wants.js
-  var WANTS_PULL = 6e4;
-  var wantsSyncedAt = 0;
-  async function postWants(body) {
-    const res = await fetch(`${RELAY}/wants`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error(`relay_${res.status}`);
-    return res.json();
-  }
-  async function syncWants(fresh = false) {
-    if (!(await getSettings()).syncWants) return { off: true };
-    if (!fresh && Date.now() - wantsSyncedAt < WANTS_PULL) return { skipped: true };
-    wantsSyncedAt = Date.now();
-    const player = await myId();
-    const { wantWaiting = [], wantSent = [], wantsAt = 0, wantsFor } = await chrome.storage.local.get(["wantWaiting", "wantSent", "wantsAt", "wantsFor"]);
-    const mine = wantsFor === player;
-    const at = mine ? Number(wantsAt) || 0 : 0;
-    try {
-      let remote = await postWants({ player, waiting: mine ? wantWaiting : [], sent: mine ? wantSent : [], at });
-      const theirs = Array.isArray(remote?.waiting) ? remote : { waiting: [], sent: [], at: 0 };
-      if (!mine && wantsFor === void 0 && (wantWaiting.length || wantSent.length)) {
-        const join = (x, y) => [.../* @__PURE__ */ new Set([...x, ...y])];
-        remote = await postWants({ player, waiting: join(theirs.waiting, wantWaiting).slice(0, 200), sent: join(theirs.sent ?? [], wantSent), at: Date.now() });
-      } else if (Number(theirs.at) <= at) {
-        if (!mine) await chrome.storage.local.set({ wantsFor: player });
-        return { changed: false };
-      } else remote = theirs;
-      if (((await chrome.storage.local.get("wantsAt")).wantsAt ?? 0) !== wantsAt) return { changed: false };
-      await chrome.storage.local.set({ wantWaiting: remote.waiting ?? [], wantSent: remote.sent ?? [], wantsAt: Number(remote.at) || Date.now(), wantsFor: player });
-      return { changed: true };
-    } catch (e) {
-      wantsSyncedAt = 0;
-      return { error: e?.message || "relay" };
-    }
   }
 
   // src/lib/sales.js
@@ -1808,19 +1233,6 @@ window.__aquamanUserscript = true;
           return await salesSync();
         case "sales-recap":
           return await salesRecap();
-        case "collection-stats":
-          if (msg.fresh) forget("showcase:", "series");
-          return await collectionStats();
-        case "rarity-counts":
-          return await rarityCounts();
-        case "missing-cards": {
-          const text = (v, max) => typeof v === "string" ? v.slice(0, max) : "";
-          return await missingCards({ rarity: text(msg.rarity, 4), type: text(msg.kind, 40), q: text(msg.q, 80), manga: text(msg.manga, 64) });
-        }
-        case "collection-snapshot": {
-          const { point } = await collectionSnapshot();
-          return { ok: true, owned: point.owned };
-        }
         case "searched-images":
           return { keys: await searchedImages() };
         case "player-ownership":
@@ -1831,10 +1243,6 @@ window.__aquamanUserscript = true;
           return await friends();
         case "player":
           return await playerSummary(msg.id, !!msg.fresh);
-        case "board-known":
-          return await boardKnown();
-        case "claimed-albums":
-          return await claimedAlbums(!!msg.fresh);
         case "boosters":
           return await boosterReport(msg.query, msg.rarity, msg.field);
         case "access":
@@ -1843,26 +1251,14 @@ window.__aquamanUserscript = true;
           return { groups: SETTINGS, values: await getSettings() };
         case "set-settings":
           return { values: await setSettings(msg.patch ?? {}) };
-        case "pity-history":
-          return await pityHistory();
-        case "pity":
-          return await pity(!!msg.fresh);
-        case "opened":
-          return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? [], msg.ids ?? []);
-        case "pity-rules":
-          return await setPityRules(msg.rules);
-        case "favorites":
-          return await favoritesReport(!!msg.fresh);
         case "packs-global":
           return { packs: await globalPacks() };
         case "pack-kinds":
           return { kinds: await packKinds() };
-        case "packs-publish":
-          return await asAuthor("POST", "/admin/packs", { packs: msg.packs ?? {} });
-        case "favorite":
-          return { favorites: await setFavorite(msg.id, !!msg.on) };
         case "series-status":
           return await seriesStatus(msg.id);
+        case "packs-publish":
+          return await asAuthor("POST", "/admin/packs", { packs: msg.packs ?? {} });
         case "guarded-series":
           return { series: await guardedSeries() };
         case "set-guarded":
@@ -1966,7 +1362,7 @@ window.__aquamanUserscript = true;
       await checkUpdate().catch(() => null);
     }
     const { update } = await chrome.storage.local.get("update");
-    return { update: update && newer(update.version, "1.7.1") ? update : null };
+    return { update: update && newer(update.version, "1.7.2") ? update : null };
   }
   async function handle(msg) {
     switch (msg?.type) {
@@ -2046,7 +1442,7 @@ window.__aquamanUserscript = true;
     return {
       runtime: {
         id: OWNER,
-        getManifest: () => ({ version: "1.7.1" }),
+        getManifest: () => ({ version: "1.7.2" }),
         sendMessage: (msg) => handle(msg).catch((e) => ({ error: e?.message ?? String(e) }))
       },
       storage: {
@@ -2647,7 +2043,7 @@ window.__aquamanUserscript = true;
   var start = () => {
     const style = document.createElement("style");
     style.id = "aquaman-style";
-    style.textContent = '/* src/content/styles/01-base.css */\n.aqm-root {\n  --aqm-bg: #0b0b0d;\n  --aqm-panel: #121214;\n  --aqm-card: #18181b;\n  --aqm-line: rgba(255, 255, 255, 0.07);\n  --aqm-text: #f4f4f5;\n  --aqm-muted: #a1a1aa;\n  --aqm-dim: #71717a;\n  --aqm-accent: #60a5fa;\n  --aqm-yes: #22c55e;\n  --aqm-no: #ef4444;\n  box-sizing: border-box;\n}\n.aqm-root *,\n.aqm-root *::before,\n.aqm-root *::after {\n  box-sizing: border-box;\n}\n\n/* src/content/styles/02-plus-menu.css */\n.aqm-plus {\n  cursor: pointer;\n  background: none;\n  border: 0;\n}\n.aqm-plus[aria-expanded=true] {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-nav-ico,\n.aqm-nav-ico svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-menu {\n  position: fixed;\n  z-index: 2147483000;\n  width: 290px;\n  padding: 6px;\n  border-radius: 18px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);\n  animation: aqm-pop 0.14s ease-out;\n}\n.aqm-menu-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  width: 100%;\n  padding: 10px 12px;\n  border: 0;\n  border-radius: 12px;\n  background: none;\n  color: var(--aqm-text);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-menu-item:hover,\n.aqm-menu-item:focus-visible {\n  background: rgba(255, 255, 255, 0.06);\n  outline: none;\n}\n.aqm-menu-item strong {\n  display: block;\n  font-size: 14px;\n  font-weight: 800;\n}\n.aqm-menu-item small {\n  display: block;\n  margin-top: 2px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-menu-ico {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  background: rgba(96, 165, 250, 0.12);\n  color: var(--aqm-accent);\n}\n.aqm-menu-ico svg {\n  width: 18px;\n  height: 18px;\n}\n@keyframes aqm-pop {\n  from {\n    opacity: 0;\n    transform: translateY(-4px) scale(0.98);\n  }\n}\n\n/* src/content/styles/03-window.css */\nhtml.aqm-lock {\n  overflow: hidden;\n}\n.aqm-overlay {\n  position: fixed;\n  inset: 0;\n  z-index: 2147482000;\n  display: flex;\n  align-items: flex-start;\n  justify-content: center;\n  padding: 48px 16px;\n  overflow-y: auto;\n  background: rgba(0, 0, 0, 0.72);\n  backdrop-filter: blur(6px);\n  color: var(--aqm-text);\n  animation: aqm-fade 0.16s ease-out;\n}\n@keyframes aqm-fade {\n  from {\n    opacity: 0;\n  }\n}\n.aqm-panel {\n  width: 100%;\n  max-width: 860px;\n  border-radius: 28px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);\n  overflow: hidden;\n}\n.aqm-head {\n  display: flex;\n  align-items: flex-start;\n  justify-content: space-between;\n  gap: 16px;\n  padding: 26px 28px 8px;\n}\n.aqm-title {\n  margin: 0;\n  font-size: 22px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  letter-spacing: -0.01em;\n  color: #fff;\n}\n.aqm-sub {\n  margin: 6px 0 0;\n  font-size: 14px;\n  color: var(--aqm-muted);\n}\n.aqm-close {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-close:hover {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.12);\n}\n.aqm-close svg {\n  width: 18px;\n  height: 18px;\n}\n.aqm-body {\n  padding: 12px 28px 28px;\n}\n.aqm-note {\n  margin: 14px 0 0;\n  font-size: 12px;\n  line-height: 1.5;\n  color: var(--aqm-dim);\n}\n.aqm-muted {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-label {\n  margin: 0 0 8px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  text-transform: uppercase;\n  color: var(--aqm-accent);\n}\n.aqm-empty {\n  padding: 28px;\n  text-align: center;\n  color: var(--aqm-muted);\n  list-style: none;\n}\n.aqm-chips {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 8px;\n}\n.aqm-chip {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: var(--aqm-muted);\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  cursor: pointer;\n}\n.aqm-chip:hover {\n  color: #fff;\n}\n.aqm-chip.is-on {\n  border-color: rgba(96, 165, 250, 0.4);\n  background: rgba(37, 99, 235, 0.22);\n  color: #fff;\n}\n.aqm-place {\n  display: grid;\n  place-items: center;\n  width: 30px;\n  height: 30px;\n  flex-shrink: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  font-size: 13px;\n  font-weight: 900;\n  color: var(--aqm-muted);\n}\n.aqm-place-1 {\n  background:\n    linear-gradient(\n      135deg,\n      #fde68a,\n      #f59e0b);\n  color: #422006;\n}\n.aqm-place-2 {\n  background:\n    linear-gradient(\n      135deg,\n      #f4f4f5,\n      #a1a1aa);\n  color: #18181b;\n}\n.aqm-place-3 {\n  background:\n    linear-gradient(\n      135deg,\n      #fdba74,\n      #c2410c);\n  color: #fff7ed;\n}\n\n/* src/content/styles/04-leaderboard.css */\n.aqm-board {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 16px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-row {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  padding: 12px 16px;\n  border-radius: 18px;\n  background: var(--aqm-card);\n  border: 1px solid transparent;\n}\n.aqm-row.is-me {\n  border-color: rgba(96, 165, 250, 0.35);\n  background:\n    linear-gradient(\n      90deg,\n      rgba(37, 99, 235, 0.14),\n      var(--aqm-card) 60%);\n}\n.aqm-avatar {\n  width: 40px;\n  height: 40px;\n  flex-shrink: 0;\n  border-radius: 12px;\n  object-fit: cover;\n  background: #27272a;\n}\n.aqm-name {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  flex: 1;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  font-size: 14px;\n  font-weight: 800;\n  color: #fff;\n  text-decoration: none;\n}\n.aqm-name:hover {\n  text-decoration: underline;\n}\n.aqm-tag {\n  padding: 2px 8px;\n  border-radius: 999px;\n  background: rgba(96, 165, 250, 0.18);\n  color: #bfdbfe;\n  font-size: 10px;\n  font-weight: 900;\n  text-transform: uppercase;\n}\n.aqm-stats {\n  display: flex;\n  align-items: center;\n  gap: 20px;\n  flex-shrink: 0;\n}\n.aqm-stat {\n  min-width: 170px;\n  opacity: 0.6;\n}\n.aqm-stat.is-on {\n  opacity: 1;\n}\n.aqm-stat strong {\n  font-size: 18px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-stat small {\n  margin-left: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-bar {\n  display: block;\n  height: 4px;\n  margin-top: 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n  overflow: hidden;\n}\n.aqm-bar > span {\n  display: block;\n  height: 100%;\n  border-radius: inherit;\n  background:\n    linear-gradient(\n      90deg,\n      #3b82f6,\n      #60a5fa);\n}\n.aqm-board-scope {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 12px;\n  margin: 40px auto 0;\n}\n.aqm-board-sort {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: center;\n  gap: 8px;\n  font-size: 12px;\n}\n.aqm-board-sort .aqm-chips {\n  flex-wrap: wrap;\n  justify-content: center;\n}\n.aqm-friends-board {\n  margin: 32px auto 0;\n}\n.aqm-board-game {\n  margin-top: 16px;\n  padding: 0;\n  list-style: none;\n}\n.aqm-friends-board[hidden],\n.aqm-friends-status[hidden],\n[data-aqm-board-off] {\n  display: none !important;\n}\n.aqm-friends-note {\n  margin: 0;\n  text-align: center;\n  font-size: 13px;\n}\n.aqm-friend-main {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  min-width: 0;\n  flex: 1;\n}\n.aqm-friend-main .aqm-name {\n  flex: none;\n}\n.aqm-friend-main small {\n  font-size: 11px;\n}\n.aqm-friend-score {\n  flex-shrink: 0;\n  text-align: right;\n  white-space: nowrap;\n}\n.aqm-friend-score strong {\n  font-size: 18px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-friend-score small {\n  margin-left: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-friends-board .aqm-board-refresh {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 12px;\n  font-size: 12px;\n}\n@media (max-width: 640px) {\n  .aqm-friends-board .aqm-row {\n    gap: 10px;\n    padding: 10px 12px;\n  }\n  .aqm-friend-score strong {\n    font-size: 15px;\n  }\n}\n\n/* src/content/styles/05-boosters.css */\n.aqm-search {\n  flex: 1 1 260px;\n  height: 44px;\n  padding: 0 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: #fff;\n  font: inherit;\n  font-size: 14px;\n  outline: none;\n}\n.aqm-search:focus {\n  border-color: rgba(96, 165, 250, 0.5);\n}\n.aqm-search::placeholder {\n  color: var(--aqm-dim);\n}\n.aqm-pack {\n  width: 64px;\n  height: 92px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  object-fit: cover;\n}\n.aqm-pack-plain {\n  display: grid;\n  place-items: center;\n  background:\n    linear-gradient(\n      160deg,\n      #1e3a8a,\n      #0ea5e9 55%,\n      #e0f2fe);\n  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);\n}\n.aqm-pack-plain span {\n  font-size: 11px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);\n}\n.aqm-perles {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-pearl {\n  display: inline-block;\n  width: 10px;\n  height: 10px;\n  border-radius: 999px;\n  background:\n    radial-gradient(\n      circle at 35% 30%,\n      #fff,\n      #bfdbfe 45%,\n      #60a5fa);\n  box-shadow: 0 0 6px rgba(147, 197, 253, 0.6);\n}\n.aqm-strip {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-mini {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 6px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-mini img {\n  width: 34px;\n  height: 48px;\n  flex-shrink: 0;\n  border-radius: 5px;\n  object-fit: cover;\n}\n.aqm-mini > div {\n  min-width: 0;\n}\n.aqm-mini.is-owned img {\n  box-shadow: 0 0 0 2px var(--aqm-yes);\n}\n.aqm-mini-name {\n  margin: 0;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  font-size: 12px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rarity {\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-r-N {\n  color: #e4e4e7;\n}\n.aqm-r-R {\n  color: #60a5fa;\n}\n.aqm-r-SR {\n  color: #c4b5fd;\n}\n.aqm-r-SSR {\n  color: #fde047;\n}\n.aqm-r-UR {\n  color: #f9a8d4;\n}\n.aqm-r-SEC {\n  color: #e2e8f0;\n  text-shadow: 0 0 6px rgba(196, 181, 253, 0.8);\n}\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 16px 8px;\n  }\n  .aqm-head,\n  .aqm-body {\n    padding-left: 16px;\n    padding-right: 16px;\n  }\n  .aqm-row {\n    flex-wrap: wrap;\n  }\n  .aqm-stats {\n    width: 100%;\n    padding-left: 44px;\n  }\n  .aqm-stat {\n    min-width: 0;\n  }\n  .aqm-pack {\n    width: 48px;\n    height: 69px;\n  }\n}\n\n/* src/content/styles/06-card-trades-pulls.css */\n.aqm-card-who {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  cursor: pointer;\n}\n.aqm-card-who-icon,\n.aqm-card-who-icon svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-card-who-row {\n  margin-top: 12px;\n}\n.aqm-dot {\n  position: absolute;\n  top: 3px;\n  right: 3px;\n  z-index: 5;\n  min-width: 11px;\n  height: 11px;\n  border-radius: 999px;\n  border: 2px solid rgba(0, 0, 0, 0.85);\n  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);\n  pointer-events: auto;\n}\n.aqm-dot.is-yes {\n  background: var(--aqm-yes);\n}\n.aqm-dot.is-no {\n  background: var(--aqm-no);\n}\n.aqm-dot.has-count {\n  height: 13px;\n  padding: 0 3px;\n  font: 800 8px/9px system-ui, sans-serif;\n  color: #052e16;\n  text-align: center;\n}\n.aqm-pull-thumb {\n  zoom: 1.7;\n}\n\n/* src/content/styles/07-showcase.css */\n.aqm-hidden {\n  display: none !important;\n}\n.aqm-slot {\n  position: relative;\n  cursor: grab;\n  transition: transform 0.15s, opacity 0.15s;\n}\n.aqm-slot:active {\n  cursor: grabbing;\n}\n.aqm-slot.aqm-dragging {\n  opacity: 0.4;\n}\n.aqm-slot.aqm-over {\n  transform: translateY(-4px);\n  outline: 2px dashed #60a5fa;\n  outline-offset: 3px;\n  border-radius: 10px;\n}\n.aqm-moving .aqm-slot {\n  pointer-events: none;\n}\n.aqm-slot-x {\n  position: absolute;\n  top: 4px;\n  right: 4px;\n  z-index: 6;\n  display: grid;\n  place-items: center;\n  width: 22px;\n  height: 22px;\n  padding: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(127, 29, 29, 0.9);\n  color: #fecaca;\n  cursor: pointer;\n  opacity: 0;\n  transition: opacity 0.15s;\n}\n.aqm-slot-x svg {\n  width: 12px;\n  height: 12px;\n}\n.aqm-slot:hover .aqm-slot-x,\n.aqm-slot-x:focus-visible {\n  opacity: 1;\n}\n@media (hover: none) {\n  .aqm-slot-x {\n    opacity: 1;\n  }\n}\n.aqm-slot {\n  user-select: none;\n  -webkit-user-select: none;\n  -webkit-touch-callout: none;\n}\n.aqm-ghost {\n  position: fixed;\n  top: 0;\n  left: 0;\n  z-index: 2147483200;\n  margin: 0;\n  pointer-events: none;\n  opacity: 0.92;\n  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.6));\n  will-change: transform;\n}\n.aqm-ghost .aqm-slot-x {\n  display: none;\n}\n[data-aqm-lite] > * {\n  content-visibility: auto;\n  contain-intrinsic-size: auto var(--aqm-cell-w, 120px) auto var(--aqm-cell-h, 200px);\n}\n\n/* src/content/styles/08-update.css */\n.aqm-update .aqm-queue-head strong {\n  color: #93c5fd;\n}\n.aqm-update-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-update-actions .aqm-queue-btn {\n  display: inline-flex;\n  align-items: center;\n  text-decoration: none;\n}\n.aqm-update-actions .is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-update-steps {\n  display: grid;\n  gap: 6px;\n  margin: 8px 0 0;\n  padding-left: 20px;\n  font-size: 13px;\n  line-height: 1.45;\n}\n.aqm-update .aqm-muted {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n\n/* src/content/styles/09-tour.css */\n.aqm-tour {\n  position: fixed;\n  inset: 0;\n  z-index: 2147483100;\n  color: var(--aqm-text);\n}\n.aqm-tour-block {\n  position: absolute;\n  inset: 0;\n}\n.aqm-tour-hole {\n  position: fixed;\n  border-radius: 16px;\n  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.9), 0 0 0 9999px rgba(0, 0, 0, 0.66);\n  pointer-events: none;\n  transition: all 0.25s ease;\n}\n.aqm-tour.is-dim .aqm-tour-block {\n  background: rgba(0, 0, 0, 0.66);\n}\n.aqm-tour-card {\n  position: fixed;\n  top: 0;\n  left: 0;\n  width: min(360px, calc(100vw - 24px));\n  padding: 18px 20px 16px;\n  border-radius: 20px;\n  background: var(--aqm-panel);\n  border: 1px solid rgba(96, 165, 250, 0.25);\n  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);\n  transition: transform 0.25s ease;\n}\n.aqm-tour-count {\n  margin: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  color: var(--aqm-accent);\n}\n.aqm-tour-title {\n  margin: 6px 0 0;\n  font-size: 18px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n}\n.aqm-tour-text {\n  margin: 8px 0 0;\n  font-size: 14px;\n  line-height: 1.5;\n  color: #d4d4d8;\n}\n.aqm-tour-actions {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin-top: 16px;\n}\n.aqm-tour-gap {\n  flex: 1;\n}\n.aqm-tour-skip,\n.aqm-tour-btn {\n  height: 36px;\n  padding: 0 14px;\n  border: 0;\n  border-radius: 999px;\n  font: inherit;\n  font-size: 13px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-tour-skip {\n  padding: 0 4px;\n  background: none;\n  color: var(--aqm-dim);\n}\n.aqm-tour-skip:hover {\n  color: #fff;\n}\n.aqm-tour-btn {\n  background: rgba(255, 255, 255, 0.08);\n  color: #fff;\n}\n.aqm-tour-btn.is-main {\n  background: #2563eb;\n}\n.aqm-tour-btn:hover {\n  filter: brightness(1.15);\n}\n\n/* src/content/styles/10-phone.css */\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 0;\n  }\n  .aqm-panel {\n    min-height: 100%;\n    border-radius: 0;\n    border: 0;\n  }\n  .aqm-head {\n    position: sticky;\n    top: 0;\n    z-index: 2;\n    padding-top: 18px;\n    background: var(--aqm-panel);\n  }\n  .aqm-title {\n    font-size: 19px;\n  }\n  .aqm-menu {\n    width: min(290px, calc(100vw - 16px));\n  }\n  .aqm-strip {\n    grid-template-columns: 1fr;\n  }\n  .aqm-pull-thumb {\n    zoom: 1.4;\n  }\n  .aqm-tour-actions {\n    flex-wrap: wrap;\n  }\n}\n\n/* src/content/styles/11-news.css */\n.aqm-news-version {\n  margin-top: 18px;\n}\n.aqm-news {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-news li {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n}\n.aqm-news .aqm-chip {\n  flex-shrink: 0;\n}\n.aqm-news-foot {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 20px;\n}\n@media (max-width: 640px) {\n  .aqm-news li {\n    flex-direction: column;\n    align-items: flex-start;\n  }\n}\n\n/* src/content/styles/12-boosters-filters.css */\n.aqm-filter-name {\n  width: 86px;\n  flex-shrink: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.1em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-chip-r {\n  font-style: italic;\n  font-weight: 900;\n}\n.aqm-chip-r.is-on {\n  border-color: currentColor;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-how {\n  margin-top: 16px;\n  padding: 12px 16px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n  color: #d4d4d8;\n}\n.aqm-how summary {\n  cursor: pointer;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-how ul {\n  margin: 10px 0 0;\n  padding-left: 18px;\n  line-height: 1.55;\n}\n.aqm-how li + li {\n  margin-top: 4px;\n}\n\n/* src/content/styles/13-strips.css */\n.aqm-grab {\n  cursor: grab;\n}\nhtml.aqm-grabbing,\nhtml.aqm-grabbing * {\n  cursor: grabbing !important;\n  user-select: none !important;\n  -webkit-user-select: none !important;\n}\n\n/* src/content/styles/14-pity.css */\n.aqm-pity {\n  width: min(460px, 100%);\n  margin: 14px auto 0;\n  padding: 12px 16px;\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.04);\n  border: 1px solid var(--aqm-line);\n  text-align: left;\n  color: var(--aqm-text);\n}\n.aqm-pity .aqm-label {\n  margin-bottom: 8px;\n  text-align: center;\n}\n.aqm-pity-lines {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: 14px;\n}\n.aqm-pity-line p {\n  margin: 0;\n  font-size: 13px;\n  font-weight: 700;\n  color: #e4e4e7;\n}\n.aqm-pity-line strong {\n  color: #fff;\n  font-weight: 900;\n}\n.aqm-pity-line .aqm-bar {\n  margin-top: 6px;\n}\n.aqm-pity-line small {\n  display: block;\n  margin-top: 4px;\n  font-size: 11px;\n  color: var(--aqm-muted);\n  font-variant-numeric: tabular-nums;\n}\n.aqm-pity-line:has(.aqm-r-UR) .aqm-bar > span {\n  background:\n    linear-gradient(\n      90deg,\n      #38bdf8,\n      #f472b6,\n      #facc15);\n}\n.aqm-pity-line:has(.aqm-r-SSR) .aqm-bar > span {\n  background:\n    linear-gradient(\n      90deg,\n      #eab308,\n      #fde047);\n}\n.aqm-pity-line.is-sec {\n  grid-column: 1 / -1;\n  padding-top: 10px;\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-pity-note {\n  margin: 10px 0 0;\n  font-size: 11px;\n  text-align: center;\n  color: var(--aqm-dim);\n}\n.aqm-pity-more {\n  display: flex;\n  justify-content: center;\n  margin-top: 10px;\n}\n.aqm-history {\n  display: grid;\n  gap: 14px;\n}\n.aqm-history-count {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-rates {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 10px;\n}\n.aqm-rate {\n  --aqm-rate:\n    148,\n    163,\n    184;\n  position: relative;\n  padding: 14px 16px;\n  border: 1px solid rgba(var(--aqm-rate), 0.22);\n  border-radius: 18px;\n  background:\n    radial-gradient(\n      120% 90% at 0% 0%,\n      rgba(var(--aqm-rate), 0.14),\n      transparent 60%),\n    var(--aqm-card);\n  overflow: hidden;\n}\n.aqm-rate.is-SSR {\n  --aqm-rate:\n    253,\n    224,\n    71;\n}\n.aqm-rate.is-UR {\n  --aqm-rate:\n    244,\n    114,\n    182;\n}\n.aqm-rate.is-SEC {\n  --aqm-rate:\n    196,\n    181,\n    253;\n}\n.aqm-rate-top {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  font-size: 15px;\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-rate-value {\n  margin: 10px 0 0;\n  font-size: 26px;\n  font-weight: 900;\n  line-height: 1;\n}\n.aqm-rate-value small {\n  font-size: 13px;\n  font-weight: 700;\n  color: var(--aqm-dim);\n}\n.aqm-rate-sub {\n  margin: 4px 0 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-rate-foot {\n  margin: 12px 0 0;\n  padding-top: 10px;\n  border-top: 1px solid var(--aqm-line);\n  font-size: 11px;\n  color: var(--aqm-dim);\n}\n.aqm-luck {\n  font-size: 10px;\n  font-style: normal;\n}\n.aqm-luck.is-good {\n  background: rgba(34, 197, 94, 0.18);\n  color: #86efac;\n}\n.aqm-luck.is-bad {\n  background: rgba(239, 68, 68, 0.18);\n  color: #fca5a5;\n}\n.aqm-history-box {\n  padding: 14px 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.02);\n}\n.aqm-history-row {\n  display: flex;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 8px;\n  margin-bottom: 10px;\n}\n.aqm-history-row .aqm-label {\n  margin: 0;\n}\n.aqm-tracker-strip {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(8px, 1fr));\n  gap: 3px;\n}\n.aqm-cell {\n  display: inline-block;\n  height: 16px;\n  min-width: 8px;\n  border-radius: 3px;\n  background: rgba(255, 255, 255, 0.07);\n  vertical-align: middle;\n}\n.aqm-cell.is-SSR {\n  background: #fde047;\n  box-shadow: 0 0 8px rgba(253, 224, 71, 0.45);\n}\n.aqm-cell.is-UR {\n  background: #f472b6;\n  box-shadow: 0 0 8px rgba(244, 114, 182, 0.55);\n}\n.aqm-cell.is-SEC {\n  background:\n    linear-gradient(\n      180deg,\n      #c4b5fd,\n      #67e8f9);\n  box-shadow: 0 0 10px rgba(196, 181, 253, 0.9);\n}\n.aqm-tracker-legend {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 14px;\n  margin: 10px 0 0;\n  font-size: 11px;\n  color: var(--aqm-dim);\n}\n.aqm-tracker-legend > span {\n  display: inline-flex;\n  align-items: center;\n  gap: 6px;\n}\n.aqm-tracker-legend .aqm-cell {\n  width: 8px;\n  height: 12px;\n}\n.aqm-history-tabs {\n  display: flex;\n  gap: 4px;\n  width: fit-content;\n  padding: 4px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.35);\n}\n.aqm-history-tabbtn {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  padding: 7px 16px;\n  border: 0;\n  border-radius: 999px;\n  background: transparent;\n  color: var(--aqm-dim);\n  font: inherit;\n  font-size: 13px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-history-tabbtn.is-on {\n  background: rgba(255, 255, 255, 0.1);\n  color: var(--aqm-text);\n}\n.aqm-history-tabcount {\n  min-width: 20px;\n  padding: 1px 6px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n  font-size: 11px;\n  text-align: center;\n}\n.aqm-history-stats {\n  display: grid;\n  grid-template-columns: repeat(5, minmax(0, 1fr));\n  gap: 8px;\n  margin: 14px 0;\n}\n.aqm-history-stat {\n  padding: 8px 10px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-history-stat small {\n  display: block;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-history-stat strong {\n  display: block;\n  margin-top: 3px;\n  font-size: 14px;\n}\n.aqm-history-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));\n  gap: 12px;\n  max-height: 440px;\n  padding: 2px 6px 2px 2px;\n  overflow-y: auto;\n}\n.aqm-history-tile {\n  display: block;\n  color: inherit;\n  text-decoration: none;\n}\n.aqm-history-tile > img,\n.aqm-history-blank {\n  display: block;\n  width: 100%;\n  aspect-ratio: 5 / 7;\n  border-radius: 10px;\n  object-fit: cover;\n}\n.aqm-history-tile:hover > img {\n  filter: brightness(1.12);\n}\n.aqm-history-blank {\n  display: grid;\n  place-items: center;\n  background: rgba(255, 255, 255, 0.05);\n  font-size: 22px;\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-history-after {\n  margin: 6px 0 0;\n  font-size: 13px;\n  font-weight: 900;\n  text-align: center;\n}\n.aqm-history-pack {\n  margin: 2px 0 0;\n  overflow: hidden;\n  font-size: 11px;\n  font-weight: 700;\n  text-align: center;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  color: var(--aqm-dim);\n}\n.aqm-history-pack.is-unknown {\n  opacity: 0.6;\n}\n.aqm-history-packs {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  margin-bottom: 10px;\n}\n.aqm-history-packbtn {\n  display: inline-flex;\n  align-items: center;\n  gap: 6px;\n  padding: 5px 12px;\n  border: 1px solid rgba(255, 255, 255, 0.1);\n  border-radius: 999px;\n  background: transparent;\n  color: var(--aqm-dim);\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-history-packbtn.is-on {\n  border-color: transparent;\n  background: rgba(255, 255, 255, 0.1);\n  color: var(--aqm-text);\n}\n.aqm-history-empty {\n  margin: 14px 0 0;\n  font-size: 13px;\n  color: var(--aqm-dim);\n}\n@media (max-width: 640px) {\n  .aqm-rates {\n    grid-template-columns: 1fr;\n  }\n  .aqm-history-stats {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n  .aqm-history-grid {\n    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));\n  }\n}\n.aqm-root,\n.aqm-root * {\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;\n}\n.aqm-root::-webkit-scrollbar,\n.aqm-root *::-webkit-scrollbar {\n  width: 8px;\n  height: 8px;\n}\n.aqm-root::-webkit-scrollbar-track,\n.aqm-root *::-webkit-scrollbar-track {\n  background: transparent;\n}\n.aqm-root::-webkit-scrollbar-thumb,\n.aqm-root *::-webkit-scrollbar-thumb {\n  border: 2px solid transparent;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.18) padding-box;\n}\n.aqm-root::-webkit-scrollbar-thumb:hover,\n.aqm-root *::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.32) padding-box;\n}\n.aqm-root::-webkit-scrollbar-button,\n.aqm-root *::-webkit-scrollbar-button {\n  display: none;\n}\n@media (max-width: 640px) {\n  .aqm-pity-lines {\n    grid-template-columns: 1fr;\n    gap: 10px;\n  }\n}\n\n/* src/content/styles/15-booster-choice.css */\n.aqm-panel.aqm-panel-wide {\n  max-width: 1040px;\n}\n.aqm-goals {\n  margin-top: 4px;\n}\n.aqm-goal {\n  height: 38px;\n  padding: 0 16px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-chip.aqm-goal.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-pick {\n  margin-top: 10px;\n}\n.aqm-pick:empty {\n  display: none;\n}\n.aqm-pick .aqm-chip {\n  height: 36px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-pick .aqm-search {\n  width: min(520px, 100%);\n}\n.aqm-open-count {\n  margin-left: 2px;\n  padding: 1px 7px;\n  border-radius: 999px;\n  background: rgba(96, 165, 250, 0.25);\n  font-variant-numeric: tabular-nums;\n}\n.aqm-open-note {\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 6px;\n  font-size: 12px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  color: rgba(255, 255, 255, 0.6);\n}\n.aqm-suggest-box {\n  position: relative;\n  width: min(520px, 100%);\n}\n.aqm-suggest-box .aqm-search {\n  width: 100%;\n}\n.aqm-suggest {\n  position: absolute;\n  z-index: 5;\n  top: calc(100% + 6px);\n  left: 0;\n  right: 0;\n  max-height: 360px;\n  margin: 0;\n  padding: 6px;\n  overflow-y: auto;\n  list-style: none;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);\n}\n.aqm-suggest[hidden] {\n  display: none;\n}\n.aqm-suggest-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 6px 10px 6px 6px;\n  border-radius: 10px;\n  cursor: pointer;\n}\n.aqm-suggest-item:hover,\n.aqm-suggest-item[aria-selected=true] {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-suggest-item > img,\n.aqm-suggest-blank {\n  flex-shrink: 0;\n  width: 34px;\n  height: 48px;\n  border-radius: 5px;\n  object-fit: cover;\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-suggest-name {\n  flex: 1;\n  min-width: 0;\n  overflow: hidden;\n  font-size: 14px;\n  font-weight: 700;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n.aqm-suggest-name small {\n  display: block;\n  font-size: 11px;\n  font-weight: 600;\n  color: var(--aqm-dim);\n}\n.aqm-suggest-rarities {\n  display: flex;\n  flex-shrink: 0;\n  gap: 4px;\n}\n.aqm-sentence {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 14px;\n  margin-top: 12px;\n}\n.aqm-sentence > p {\n  margin: 0;\n  font-size: 13px;\n  color: #93c5fd;\n}\n.aqm-new .aqm-chip {\n  height: 28px;\n  padding: 0 10px;\n  font-size: 11px;\n}\n.aqm-sorts {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 14px;\n}\n.aqm-sorts .aqm-filter-name {\n  width: auto;\n  margin-right: 4px;\n}\n.aqm-sort {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 2px;\n  min-width: 170px;\n  padding: 9px 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: rgba(255, 255, 255, 0.03);\n  color: #fff;\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-sort strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-sort small {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sort:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-sort.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-sort.is-on small {\n  color: #dbeafe;\n}\n.aqm-verdict {\n  margin-top: 16px;\n  padding: 14px 18px;\n  border: 1px solid rgba(34, 197, 94, 0.55);\n  border-radius: 16px;\n  background: rgba(34, 197, 94, 0.06);\n  font-size: 14px;\n  line-height: 1.6;\n  color: #e4e4e7;\n}\n.aqm-verdict p {\n  margin: 0;\n}\n.aqm-verdict strong {\n  color: #fff;\n}\n.aqm-ranking {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 14px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-rank {\n  display: grid;\n  grid-template-columns: 22px 44px minmax(0, 1fr) auto;\n  align-items: start;\n  gap: 4px 14px;\n  padding: 14px 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 16px;\n  background: var(--aqm-card);\n}\n.aqm-rank.is-best {\n  border-color: rgba(34, 197, 94, 0.6);\n}\n.aqm-rank-n {\n  padding-top: 14px;\n  font-size: 13px;\n  font-weight: 800;\n  color: var(--aqm-muted);\n}\n.aqm-rank .aqm-pack {\n  width: 44px;\n  height: 62px;\n  border-radius: 7px;\n}\n.aqm-rank .aqm-pack-plain span {\n  font-size: 7px;\n}\n.aqm-rank-main {\n  min-width: 0;\n}\n.aqm-rank-main > p {\n  margin: 0;\n}\n.aqm-rank-title {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  gap: 4px 10px;\n}\n.aqm-rank-title strong {\n  font-size: 16px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-price {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-badge {\n  padding: 2px 8px;\n  border-radius: 6px;\n  font-size: 10px;\n  font-weight: 900;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.aqm-badge.is-best {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-badge.is-cheap {\n  background: rgba(96, 165, 250, 0.16);\n  color: #bfdbfe;\n}\n.aqm-rank-head {\n  margin-top: 4px !important;\n  font-size: 14px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rank-sub {\n  margin-top: 2px !important;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-bar {\n  height: 5px;\n  margin-top: 10px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.07);\n  overflow: hidden;\n}\n.aqm-rank-bar > span {\n  display: block;\n  height: 100%;\n  border-radius: inherit;\n  background:\n    linear-gradient(\n      90deg,\n      #22c55e,\n      #eab308);\n}\n.aqm-rank-side {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  padding-top: 10px;\n  text-align: right;\n  white-space: nowrap;\n}\n.aqm-rank-side strong {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-side small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-ref {\n  margin-top: 10px;\n  font-size: 12px;\n  color: #93c5fd;\n}\n.aqm-rank-more {\n  margin-top: 8px;\n}\n.aqm-rank-more > summary {\n  width: fit-content;\n  font-size: 12px;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-rank-more > summary:hover {\n  color: #fff;\n}\n.aqm-rank-more[open] > summary {\n  margin-bottom: 8px;\n}\n.aqm-rank-more .aqm-label {\n  margin-top: 10px;\n}\n.aqm-rank-more .aqm-muted {\n  margin-top: 8px;\n}\n.aqm-odds-grid {\n  display: grid;\n  grid-template-columns: repeat(6, minmax(0, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-odds-grid li {\n  padding: 6px 8px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-odds-grid li > * {\n  display: block;\n}\n.aqm-odds-grid strong {\n  margin-top: 2px;\n  font-size: 13px;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-odds-grid small {\n  font-size: 10px;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-rank {\n    grid-template-columns: 36px minmax(0, 1fr);\n    padding: 12px;\n  }\n  .aqm-rank-n {\n    display: none;\n  }\n  .aqm-rank .aqm-pack {\n    width: 36px;\n    height: 51px;\n  }\n  .aqm-rank-side {\n    grid-column: 2;\n    flex-direction: row;\n    flex-wrap: wrap;\n    align-items: baseline;\n    gap: 2px 8px;\n    padding-top: 6px;\n  }\n  .aqm-rank-ref {\n    margin-top: 0;\n  }\n  .aqm-sort {\n    flex: 1 1 140px;\n    min-width: 0;\n  }\n  .aqm-odds-grid {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/16-settings.css */\n.aqm-settings-list {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n}\n.aqm-switch {\n  display: flex;\n  align-items: flex-start;\n  gap: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n  cursor: pointer;\n}\n.aqm-switch input {\n  margin-top: 3px;\n  accent-color: #2563eb;\n}\n.aqm-switch.is-off {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-settings-groups {\n  columns: 2 340px;\n  column-gap: 14px;\n}\n.aqm-settings-group {\n  break-inside: avoid;\n  margin: 0 0 14px;\n  padding: 6px 0;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-settings-title {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 0;\n  padding: 10px 16px 6px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.12em;\n  text-transform: uppercase;\n  color: #93c5fd;\n}\n.aqm-settings-title span {\n  font-size: 15px;\n  letter-spacing: 0;\n}\n.aqm-setting {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  padding: 10px 16px;\n  cursor: pointer;\n}\n.aqm-setting + .aqm-setting {\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-setting:hover {\n  background: rgba(255, 255, 255, 0.025);\n}\n.aqm-setting.is-off {\n  cursor: default;\n  opacity: 0.45;\n}\n.aqm-setting-text {\n  display: grid;\n  flex: 1;\n  gap: 2px;\n  min-width: 0;\n}\n.aqm-setting-text strong {\n  font-size: 14px;\n  color: var(--aqm-text);\n}\n.aqm-setting-text small {\n  font-size: 12px;\n  line-height: 1.35;\n  color: var(--aqm-dim);\n}\n.aqm-toggle {\n  position: relative;\n  flex: none;\n  width: 40px;\n  height: 24px;\n  margin: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.14);\n  appearance: none;\n  -webkit-appearance: none;\n  cursor: pointer;\n  transition: background 0.2s;\n}\n.aqm-toggle::before {\n  content: "";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #fff;\n  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);\n  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-toggle:checked {\n  background: #2563eb;\n}\n.aqm-toggle:checked::before {\n  transform: translateX(16px);\n}\n.aqm-toggle:focus-visible {\n  outline: 2px solid #93c5fd;\n  outline-offset: 2px;\n}\n.aqm-toggle:disabled {\n  cursor: default;\n}\n.aqm-settings-foot {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 4px;\n}\n.aqm-settings-foot p {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-settings-actions {\n  display: flex;\n  gap: 8px;\n}\n\n/* src/content/styles/17-who-pulled.css */\n.aqm-pulled {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-pull {\n  display: grid;\n  grid-template-columns: 40px minmax(0, 1fr) auto;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-pull-card img {\n  display: block;\n  width: 40px;\n  height: 56px;\n  border-radius: 8px;\n  object-fit: cover;\n}\n.aqm-pull-main {\n  min-width: 0;\n}\n.aqm-pull-main > p {\n  margin: 0;\n}\n.aqm-pull-series {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n.aqm-pull-who {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  font-size: 13px;\n  font-weight: 700;\n  text-align: right;\n}\n.aqm-pull-player {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n.aqm-pull-player .aqm-avatar-sm {\n  width: 24px;\n  height: 24px;\n  border-radius: 7px;\n}\n.aqm-pull-who a {\n  color: #fff;\n  text-decoration: none;\n}\n.aqm-pull-who a:hover {\n  text-decoration: underline;\n}\n.aqm-pull-who small {\n  font-size: 11px;\n  font-weight: 400;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/18-favorites.css */\n.aqm-star {\n  position: absolute;\n  top: 4px;\n  right: 6px;\n  z-index: 3;\n  display: grid;\n  place-items: center;\n  width: 24px;\n  height: 24px;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.55);\n  color: #a1a1aa;\n  font-size: 15px;\n  line-height: 1;\n  cursor: pointer;\n}\n.aqm-star:hover {\n  color: #fde047;\n}\n.aqm-star.is-on {\n  color: #facc15;\n}\n.aqm-fav-bar {\n  display: flex;\n  gap: 8px;\n  margin-bottom: 8px;\n  overflow-x: auto;\n  scrollbar-width: none;\n  -webkit-overflow-scrolling: touch;\n}\n.aqm-fav-bar::-webkit-scrollbar {\n  display: none;\n}\n.aqm-fav-bar .aqm-chip {\n  flex: 0 0 auto;\n  white-space: nowrap;\n  height: 32px;\n  text-transform: none;\n  letter-spacing: 0;\n  font-size: 13px;\n  color: #fde047;\n}\n.aqm-fav-bar .aqm-chip b {\n  margin-left: 4px;\n  color: #fff;\n}\n.aqm-fav-found {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 8px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-fav-found:empty {\n  display: none;\n}\n.aqm-fav-found li {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 6px 10px 6px 6px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-fav-found img {\n  width: 32px;\n  height: 44px;\n  border-radius: 6px;\n  object-fit: cover;\n}\n.aqm-fav-found li > span {\n  flex: 1;\n  min-width: 0;\n}\n.aqm-fav-found strong,\n.aqm-fav-found small {\n  display: block;\n}\n.aqm-fav-found small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-filter-name.aqm-gap {\n  margin-left: 10px;\n}\n.aqm-fav-list {\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n  margin-top: 14px;\n}\n.aqm-fav-series {\n  padding: 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-fav-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 12px;\n}\n.aqm-fav-head > img {\n  width: 40px;\n  height: 56px;\n  border-radius: 8px;\n  object-fit: cover;\n}\n.aqm-fav-title {\n  flex: 1 1 200px;\n  min-width: 0;\n}\n.aqm-fav-title strong {\n  display: block;\n  font-size: 16px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-fav-title small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-fav-head .aqm-fav-unstar {\n  color: #facc15;\n  font-size: 16px;\n}\n.aqm-fav-series > .aqm-muted {\n  margin-top: 8px;\n}\n.aqm-fav-series > .aqm-muted:empty {\n  display: none;\n}\n.aqm-fav-cards {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));\n  gap: 10px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-fav-card {\n  position: relative;\n  min-width: 0;\n}\n.aqm-fav-card img {\n  display: block;\n  width: 100%;\n  aspect-ratio: 63 / 88;\n  border-radius: 10px;\n  object-fit: cover;\n  filter: grayscale(0.85) brightness(0.6);\n}\n.aqm-fav-card.is-owned img {\n  filter: none;\n}\n.aqm-fav-card > p {\n  margin: 4px 0 0;\n}\n.aqm-fav-card .aqm-mini-name {\n  font-size: 12px;\n}\n.aqm-want {\n  position: absolute;\n  top: 6px;\n  right: 6px;\n  display: grid;\n  place-items: center;\n  width: 30px;\n  height: 30px;\n  padding: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(0, 0, 0, 0.6);\n  font-size: 15px;\n  filter: grayscale(1);\n  opacity: 0.75;\n  cursor: pointer;\n}\n.aqm-want.is-on {\n  background: rgba(37, 99, 235, 0.85);\n  filter: none;\n  opacity: 1;\n}\n.aqm-sort:disabled {\n  opacity: 0.55;\n  cursor: default;\n}\n@media (max-width: 640px) {\n  .aqm-pull {\n    grid-template-columns: 36px minmax(0, 1fr);\n  }\n  .aqm-pull-who {\n    grid-column: 2;\n    flex-direction: row;\n    align-items: baseline;\n    gap: 8px;\n  }\n  .aqm-fav-cards {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/19-album.css */\n.aqm-album {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 12px;\n}\n.aqm-album-btn {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.05);\n  color: #e4e4e7;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-album-btn:hover {\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-album-btn.is-on {\n  border-color: rgba(250, 204, 21, 0.45);\n  color: #fde047;\n}\n.aqm-album-btn.is-main {\n  border-color: transparent;\n  background: #2563eb;\n  color: #fff;\n}\n.aqm-album-btn:disabled {\n  opacity: 0.55;\n  cursor: default;\n}\n.aqm-album-note {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/20-who-has.css */\n.aqm-who-gap {\n  margin-top: 18px;\n}\n.aqm-who-note {\n  margin: 0 0 6px;\n}\n.aqm-who-cards .aqm-mini {\n  cursor: pointer;\n}\n.aqm-who-cards .aqm-mini:hover,\n.aqm-who-cards .aqm-mini:focus-visible {\n  background: rgba(96, 165, 250, 0.14);\n  outline: none;\n}\n.aqm-who-back {\n  margin-bottom: 12px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-who-card {\n  display: flex;\n  gap: 16px;\n  padding: 14px;\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-who-card img {\n  width: 92px;\n  border-radius: 10px;\n  aspect-ratio: 63 / 88;\n  object-fit: cover;\n}\n.aqm-who-card > div {\n  flex: 1;\n  min-width: 0;\n}\n.aqm-who-card p {\n  margin: 0 0 2px;\n}\n.aqm-pack-title {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-who-stats {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-metric {\n  padding: 8px 10px;\n  border-radius: 12px;\n  background: rgba(255, 255, 255, 0.04);\n}\n.aqm-metric small {\n  display: block;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-metric strong {\n  display: block;\n  margin-top: 2px;\n  font-size: 15px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-owners {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-owner {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  min-height: 42px;\n  padding: 6px 12px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-avatar-sm {\n  width: 30px;\n  height: 30px;\n  border-radius: 9px;\n}\n.aqm-owner .aqm-avatar-sm + a,\n.aqm-owner .aqm-avatar-sm + span {\n  min-width: 0;\n}\n.aqm-owner-serial {\n  min-width: 52px;\n  font-weight: 800;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-owner a {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  color: #e4e4e7;\n  font-weight: 700;\n  text-decoration: none;\n}\n.aqm-owner a:hover {\n  color: #fff;\n  text-decoration: underline;\n}\n.aqm-owner-right {\n  margin-left: auto;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  white-space: nowrap;\n}\n@media (max-width: 640px) {\n  .aqm-who-card img {\n    width: 72px;\n  }\n  .aqm-who-stats {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/21-search-queue.css */\n.aqm-dock,\n.aqm-update {\n  position: fixed;\n  right: 16px;\n  bottom: 16px;\n  z-index: 2147482500;\n  width: min(360px, calc(100vw - 32px));\n}\n.aqm-dock {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n.aqm-queue,\n.aqm-update {\n  padding: 12px 14px;\n  border: 1px solid rgba(96, 165, 250, 0.35);\n  border-radius: 16px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);\n  color: var(--aqm-text);\n  font-size: 13px;\n  animation: aqm-pop 0.16s ease-out;\n}\n.aqm-queue-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n}\n.aqm-queue-head strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-queue-btn {\n  height: 28px;\n  padding: 0 12px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: #fff;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-queue .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-album .aqm-fav-wait {\n  flex-basis: 100%;\n  width: 100%;\n  margin: 4px 0 0;\n}\n.aqm-fav-wait {\n  margin: 0 0 12px;\n  padding: 10px 12px;\n  border: 1px solid rgba(217, 119, 6, 0.4);\n  border-radius: 12px;\n}\n.aqm-fav-wait .aqm-queue-head + .aqm-bar,\n.aqm-fav-wait p + .aqm-queue-head {\n  margin-top: 12px;\n}\n.aqm-fav-wait .aqm-queue-actions {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  margin-top: 10px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-steps {\n  display: flex;\n  height: 8px;\n  margin-top: 10px;\n  overflow: hidden;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-steps > span {\n  transition: width 0.4s ease;\n}\n.aqm-steps .is-in,\n.aqm-steps-legend .is-in::before {\n  background: #22c55e;\n}\n.aqm-steps .is-sending,\n.aqm-steps-legend .is-sending::before {\n  background: #3b82f6;\n}\n.aqm-steps .is-waiting,\n.aqm-steps-legend .is-waiting::before {\n  background: #d97706;\n}\n.aqm-steps-legend {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 4px 14px;\n  margin-top: 8px;\n  font-size: 12px;\n}\n.aqm-steps-legend span::before {\n  content: "";\n  display: inline-block;\n  width: 8px;\n  height: 8px;\n  margin-right: 6px;\n  border-radius: 50%;\n}\n.aqm-fav-wait .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-fav-wait p {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n.aqm-want.is-wait {\n  background: rgba(217, 119, 6, 0.85);\n}\n.aqm-queue p,\n.aqm-update p {\n  margin: 8px 0 0;\n  font-size: 12px;\n  line-height: 1.45;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-dock,\n  .aqm-update {\n    right: 8px;\n    left: 8px;\n    bottom: 96px;\n    width: auto;\n  }\n}\n.aqm-fav-details {\n  text-transform: none;\n  letter-spacing: 0;\n  font-size: 12px;\n}\n.aqm-fav-list {\n  gap: 10px;\n}\n.aqm-fav-series .aqm-fav-cards {\n  margin-top: 14px;\n}\n\n/* src/content/styles/22-sell.css */\n.aqm-sales {\n  border-color: rgba(34, 197, 94, 0.35);\n}\n.aqm-sell-wait {\n  flex: none;\n  align-self: stretch;\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 12px;\n  line-height: 1.45;\n}\n.aqm-sell-wait > p:first-child {\n  margin: 0;\n}\n.aqm-sell-waiting {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));\n  gap: 2px 16px;\n  max-height: 140px;\n  margin: 8px 0 0;\n  padding: 0 6px 0 0;\n  overflow-y: auto;\n  list-style: none;\n  font-size: 12px;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar {\n  width: 6px;\n}\n.aqm-sell-waiting::-webkit-scrollbar-track {\n  background: transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb {\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.2);\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.35);\n}\n.aqm-sell-waiting::-webkit-scrollbar-button {\n  display: none;\n}\n.aqm-sell-last {\n  margin: 8px 0 0;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sell-waiting li {\n  display: flex;\n  justify-content: space-between;\n  gap: 8px;\n  min-width: 0;\n}\n.aqm-sell-waiting li > span:first-child {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n\n/* src/content/styles/23-booster-wheel.css */\n[data-aqm-hidden] {\n  position: absolute !important;\n  visibility: hidden !important;\n  pointer-events: none !important;\n}\n[data-aqm-veiled] {\n  visibility: hidden;\n}\n.aqm-piles {\n  position: relative;\n  flex: none;\n  align-self: auto;\n  max-width: none;\n  width: 100%;\n  padding: 28px 0 8px;\n  overflow: hidden;\n  overflow-x: clip;\n  overflow-y: visible;\n}\n@property --aqm-glow { syntax: "<color>"; inherits: true; initial-value: rgb(37 99 235 / 0.38); }\n.aqm-wheel {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  isolation: isolate;\n  transition: --aqm-glow 0.6s ease;\n}\n.aqm-wheel::before {\n  content: "";\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  z-index: -1;\n  width: min(560px, 100%);\n  aspect-ratio: 1;\n  background:\n    radial-gradient(\n      closest-side,\n      var(--aqm-glow, rgb(37 99 235 / 0.38)),\n      transparent);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n}\n.aqm-wheel-track {\n  display: grid;\n}\n.aqm-wheel-controls {\n  display: flex;\n  justify-content: center;\n  margin-top: 4px;\n}\n.aqm-pile {\n  display: flex;\n  grid-area: 1 / 1;\n  flex-direction: column;\n  align-items: center;\n  gap: 12px;\n  justify-self: center;\n  transition:\n    transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n    opacity 0.4s,\n    filter 0.4s;\n}\n.aqm-pile:not(.is-front) {\n  z-index: 0;\n  opacity: 0.4;\n  cursor: pointer;\n}\n.aqm-pile.is-front {\n  z-index: 1;\n}\n.aqm-pile.is-away {\n  opacity: 0;\n  pointer-events: none;\n}\n.aqm-pile:not(.is-front) .aqm-pile-art {\n  pointer-events: none;\n}\n.aqm-pile-art [class*=__packPose] {\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-pile-art .aqm-pose-follow {\n  transition: transform 0.15s ease-out;\n}\n.aqm-pile.is-front [data-aqm-float] {\n  animation: aqm-pack-float 2.35s ease-in-out infinite alternate;\n}\n@keyframes aqm-pack-float {\n  from {\n    transform: translate3d(0, 0, 0);\n  }\n  to {\n    transform: translate3d(0, -16px, 0);\n  }\n}\n@media (prefers-reduced-motion: reduce) {\n  .aqm-pile.is-front [data-aqm-float] {\n    animation: none;\n  }\n}\n.aqm-wheel-arrow {\n  position: absolute;\n  top: 45%;\n  z-index: 3;\n  width: 44px;\n  height: 44px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 50%;\n  background: rgba(15, 23, 42, 0.85);\n  color: #fff;\n  font: inherit;\n  font-size: 26px;\n  line-height: 1;\n  cursor: pointer;\n}\n.aqm-wheel-arrow:hover {\n  border-color: #3b82f6;\n  background: rgba(37, 99, 235, 0.35);\n}\n.aqm-wheel-arrow.is-prev {\n  left: 8px;\n}\n.aqm-wheel-arrow.is-next {\n  right: 8px;\n}\n.aqm-wheel-dots {\n  display: flex;\n  justify-content: center;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-wheel-dot {\n  width: 8px;\n  height: 8px;\n  padding: 0;\n  border: 0;\n  border-radius: 50%;\n  background: rgba(255, 255, 255, 0.25);\n  cursor: pointer;\n}\n.aqm-wheel-dot.is-on {\n  width: 22px;\n  border-radius: 999px;\n  background: #3b82f6;\n}\n.aqm-piles.is-still .aqm-pile {\n  transition: none;\n}\n@media (max-width: 640px) {\n  .aqm-wheel-controls > * {\n    flex-direction: column;\n  }\n  .aqm-wheel-arrow {\n    width: 36px;\n    height: 36px;\n    font-size: 22px;\n  }\n}\n.aqm-queue-btn.is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-queue-btn:disabled {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-scan-list {\n  display: grid;\n  gap: 4px;\n  margin: 10px 0 0;\n  padding: 0;\n  list-style: none;\n  font-size: 13px;\n}\n\n/* src/content/styles/24-card-listings.css */\n.aqm-listings {\n  margin-top: 16px;\n  padding: 16px 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: rgba(255, 255, 255, 0.025);\n}\n.aqm-listings-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 4px 12px;\n  margin-bottom: 10px;\n}\n.aqm-listings-head .aqm-label {\n  margin: 0;\n}\n.aqm-listings .aqm-owners {\n  display: grid;\n  grid-template-columns: 1fr;\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-buy-cell {\n  display: inline-flex;\n  align-items: center;\n  gap: 12px;\n}\n.aqm-buy {\n  height: 30px;\n}\n.aqm-buy-refused {\n  margin: 8px 0 0;\n  color: #fca5a5;\n}\n\n/* src/content/styles/25-collection.css */\n.aqm-sort-progress.is-on {\n  border-color: #3b82f6;\n  background: rgba(59, 130, 246, 0.2);\n  color: #fff;\n}\n[data-aqm-owned-card],\n[data-aqm-locked-card] {\n  display: none !important;\n}\n[data-aqm-sale=on] {\n  display: inline-block !important;\n  margin-right: 8px !important;\n  vertical-align: middle;\n}\n.aqm-sale {\n  display: inline-block;\n  flex: none;\n  padding: 1px 7px;\n  border: 1px solid rgba(59, 130, 246, 0.6);\n  border-radius: 999px;\n  background: rgba(37, 99, 235, 0.22);\n  color: #93c5fd;\n  font-size: 9px;\n  font-weight: 800;\n  letter-spacing: 0.06em;\n  line-height: 1.6;\n  white-space: nowrap;\n  text-transform: uppercase;\n  vertical-align: middle;\n  pointer-events: none;\n}\n[data-aqm-pill-off] {\n  opacity: 0 !important;\n}\n[data-aqm-unpicked] {\n  background: transparent !important;\n  box-shadow: none !important;\n  color: var(--aqm-plain-color) !important;\n}\n.aqm-missing-summary {\n  display: flex;\n  flex: 1 0 100%;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px 8px;\n  width: 100%;\n  margin: 12px 0 4px;\n  color: #a1a1aa;\n  font-size: 12px;\n  font-weight: 600;\n}\n.aqm-missing-summary .aqm-label {\n  margin-right: 4px;\n}\n.aqm-missing-summary[hidden] {\n  display: none;\n}\n.aqm-missing-extra-note {\n  margin: 32px 0 0;\n  color: #93c5fd;\n  font-size: 13px;\n  font-weight: 700;\n}\n.aqm-missing-extra > ul {\n  margin-top: 16px;\n  padding: 0;\n  list-style: none;\n}\n.aqm-missing-plain {\n  display: block;\n  color: #fff;\n  font-size: 12px;\n  font-weight: 700;\n}\n.aqm-missing-plain img {\n  display: block;\n  width: 100%;\n  aspect-ratio: 63 / 88;\n  border-radius: 1rem;\n  object-fit: cover;\n}\n.aqm-missing-count {\n  display: inline-flex;\n  align-items: baseline;\n  gap: 5px;\n  padding: 4px 10px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  white-space: nowrap;\n}\n.aqm-missing-count strong {\n  color: #fff;\n  font-weight: 800;\n}\n.aqm-missing-count.is-total {\n  background: rgba(59, 130, 246, 0.15);\n  color: #bfdbfe;\n}\n.aqm-missing-tab.is-on {\n  border-radius: var(--aqm-pill-radius);\n  background: var(--aqm-pill-bg) !important;\n  box-shadow: var(--aqm-pill-shadow);\n  color: var(--aqm-picked-color) !important;\n}\n.aqm-recycle-bar {\n  display: flex;\n  justify-content: flex-end;\n  margin: 0 0 8px;\n}\n.aqm-recycle-bar[hidden] {\n  display: none;\n}\n.aqm-recycle-spares.is-confirm {\n  background: #f59e0b !important;\n  color: #111 !important;\n}\n.aqm-recycle-note {\n  align-self: center;\n  color: #86efac;\n  font-size: 13px;\n  font-weight: 700;\n  white-space: nowrap;\n}\n.aqm-recycle-spares:disabled {\n  opacity: 0.75;\n  cursor: default;\n}\n\n/* src/content/styles/26-players.css */\n.aqm-users-code {\n  display: flex;\n  gap: 8px;\n}\n.aqm-users-stats {\n  margin-top: 4px;\n}\n.aqm-users {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-user {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-user .aqm-user-revoke {\n  flex: none;\n  padding: 6px 12px;\n  font-size: 12px;\n}\n.aqm-tag.aqm-revoked {\n  background: rgba(239, 68, 68, 0.18);\n  color: #fca5a5;\n}\n.aqm-user .aqm-avatar {\n  width: 32px;\n  height: 32px;\n}\n.aqm-user .aqm-name {\n  flex: 1;\n  font-size: 13px;\n}\n.aqm-kind-userscript {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-user-kinds {\n  display: flex;\n  flex-wrap: wrap;\n  justify-content: flex-end;\n  gap: 6px;\n}\n.aqm-online {\n  background: rgba(37, 99, 235, 0.2);\n  color: #93c5fd;\n}\n.aqm-user-seen {\n  min-width: 90px;\n  text-align: right;\n  color: var(--aqm-muted);\n}\n.aqm-device-wait {\n  margin-top: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: rgba(37, 99, 235, 0.12);\n  border: 1px solid rgba(96, 165, 250, 0.3);\n}\n.aqm-device-wait p {\n  margin: 0;\n}\n.aqm-device-wait p + p {\n  margin-top: 6px;\n}\n.aqm-device-wait strong,\n.aqm-device-code {\n  font:\n    800 15px ui-monospace,\n    "Cascadia Mono",\n    Consolas,\n    monospace;\n  letter-spacing: 0.08em;\n  color: #fff;\n}\n.aqm-update {\n  top: 16px;\n  bottom: auto;\n}\n@media (max-width: 640px) {\n  .aqm-update {\n    top: 8px;\n    bottom: auto;\n  }\n}\n\n/* src/content/styles/27-market.css */\n.aqm-unlist {\n  margin-left: 8px;\n}\n.aqm-panel.is-ask {\n  max-width: 520px;\n}\n.aqm-ask-text {\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 14px;\n  line-height: 1.5;\n}\n.aqm-ask-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 18px;\n}\n.aqm-ask-actions .aqm-queue-btn {\n  height: 36px;\n  padding: 0 18px;\n  font-weight: 700;\n}\n[data-aqm-bought] {\n  display: none !important;\n}\n.aqm-market-fav.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-market-sort {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px;\n  margin-top: 8px;\n  color: #a1a1aa;\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.aqm-market-sort-button {\n  padding: 8px 16px;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: #a1a1aa;\n  font: inherit;\n  white-space: nowrap;\n  cursor: pointer;\n}\n.aqm-market-sort-button:hover {\n  background: rgba(255, 255, 255, 0.07);\n  color: #fff;\n}\n.aqm-market-sort-button.is-on {\n  background: rgba(59, 130, 246, 0.25);\n  color: #fff;\n}\n.aqm-market-sale {\n  margin-left: 6px;\n  color: #86efac;\n  font-weight: 600;\n  white-space: nowrap;\n}\n[data-aqm-sentinel-box] {\n  position: relative;\n}\n[data-aqm-sentinel-up] {\n  position: absolute !important;\n  top: 0;\n  left: 0;\n  width: 1px;\n  height: 1px;\n  pointer-events: none;\n}\n[data-aqm-unfav] {\n  display: none !important;\n}\n.aqm-trade-filter.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-trade-filter.is-on.is-off {\n  opacity: 0.55;\n}\n[data-aqm-tradehide] {\n  display: none !important;\n}\n.aqm-auctions-head {\n  margin-top: 18px;\n}\n.aqm-auction-cell {\n  display: inline-flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n}\n.aqm-owner a.aqm-buy {\n  display: inline-flex;\n  align-items: center;\n  overflow: visible;\n  color: #fff;\n  font-weight: 800;\n  text-decoration: none;\n}\n.aqm-sales-kind {\n  margin-top: 0;\n}\n.aqm-kind-hidden {\n  display: none !important;\n}\n.aqm-my-bids.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-bid-hidden {\n  display: none !important;\n}\n.aqm-open-bids {\n  margin: 0 0 16px;\n}\n.aqm-bid-ended {\n  display: none !important;\n}\n.aqm-recap-card {\n  padding: 14px 16px 10px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-recap-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 4px 12px;\n}\n.aqm-recap-title {\n  margin: 0;\n  color: #60a5fa;\n  font-size: 12px;\n  font-weight: 800;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n}\n.aqm-recap-total {\n  color: var(--aqm-muted);\n  font-size: 12px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-recap-kinds {\n  display: inline-flex;\n  gap: 2px;\n  margin: 10px 0 6px;\n  padding: 3px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-recap-kind {\n  padding: 5px 12px;\n  border: 0;\n  border-radius: 999px;\n  background: none;\n  color: #a1a1aa;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 700;\n  cursor: pointer;\n}\n.aqm-recap-kind:hover {\n  color: #fff;\n}\n.aqm-recap-kind.is-on {\n  background: #1e3a5f;\n  color: #fff;\n}\n.aqm-recap-chart {\n  display: grid;\n  grid-template-columns: repeat(30, 1fr);\n  gap: 2px;\n  height: 150px;\n  padding-top: 22px;\n}\n.aqm-recap-day {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  min-width: 0;\n  border-radius: 4px;\n  outline: none;\n}\n.aqm-recap-day:not(.is-future):hover,\n.aqm-recap-day:focus-visible {\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-recap-col {\n  position: relative;\n  display: flex;\n  align-items: flex-end;\n  justify-content: center;\n  flex: 1;\n  width: 100%;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.12);\n}\n.aqm-recap-bar {\n  display: block;\n  width: min(22px, 76%);\n  border-radius: 4px 4px 0 0;\n  background: #3b82f6;\n}\n.aqm-recap-val {\n  position: absolute;\n  left: 50%;\n  margin-bottom: 3px;\n  transform: translateX(-50%);\n  color: #fff;\n  font-size: 11px;\n  font-weight: 800;\n  font-variant-numeric: tabular-nums;\n  white-space: nowrap;\n}\n.aqm-recap-name {\n  margin-top: 6px;\n  color: var(--aqm-dim);\n  font-size: 10px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-recap-day.is-today .aqm-recap-name {\n  color: #fff;\n  font-weight: 800;\n}\n.aqm-recap-details {\n  margin-top: 10px;\n  font-size: 13px;\n}\n.aqm-recap-details summary {\n  cursor: pointer;\n  color: var(--aqm-text);\n}\n.aqm-recap-table {\n  width: 100%;\n  margin-top: 8px;\n  border-collapse: collapse;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-recap-table td {\n  padding: 5px 4px;\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-recap-table td.n,\n.aqm-recap-table td.p {\n  text-align: right;\n  color: var(--aqm-muted);\n}\n.aqm-recap-table tr.is-today td {\n  color: #fff;\n  font-weight: 700;\n}\n.aqm-recap-table tr.is-empty td {\n  color: var(--aqm-dim);\n}\n@media (max-width: 640px) {\n  .aqm-recap-day.is-odd:not(.is-today) .aqm-recap-name {\n    visibility: hidden;\n  }\n}\n\n/* src/content/styles/28-progress.css */\n[data-aqm-stats-title] {\n  position: relative;\n}\n.aqm-stats-open {\n  position: absolute !important;\n  top: 50% !important;\n  left: 100% !important;\n  margin: 0 0 0 20px !important;\n  transform: translateY(-50%) !important;\n  white-space: nowrap;\n  text-shadow: none;\n  background-clip: border-box;\n  -webkit-background-clip: border-box;\n}\n.aqm-stats-open.is-below {\n  position: static !important;\n  display: flex;\n  width: fit-content;\n  margin: 12px 0 0 !important;\n  transform: none !important;\n}\n.aqm-stats-open.is-in-row {\n  position: static !important;\n  margin: 0 !important;\n  transform: none !important;\n}\n.aqm-stats-open.is-early {\n  position: absolute !important;\n  top: var(--aqm-y) !important;\n  left: var(--aqm-x) !important;\n  margin: 0 !important;\n  z-index: 5;\n}\n.aqm-stats-open.is-early.is-below {\n  transform: none !important;\n  width: fit-content;\n}\n.aqm-stats-ico {\n  flex-shrink: 0;\n  width: 16px;\n  height: 16px;\n}\n.aqm-progress {\n  display: flex;\n  flex-direction: column;\n  gap: 14px;\n}\n.aqm-progress-hero {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  padding: 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-progress-pct {\n  font-size: 40px;\n  font-weight: 900;\n  line-height: 1.1;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-bar.aqm-bar-big {\n  height: 8px;\n  margin-top: 8px;\n}\n.aqm-progress-tiles {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));\n  gap: 10px;\n}\n.aqm-progress-tile {\n  padding: 12px 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-progress-tile .aqm-label {\n  margin: 0 0 4px;\n}\n.aqm-progress-tile strong {\n  display: block;\n  font-size: 24px;\n  font-weight: 900;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-progress-tile small {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-progress-h {\n  margin: 6px 0 0;\n  font-size: 14px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-progress-rarities {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-progress-rarity {\n  display: grid;\n  grid-template-columns: 130px 1fr auto;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 12px;\n  border-radius: 10px;\n  background: var(--aqm-card);\n}\n.aqm-progress-rname {\n  display: flex;\n  align-items: baseline;\n  gap: 8px;\n}\n.aqm-progress-rname small,\n.aqm-progress-rbar small,\n.aqm-progress-copies {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-progress-rbar p {\n  margin: 0;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-progress-rbar strong {\n  color: #fff;\n  font-weight: 900;\n}\n.aqm-progress-copies {\n  min-width: 64px;\n  text-align: right;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-bar-N > span {\n  background: #d4d4d8;\n}\n.aqm-bar-R > span {\n  background: #60a5fa;\n}\n.aqm-bar-SR > span {\n  background: #a78bfa;\n}\n.aqm-bar-SSR > span {\n  background: #facc15;\n}\n.aqm-bar-UR > span {\n  background: #f472b6;\n}\n.aqm-bar-SEC > span {\n  background:\n    linear-gradient(\n      90deg,\n      #c4b5fd,\n      #e2e8f0);\n}\n.aqm-days {\n  display: grid;\n  grid-template-columns: repeat(14, 1fr);\n  gap: 2px;\n  height: 150px;\n  padding: 12px 8px 8px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 12px;\n  background: var(--aqm-card);\n}\n.aqm-day {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  min-width: 0;\n  border-radius: 6px;\n  outline: none;\n}\n.aqm-day:hover,\n.aqm-day:focus-visible {\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-day-val {\n  height: 16px;\n  font-size: 10px;\n  font-weight: 800;\n  color: #e4e4e7;\n  font-variant-numeric: tabular-nums;\n  white-space: nowrap;\n}\n.aqm-day-col {\n  display: flex;\n  align-items: flex-end;\n  justify-content: center;\n  flex: 1;\n  width: 100%;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.12);\n}\n.aqm-day-fill {\n  display: block;\n  width: min(18px, 70%);\n  border-radius: 4px 4px 0 0;\n  background: #3b82f6;\n}\n.aqm-day.is-today .aqm-day-fill {\n  background: #60a5fa;\n}\n.aqm-day.is-empty .aqm-day-col {\n  border-bottom-style: dashed;\n}\n.aqm-day-name {\n  margin-top: 4px;\n  font-size: 10px;\n  color: var(--aqm-dim);\n}\n.aqm-day.is-today .aqm-day-name {\n  color: #fff;\n  font-weight: 800;\n}\n@media (max-width: 640px) {\n  .aqm-progress-pct {\n    font-size: 32px;\n  }\n  .aqm-progress-rarity {\n    grid-template-columns: 1fr auto;\n  }\n  .aqm-progress-rbar {\n    grid-column: 1 / -1;\n    grid-row: 2;\n  }\n  .aqm-days {\n    height: 130px;\n    padding: 10px 4px 6px;\n  }\n  .aqm-day-val {\n    font-size: 9px;\n  }\n}\n.aqm-board-refresh {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px 12px;\n  margin: -4px 0 10px;\n  font-size: 12px;\n}\n.aqm-board-refresh:empty {\n  display: none;\n}\n.aqm-board-refresh .aqm-chip:disabled {\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* contenu.css */\n';
+    style.textContent = '/* src/content/styles/01-base.css */\n.aqm-root {\n  --aqm-bg: #0b0b0d;\n  --aqm-panel: #121214;\n  --aqm-card: #18181b;\n  --aqm-line: rgba(255, 255, 255, 0.07);\n  --aqm-text: #f4f4f5;\n  --aqm-muted: #a1a1aa;\n  --aqm-dim: #71717a;\n  --aqm-accent: #60a5fa;\n  --aqm-yes: #22c55e;\n  --aqm-no: #ef4444;\n  box-sizing: border-box;\n}\n.aqm-root *,\n.aqm-root *::before,\n.aqm-root *::after {\n  box-sizing: border-box;\n}\n\n/* src/content/styles/02-plus-menu.css */\n.aqm-plus {\n  cursor: pointer;\n  background: none;\n  border: 0;\n}\n.aqm-plus[aria-expanded=true] {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-nav-ico,\n.aqm-nav-ico svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-menu {\n  position: fixed;\n  z-index: 2147483000;\n  width: 290px;\n  padding: 6px;\n  border-radius: 18px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);\n  animation: aqm-pop 0.14s ease-out;\n}\n.aqm-menu-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  width: 100%;\n  padding: 10px 12px;\n  border: 0;\n  border-radius: 12px;\n  background: none;\n  color: var(--aqm-text);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-menu-item:hover,\n.aqm-menu-item:focus-visible {\n  background: rgba(255, 255, 255, 0.06);\n  outline: none;\n}\n.aqm-menu-item strong {\n  display: block;\n  font-size: 14px;\n  font-weight: 800;\n}\n.aqm-menu-item small {\n  display: block;\n  margin-top: 2px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-menu-ico {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  background: rgba(96, 165, 250, 0.12);\n  color: var(--aqm-accent);\n}\n.aqm-menu-ico svg {\n  width: 18px;\n  height: 18px;\n}\n@keyframes aqm-pop {\n  from {\n    opacity: 0;\n    transform: translateY(-4px) scale(0.98);\n  }\n}\n\n/* src/content/styles/03-window.css */\nhtml.aqm-lock {\n  overflow: hidden;\n}\n.aqm-overlay {\n  position: fixed;\n  inset: 0;\n  z-index: 2147482000;\n  display: flex;\n  align-items: flex-start;\n  justify-content: center;\n  padding: 48px 16px;\n  overflow-y: auto;\n  background: rgba(0, 0, 0, 0.72);\n  backdrop-filter: blur(6px);\n  color: var(--aqm-text);\n  animation: aqm-fade 0.16s ease-out;\n}\n@keyframes aqm-fade {\n  from {\n    opacity: 0;\n  }\n}\n.aqm-panel {\n  width: 100%;\n  max-width: 860px;\n  border-radius: 28px;\n  background: var(--aqm-panel);\n  border: 1px solid var(--aqm-line);\n  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);\n  overflow: hidden;\n}\n.aqm-head {\n  display: flex;\n  align-items: flex-start;\n  justify-content: space-between;\n  gap: 16px;\n  padding: 26px 28px 8px;\n}\n.aqm-title {\n  margin: 0;\n  font-size: 22px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  letter-spacing: -0.01em;\n  color: #fff;\n}\n.aqm-sub {\n  margin: 6px 0 0;\n  font-size: 14px;\n  color: var(--aqm-muted);\n}\n.aqm-close {\n  display: grid;\n  place-items: center;\n  width: 36px;\n  height: 36px;\n  flex-shrink: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-close:hover {\n  color: #fff;\n  background: rgba(255, 255, 255, 0.12);\n}\n.aqm-close svg {\n  width: 18px;\n  height: 18px;\n}\n.aqm-body {\n  padding: 12px 28px 28px;\n}\n.aqm-note {\n  margin: 14px 0 0;\n  font-size: 12px;\n  line-height: 1.5;\n  color: var(--aqm-dim);\n}\n.aqm-muted {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-label {\n  margin: 0 0 8px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  text-transform: uppercase;\n  color: var(--aqm-accent);\n}\n.aqm-empty {\n  padding: 28px;\n  text-align: center;\n  color: var(--aqm-muted);\n  list-style: none;\n}\n.aqm-chips {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 8px;\n}\n.aqm-chip {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: var(--aqm-muted);\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  cursor: pointer;\n}\n.aqm-chip:hover {\n  color: #fff;\n}\n.aqm-chip.is-on {\n  border-color: rgba(96, 165, 250, 0.4);\n  background: rgba(37, 99, 235, 0.22);\n  color: #fff;\n}\n.aqm-place {\n  display: grid;\n  place-items: center;\n  width: 30px;\n  height: 30px;\n  flex-shrink: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  font-size: 13px;\n  font-weight: 900;\n  color: var(--aqm-muted);\n}\n.aqm-place-1 {\n  background:\n    linear-gradient(\n      135deg,\n      #fde68a,\n      #f59e0b);\n  color: #422006;\n}\n.aqm-place-2 {\n  background:\n    linear-gradient(\n      135deg,\n      #f4f4f5,\n      #a1a1aa);\n  color: #18181b;\n}\n.aqm-place-3 {\n  background:\n    linear-gradient(\n      135deg,\n      #fdba74,\n      #c2410c);\n  color: #fff7ed;\n}\n\n/* src/content/styles/05-boosters.css */\n.aqm-search {\n  flex: 1 1 260px;\n  height: 44px;\n  padding: 0 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: #fff;\n  font: inherit;\n  font-size: 14px;\n  outline: none;\n}\n.aqm-search:focus {\n  border-color: rgba(96, 165, 250, 0.5);\n}\n.aqm-search::placeholder {\n  color: var(--aqm-dim);\n}\n.aqm-pack {\n  width: 64px;\n  height: 92px;\n  flex-shrink: 0;\n  border-radius: 10px;\n  object-fit: cover;\n}\n.aqm-pack-plain {\n  display: grid;\n  place-items: center;\n  background:\n    linear-gradient(\n      160deg,\n      #1e3a8a,\n      #0ea5e9 55%,\n      #e0f2fe);\n  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);\n}\n.aqm-pack-plain span {\n  font-size: 11px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);\n}\n.aqm-perles {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-pearl {\n  display: inline-block;\n  width: 10px;\n  height: 10px;\n  border-radius: 999px;\n  background:\n    radial-gradient(\n      circle at 35% 30%,\n      #fff,\n      #bfdbfe 45%,\n      #60a5fa);\n  box-shadow: 0 0 6px rgba(147, 197, 253, 0.6);\n}\n.aqm-strip {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-mini {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 6px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-mini img {\n  width: 34px;\n  height: 48px;\n  flex-shrink: 0;\n  border-radius: 5px;\n  object-fit: cover;\n}\n.aqm-mini > div {\n  min-width: 0;\n}\n.aqm-mini.is-owned img {\n  box-shadow: 0 0 0 2px var(--aqm-yes);\n}\n.aqm-mini-name {\n  margin: 0;\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  font-size: 12px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rarity {\n  font-weight: 900;\n  font-style: italic;\n}\n.aqm-r-N {\n  color: #e4e4e7;\n}\n.aqm-r-R {\n  color: #60a5fa;\n}\n.aqm-r-SR {\n  color: #c4b5fd;\n}\n.aqm-r-SSR {\n  color: #fde047;\n}\n.aqm-r-UR {\n  color: #f9a8d4;\n}\n.aqm-r-SEC {\n  color: #e2e8f0;\n  text-shadow: 0 0 6px rgba(196, 181, 253, 0.8);\n}\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 16px 8px;\n  }\n  .aqm-head,\n  .aqm-body {\n    padding-left: 16px;\n    padding-right: 16px;\n  }\n  .aqm-row {\n    flex-wrap: wrap;\n  }\n  .aqm-stats {\n    width: 100%;\n    padding-left: 44px;\n  }\n  .aqm-stat {\n    min-width: 0;\n  }\n  .aqm-pack {\n    width: 48px;\n    height: 69px;\n  }\n}\n\n/* src/content/styles/06-card-trades-pulls.css */\n.aqm-card-who {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  cursor: pointer;\n}\n.aqm-card-who-icon,\n.aqm-card-who-icon svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  flex-shrink: 0;\n}\n.aqm-card-who-row {\n  margin-top: 12px;\n}\n.aqm-dot {\n  position: absolute;\n  top: 3px;\n  right: 3px;\n  z-index: 5;\n  min-width: 11px;\n  height: 11px;\n  border-radius: 999px;\n  border: 2px solid rgba(0, 0, 0, 0.85);\n  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);\n  pointer-events: auto;\n}\n.aqm-dot.is-yes {\n  background: var(--aqm-yes);\n}\n.aqm-dot.is-no {\n  background: var(--aqm-no);\n}\n.aqm-pull-thumb {\n  zoom: 1.7;\n}\n\n/* src/content/styles/07-showcase.css */\n.aqm-hidden {\n  display: none !important;\n}\n.aqm-slot {\n  position: relative;\n  cursor: grab;\n  transition: transform 0.15s, opacity 0.15s;\n}\n.aqm-slot:active {\n  cursor: grabbing;\n}\n.aqm-slot.aqm-dragging {\n  opacity: 0.4;\n}\n.aqm-slot.aqm-over {\n  transform: translateY(-4px);\n  outline: 2px dashed #60a5fa;\n  outline-offset: 3px;\n  border-radius: 10px;\n}\n.aqm-moving .aqm-slot {\n  pointer-events: none;\n}\n.aqm-slot-x {\n  position: absolute;\n  top: 4px;\n  right: 4px;\n  z-index: 6;\n  display: grid;\n  place-items: center;\n  width: 22px;\n  height: 22px;\n  padding: 0;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(127, 29, 29, 0.9);\n  color: #fecaca;\n  cursor: pointer;\n  opacity: 0;\n  transition: opacity 0.15s;\n}\n.aqm-slot-x svg {\n  width: 12px;\n  height: 12px;\n}\n.aqm-slot:hover .aqm-slot-x,\n.aqm-slot-x:focus-visible {\n  opacity: 1;\n}\n@media (hover: none) {\n  .aqm-slot-x {\n    opacity: 1;\n  }\n}\n.aqm-slot {\n  user-select: none;\n  -webkit-user-select: none;\n  -webkit-touch-callout: none;\n}\n.aqm-ghost {\n  position: fixed;\n  top: 0;\n  left: 0;\n  z-index: 2147483200;\n  margin: 0;\n  pointer-events: none;\n  opacity: 0.92;\n  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.6));\n  will-change: transform;\n}\n.aqm-ghost .aqm-slot-x {\n  display: none;\n}\n[data-aqm-lite] > * {\n  content-visibility: auto;\n  contain-intrinsic-size: auto var(--aqm-cell-w, 120px) auto var(--aqm-cell-h, 200px);\n}\n\n/* src/content/styles/08-update.css */\n.aqm-update .aqm-queue-head strong {\n  color: #93c5fd;\n}\n.aqm-update-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-update-actions .aqm-queue-btn {\n  display: inline-flex;\n  align-items: center;\n  text-decoration: none;\n}\n.aqm-update-actions .is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-update-steps {\n  display: grid;\n  gap: 6px;\n  margin: 8px 0 0;\n  padding-left: 20px;\n  font-size: 13px;\n  line-height: 1.45;\n}\n.aqm-update .aqm-muted {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n\n/* src/content/styles/09-tour.css */\n.aqm-tour {\n  position: fixed;\n  inset: 0;\n  z-index: 2147483100;\n  color: var(--aqm-text);\n}\n.aqm-tour-block {\n  position: absolute;\n  inset: 0;\n}\n.aqm-tour-hole {\n  position: fixed;\n  border-radius: 16px;\n  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.9), 0 0 0 9999px rgba(0, 0, 0, 0.66);\n  pointer-events: none;\n  transition: all 0.25s ease;\n}\n.aqm-tour.is-dim .aqm-tour-block {\n  background: rgba(0, 0, 0, 0.66);\n}\n.aqm-tour-card {\n  position: fixed;\n  top: 0;\n  left: 0;\n  width: min(360px, calc(100vw - 24px));\n  padding: 18px 20px 16px;\n  border-radius: 20px;\n  background: var(--aqm-panel);\n  border: 1px solid rgba(96, 165, 250, 0.25);\n  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);\n  transition: transform 0.25s ease;\n}\n.aqm-tour-count {\n  margin: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.14em;\n  color: var(--aqm-accent);\n}\n.aqm-tour-title {\n  margin: 6px 0 0;\n  font-size: 18px;\n  font-weight: 900;\n  font-style: italic;\n  text-transform: uppercase;\n  color: #fff;\n}\n.aqm-tour-text {\n  margin: 8px 0 0;\n  font-size: 14px;\n  line-height: 1.5;\n  color: #d4d4d8;\n}\n.aqm-tour-actions {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin-top: 16px;\n}\n.aqm-tour-gap {\n  flex: 1;\n}\n.aqm-tour-skip,\n.aqm-tour-btn {\n  height: 36px;\n  padding: 0 14px;\n  border: 0;\n  border-radius: 999px;\n  font: inherit;\n  font-size: 13px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-tour-skip {\n  padding: 0 4px;\n  background: none;\n  color: var(--aqm-dim);\n}\n.aqm-tour-skip:hover {\n  color: #fff;\n}\n.aqm-tour-btn {\n  background: rgba(255, 255, 255, 0.08);\n  color: #fff;\n}\n.aqm-tour-btn.is-main {\n  background: #2563eb;\n}\n.aqm-tour-btn:hover {\n  filter: brightness(1.15);\n}\n\n/* src/content/styles/10-phone.css */\n@media (max-width: 640px) {\n  .aqm-overlay {\n    padding: 0;\n  }\n  .aqm-panel {\n    min-height: 100%;\n    border-radius: 0;\n    border: 0;\n  }\n  .aqm-head {\n    position: sticky;\n    top: 0;\n    z-index: 2;\n    padding-top: 18px;\n    background: var(--aqm-panel);\n  }\n  .aqm-title {\n    font-size: 19px;\n  }\n  .aqm-menu {\n    width: min(290px, calc(100vw - 16px));\n  }\n  .aqm-strip {\n    grid-template-columns: 1fr;\n  }\n  .aqm-pull-thumb {\n    zoom: 1.4;\n  }\n  .aqm-tour-actions {\n    flex-wrap: wrap;\n  }\n}\n\n/* src/content/styles/11-news.css */\n.aqm-news-version {\n  margin-top: 18px;\n}\n.aqm-news {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-news li {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n}\n.aqm-news .aqm-chip {\n  flex-shrink: 0;\n}\n.aqm-news-foot {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 20px;\n}\n@media (max-width: 640px) {\n  .aqm-news li {\n    flex-direction: column;\n    align-items: flex-start;\n  }\n}\n\n/* src/content/styles/12-boosters-filters.css */\n.aqm-filter-name {\n  width: 86px;\n  flex-shrink: 0;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.1em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-chip-r {\n  font-style: italic;\n  font-weight: 900;\n}\n.aqm-chip-r.is-on {\n  border-color: currentColor;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-how {\n  margin-top: 16px;\n  padding: 12px 16px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n  color: #d4d4d8;\n}\n.aqm-how summary {\n  cursor: pointer;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-how ul {\n  margin: 10px 0 0;\n  padding-left: 18px;\n  line-height: 1.55;\n}\n.aqm-how li + li {\n  margin-top: 4px;\n}\n\n/* src/content/styles/13-strips.css */\n.aqm-grab {\n  cursor: grab;\n}\nhtml.aqm-grabbing,\nhtml.aqm-grabbing * {\n  cursor: grabbing !important;\n  user-select: none !important;\n  -webkit-user-select: none !important;\n}\n\n/* src/content/styles/15-booster-choice.css */\n.aqm-panel.aqm-panel-wide {\n  max-width: 1040px;\n}\n.aqm-goals {\n  margin-top: 4px;\n}\n.aqm-goal {\n  height: 38px;\n  padding: 0 16px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-chip.aqm-goal.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-pick {\n  margin-top: 10px;\n}\n.aqm-pick:empty {\n  display: none;\n}\n.aqm-pick .aqm-chip {\n  height: 36px;\n  font-size: 13px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-pick .aqm-search {\n  width: min(520px, 100%);\n}\n.aqm-open-count {\n  margin-left: 2px;\n  padding: 1px 7px;\n  border-radius: 999px;\n  background: rgba(96, 165, 250, 0.25);\n  font-variant-numeric: tabular-nums;\n}\n.aqm-open-note {\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 6px;\n  font-size: 12px;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  text-transform: uppercase;\n  color: rgba(255, 255, 255, 0.6);\n}\n.aqm-suggest-box {\n  position: relative;\n  width: min(520px, 100%);\n}\n.aqm-suggest-box .aqm-search {\n  width: 100%;\n}\n.aqm-suggest {\n  position: absolute;\n  z-index: 5;\n  top: calc(100% + 6px);\n  left: 0;\n  right: 0;\n  max-height: 360px;\n  margin: 0;\n  padding: 6px;\n  overflow-y: auto;\n  list-style: none;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);\n}\n.aqm-suggest[hidden] {\n  display: none;\n}\n.aqm-suggest-item {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 6px 10px 6px 6px;\n  border-radius: 10px;\n  cursor: pointer;\n}\n.aqm-suggest-item:hover,\n.aqm-suggest-item[aria-selected=true] {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-suggest-item > img,\n.aqm-suggest-blank {\n  flex-shrink: 0;\n  width: 34px;\n  height: 48px;\n  border-radius: 5px;\n  object-fit: cover;\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-suggest-name {\n  flex: 1;\n  min-width: 0;\n  overflow: hidden;\n  font-size: 14px;\n  font-weight: 700;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n.aqm-suggest-name small {\n  display: block;\n  font-size: 11px;\n  font-weight: 600;\n  color: var(--aqm-dim);\n}\n.aqm-suggest-rarities {\n  display: flex;\n  flex-shrink: 0;\n  gap: 4px;\n}\n.aqm-sentence {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 14px;\n  margin-top: 12px;\n}\n.aqm-sentence > p {\n  margin: 0;\n  font-size: 13px;\n  color: #93c5fd;\n}\n.aqm-new .aqm-chip {\n  height: 28px;\n  padding: 0 10px;\n  font-size: 11px;\n}\n.aqm-sorts {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 14px;\n}\n.aqm-sorts .aqm-filter-name {\n  width: auto;\n  margin-right: 4px;\n}\n.aqm-sort {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 2px;\n  min-width: 170px;\n  padding: 9px 16px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: rgba(255, 255, 255, 0.03);\n  color: #fff;\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n.aqm-sort strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-sort small {\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sort:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n.aqm-sort.is-on {\n  border-color: transparent;\n  background: #2563eb;\n}\n.aqm-sort.is-on small {\n  color: #dbeafe;\n}\n.aqm-verdict {\n  margin-top: 16px;\n  padding: 14px 18px;\n  border: 1px solid rgba(34, 197, 94, 0.55);\n  border-radius: 16px;\n  background: rgba(34, 197, 94, 0.06);\n  font-size: 14px;\n  line-height: 1.6;\n  color: #e4e4e7;\n}\n.aqm-verdict p {\n  margin: 0;\n}\n.aqm-verdict strong {\n  color: #fff;\n}\n.aqm-ranking {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin: 14px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-rank {\n  display: grid;\n  grid-template-columns: 22px 44px minmax(0, 1fr) auto;\n  align-items: start;\n  gap: 4px 14px;\n  padding: 14px 18px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 16px;\n  background: var(--aqm-card);\n}\n.aqm-rank.is-best {\n  border-color: rgba(34, 197, 94, 0.6);\n}\n.aqm-rank-n {\n  padding-top: 14px;\n  font-size: 13px;\n  font-weight: 800;\n  color: var(--aqm-muted);\n}\n.aqm-rank .aqm-pack {\n  width: 44px;\n  height: 62px;\n  border-radius: 7px;\n}\n.aqm-rank .aqm-pack-plain span {\n  font-size: 7px;\n}\n.aqm-rank-main {\n  min-width: 0;\n}\n.aqm-rank-main > p {\n  margin: 0;\n}\n.aqm-rank-title {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  gap: 4px 10px;\n}\n.aqm-rank-title strong {\n  font-size: 16px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-price {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-badge {\n  padding: 2px 8px;\n  border-radius: 6px;\n  font-size: 10px;\n  font-weight: 900;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.aqm-badge.is-best {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-badge.is-cheap {\n  background: rgba(96, 165, 250, 0.16);\n  color: #bfdbfe;\n}\n.aqm-rank-head {\n  margin-top: 4px !important;\n  font-size: 14px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-rank-sub {\n  margin-top: 2px !important;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-bar {\n  height: 5px;\n  margin-top: 10px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.07);\n  overflow: hidden;\n}\n.aqm-rank-bar > span {\n  display: block;\n  height: 100%;\n  border-radius: inherit;\n  background:\n    linear-gradient(\n      90deg,\n      #22c55e,\n      #eab308);\n}\n.aqm-rank-side {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  padding-top: 10px;\n  text-align: right;\n  white-space: nowrap;\n}\n.aqm-rank-side strong {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-rank-side small {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-rank-ref {\n  margin-top: 10px;\n  font-size: 12px;\n  color: #93c5fd;\n}\n.aqm-rank-more {\n  margin-top: 8px;\n}\n.aqm-rank-more > summary {\n  width: fit-content;\n  font-size: 12px;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  cursor: pointer;\n}\n.aqm-rank-more > summary:hover {\n  color: #fff;\n}\n.aqm-rank-more[open] > summary {\n  margin-bottom: 8px;\n}\n.aqm-rank-more .aqm-label {\n  margin-top: 10px;\n}\n.aqm-rank-more .aqm-muted {\n  margin-top: 8px;\n}\n.aqm-odds-grid {\n  display: grid;\n  grid-template-columns: repeat(6, minmax(0, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-odds-grid li {\n  padding: 6px 8px;\n  border-radius: 10px;\n  background: rgba(255, 255, 255, 0.035);\n}\n.aqm-odds-grid li > * {\n  display: block;\n}\n.aqm-odds-grid strong {\n  margin-top: 2px;\n  font-size: 13px;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-odds-grid small {\n  font-size: 10px;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-rank {\n    grid-template-columns: 36px minmax(0, 1fr);\n    padding: 12px;\n  }\n  .aqm-rank-n {\n    display: none;\n  }\n  .aqm-rank .aqm-pack {\n    width: 36px;\n    height: 51px;\n  }\n  .aqm-rank-side {\n    grid-column: 2;\n    flex-direction: row;\n    flex-wrap: wrap;\n    align-items: baseline;\n    gap: 2px 8px;\n    padding-top: 6px;\n  }\n  .aqm-rank-ref {\n    margin-top: 0;\n  }\n  .aqm-sort {\n    flex: 1 1 140px;\n    min-width: 0;\n  }\n  .aqm-odds-grid {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/16-settings.css */\n.aqm-settings-list {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n}\n.aqm-switch {\n  display: flex;\n  align-items: flex-start;\n  gap: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 14px;\n  line-height: 1.45;\n  color: #e4e4e7;\n  cursor: pointer;\n}\n.aqm-switch input {\n  margin-top: 3px;\n  accent-color: #2563eb;\n}\n.aqm-switch.is-off {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-settings-groups {\n  columns: 2 340px;\n  column-gap: 14px;\n}\n.aqm-settings-group {\n  break-inside: avoid;\n  margin: 0 0 14px;\n  padding: 6px 0;\n  border: 1px solid var(--aqm-line);\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-settings-title {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  margin: 0;\n  padding: 10px 16px 6px;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: 0.12em;\n  text-transform: uppercase;\n  color: #93c5fd;\n}\n.aqm-settings-title span {\n  font-size: 15px;\n  letter-spacing: 0;\n}\n.aqm-setting {\n  display: flex;\n  align-items: center;\n  gap: 14px;\n  padding: 10px 16px;\n  cursor: pointer;\n}\n.aqm-setting + .aqm-setting {\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-setting:hover {\n  background: rgba(255, 255, 255, 0.025);\n}\n.aqm-setting.is-off {\n  cursor: default;\n  opacity: 0.45;\n}\n.aqm-setting-text {\n  display: grid;\n  flex: 1;\n  gap: 2px;\n  min-width: 0;\n}\n.aqm-setting-text strong {\n  font-size: 14px;\n  color: var(--aqm-text);\n}\n.aqm-setting-text small {\n  font-size: 12px;\n  line-height: 1.35;\n  color: var(--aqm-dim);\n}\n.aqm-toggle {\n  position: relative;\n  flex: none;\n  width: 40px;\n  height: 24px;\n  margin: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.14);\n  appearance: none;\n  -webkit-appearance: none;\n  cursor: pointer;\n  transition: background 0.2s;\n}\n.aqm-toggle::before {\n  content: "";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #fff;\n  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);\n  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-toggle:checked {\n  background: #2563eb;\n}\n.aqm-toggle:checked::before {\n  transform: translateX(16px);\n}\n.aqm-toggle:focus-visible {\n  outline: 2px solid #93c5fd;\n  outline-offset: 2px;\n}\n.aqm-toggle:disabled {\n  cursor: default;\n}\n.aqm-settings-foot {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 4px;\n}\n.aqm-settings-foot p {\n  margin: 0;\n  font-size: 12px;\n  color: var(--aqm-dim);\n}\n.aqm-settings-actions {\n  display: flex;\n  gap: 8px;\n}\n\n/* src/content/styles/17-who-pulled.css */\n.aqm-pulled {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-pull {\n  display: grid;\n  grid-template-columns: 40px minmax(0, 1fr) auto;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-pull-card img {\n  display: block;\n  width: 40px;\n  height: 56px;\n  border-radius: 8px;\n  object-fit: cover;\n}\n.aqm-pull-main {\n  min-width: 0;\n}\n.aqm-pull-main > p {\n  margin: 0;\n}\n.aqm-pull-series {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n.aqm-pull-who {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  font-size: 13px;\n  font-weight: 700;\n  text-align: right;\n}\n.aqm-pull-player {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n.aqm-pull-player .aqm-avatar-sm {\n  width: 24px;\n  height: 24px;\n  border-radius: 7px;\n}\n.aqm-pull-who a {\n  color: #fff;\n  text-decoration: none;\n}\n.aqm-pull-who a:hover {\n  text-decoration: underline;\n}\n.aqm-pull-who small {\n  font-size: 11px;\n  font-weight: 400;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/19-album.css */\n.aqm-album {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  margin-top: 12px;\n}\n.aqm-album-btn {\n  height: 34px;\n  padding: 0 14px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.05);\n  color: #e4e4e7;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-album-btn:hover {\n  background: rgba(255, 255, 255, 0.1);\n}\n.aqm-album-btn.is-on {\n  border-color: rgba(250, 204, 21, 0.45);\n  color: #fde047;\n}\n.aqm-album-btn.is-main {\n  border-color: transparent;\n  background: #2563eb;\n  color: #fff;\n}\n.aqm-album-btn:disabled {\n  opacity: 0.55;\n  cursor: default;\n}\n.aqm-album-note {\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n\n/* src/content/styles/20-who-has.css */\n.aqm-who-gap {\n  margin-top: 18px;\n}\n.aqm-who-note {\n  margin: 0 0 6px;\n}\n.aqm-who-cards .aqm-mini {\n  cursor: pointer;\n}\n.aqm-who-cards .aqm-mini:hover,\n.aqm-who-cards .aqm-mini:focus-visible {\n  background: rgba(96, 165, 250, 0.14);\n  outline: none;\n}\n.aqm-who-back {\n  margin-bottom: 12px;\n  text-transform: none;\n  letter-spacing: 0;\n}\n.aqm-who-card {\n  display: flex;\n  gap: 16px;\n  padding: 14px;\n  border-radius: 18px;\n  background: var(--aqm-card);\n}\n.aqm-who-card img {\n  width: 92px;\n  border-radius: 10px;\n  aspect-ratio: 63 / 88;\n  object-fit: cover;\n}\n.aqm-who-card > div {\n  flex: 1;\n  min-width: 0;\n}\n.aqm-who-card p {\n  margin: 0 0 2px;\n}\n.aqm-pack-title {\n  font-size: 17px;\n  font-weight: 900;\n  color: #fff;\n}\n.aqm-who-stats {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-metric {\n  padding: 8px 10px;\n  border-radius: 12px;\n  background: rgba(255, 255, 255, 0.04);\n}\n.aqm-metric small {\n  display: block;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--aqm-dim);\n}\n.aqm-metric strong {\n  display: block;\n  margin-top: 2px;\n  font-size: 15px;\n  font-weight: 800;\n  color: #fff;\n}\n.aqm-owners {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));\n  gap: 6px;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-owner {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  min-height: 42px;\n  padding: 6px 12px;\n  border-radius: 12px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-avatar-sm {\n  width: 30px;\n  height: 30px;\n  border-radius: 9px;\n}\n.aqm-owner .aqm-avatar-sm + a,\n.aqm-owner .aqm-avatar-sm + span {\n  min-width: 0;\n}\n.aqm-owner-serial {\n  min-width: 52px;\n  font-weight: 800;\n  color: #fff;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-owner a {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n  color: #e4e4e7;\n  font-weight: 700;\n  text-decoration: none;\n}\n.aqm-owner a:hover {\n  color: #fff;\n  text-decoration: underline;\n}\n.aqm-owner-right {\n  margin-left: auto;\n  font-weight: 700;\n  color: var(--aqm-muted);\n  white-space: nowrap;\n}\n@media (max-width: 640px) {\n  .aqm-who-card img {\n    width: 72px;\n  }\n  .aqm-who-stats {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n}\n\n/* src/content/styles/21-search-queue.css */\n.aqm-dock,\n.aqm-update {\n  position: fixed;\n  right: 16px;\n  bottom: 16px;\n  z-index: 2147482500;\n  width: min(360px, calc(100vw - 32px));\n}\n.aqm-dock {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n}\n.aqm-queue,\n.aqm-update {\n  padding: 12px 14px;\n  border: 1px solid rgba(96, 165, 250, 0.35);\n  border-radius: 16px;\n  background: var(--aqm-panel);\n  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);\n  color: var(--aqm-text);\n  font-size: 13px;\n  animation: aqm-pop 0.16s ease-out;\n}\n.aqm-queue-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n}\n.aqm-queue-head strong {\n  font-size: 13px;\n  font-weight: 800;\n}\n.aqm-queue-btn {\n  height: 28px;\n  padding: 0 12px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.06);\n  color: #fff;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 800;\n  cursor: pointer;\n}\n.aqm-queue .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-album .aqm-fav-wait {\n  flex-basis: 100%;\n  width: 100%;\n  margin: 4px 0 0;\n}\n.aqm-fav-wait {\n  margin: 0 0 12px;\n  padding: 10px 12px;\n  border: 1px solid rgba(217, 119, 6, 0.4);\n  border-radius: 12px;\n}\n.aqm-fav-wait .aqm-queue-head + .aqm-bar,\n.aqm-fav-wait p + .aqm-queue-head {\n  margin-top: 12px;\n}\n.aqm-fav-wait .aqm-queue-actions {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;\n  gap: 8px;\n  margin-top: 10px;\n  font-size: 12px;\n  color: var(--aqm-muted);\n}\n.aqm-steps {\n  display: flex;\n  height: 8px;\n  margin-top: 10px;\n  overflow: hidden;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.08);\n}\n.aqm-steps > span {\n  transition: width 0.4s ease;\n}\n.aqm-steps .is-in,\n.aqm-steps-legend .is-in::before {\n  background: #22c55e;\n}\n.aqm-steps .is-sending,\n.aqm-steps-legend .is-sending::before {\n  background: #3b82f6;\n}\n.aqm-steps .is-waiting,\n.aqm-steps-legend .is-waiting::before {\n  background: #d97706;\n}\n.aqm-steps-legend {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 4px 14px;\n  margin-top: 8px;\n  font-size: 12px;\n}\n.aqm-steps-legend span::before {\n  content: "";\n  display: inline-block;\n  width: 8px;\n  height: 8px;\n  margin-right: 6px;\n  border-radius: 50%;\n}\n.aqm-fav-wait .aqm-bar {\n  margin-top: 8px;\n}\n.aqm-fav-wait p {\n  margin: 8px 0 0;\n  font-size: 12px;\n}\n.aqm-want.is-wait {\n  background: rgba(217, 119, 6, 0.85);\n}\n.aqm-queue p,\n.aqm-update p {\n  margin: 8px 0 0;\n  font-size: 12px;\n  line-height: 1.45;\n  color: var(--aqm-muted);\n}\n@media (max-width: 640px) {\n  .aqm-dock,\n  .aqm-update {\n    right: 8px;\n    left: 8px;\n    bottom: 96px;\n    width: auto;\n  }\n}\n.aqm-fav-details {\n  text-transform: none;\n  letter-spacing: 0;\n  font-size: 12px;\n}\n.aqm-fav-list {\n  gap: 10px;\n}\n.aqm-fav-series .aqm-fav-cards {\n  margin-top: 14px;\n}\n\n/* src/content/styles/22-sell.css */\n.aqm-sales {\n  border-color: rgba(34, 197, 94, 0.35);\n}\n.aqm-sell-wait {\n  flex: none;\n  align-self: stretch;\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 12px;\n  line-height: 1.45;\n}\n.aqm-sell-wait > p:first-child {\n  margin: 0;\n}\n.aqm-sell-waiting {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));\n  gap: 2px 16px;\n  max-height: 140px;\n  margin: 8px 0 0;\n  padding: 0 6px 0 0;\n  overflow-y: auto;\n  list-style: none;\n  font-size: 12px;\n  scrollbar-width: thin;\n  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar {\n  width: 6px;\n}\n.aqm-sell-waiting::-webkit-scrollbar-track {\n  background: transparent;\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb {\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.2);\n}\n.aqm-sell-waiting::-webkit-scrollbar-thumb:hover {\n  background: rgba(255, 255, 255, 0.35);\n}\n.aqm-sell-waiting::-webkit-scrollbar-button {\n  display: none;\n}\n.aqm-sell-last {\n  margin: 8px 0 0;\n  font-size: 11px;\n  color: var(--aqm-muted);\n}\n.aqm-sell-waiting li {\n  display: flex;\n  justify-content: space-between;\n  gap: 8px;\n  min-width: 0;\n}\n.aqm-sell-waiting li > span:first-child {\n  overflow: hidden;\n  white-space: nowrap;\n  text-overflow: ellipsis;\n}\n\n/* src/content/styles/23-booster-wheel.css */\n[data-aqm-hidden] {\n  position: absolute !important;\n  visibility: hidden !important;\n  pointer-events: none !important;\n}\n[data-aqm-veiled] {\n  visibility: hidden;\n}\n.aqm-piles {\n  position: relative;\n  flex: none;\n  align-self: auto;\n  max-width: none;\n  width: 100%;\n  padding: 28px 0 8px;\n  overflow: hidden;\n  overflow-x: clip;\n  overflow-y: visible;\n}\n@property --aqm-glow { syntax: "<color>"; inherits: true; initial-value: rgb(37 99 235 / 0.38); }\n.aqm-wheel {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  isolation: isolate;\n  transition: --aqm-glow 0.6s ease;\n}\n.aqm-wheel::before {\n  content: "";\n  position: absolute;\n  top: 50%;\n  left: 50%;\n  z-index: -1;\n  width: min(560px, 100%);\n  aspect-ratio: 1;\n  background:\n    radial-gradient(\n      closest-side,\n      var(--aqm-glow, rgb(37 99 235 / 0.38)),\n      transparent);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n}\n.aqm-wheel-track {\n  display: grid;\n}\n.aqm-wheel-controls {\n  display: flex;\n  justify-content: center;\n  margin-top: 4px;\n}\n.aqm-pile {\n  display: flex;\n  grid-area: 1 / 1;\n  flex-direction: column;\n  align-items: center;\n  gap: 12px;\n  justify-self: center;\n  transition:\n    transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1),\n    opacity 0.4s,\n    filter 0.4s;\n}\n.aqm-pile:not(.is-front) {\n  z-index: 0;\n  opacity: 0.4;\n  cursor: pointer;\n}\n.aqm-pile.is-front {\n  z-index: 1;\n}\n.aqm-pile.is-away {\n  opacity: 0;\n  pointer-events: none;\n}\n.aqm-pile:not(.is-front) .aqm-pile-art {\n  pointer-events: none;\n}\n.aqm-pile-art [class*=__packPose] {\n  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);\n}\n.aqm-pile-art .aqm-pose-follow {\n  transition: transform 0.15s ease-out;\n}\n.aqm-pile.is-front [data-aqm-float] {\n  animation: aqm-pack-float 2.35s ease-in-out infinite alternate;\n}\n@keyframes aqm-pack-float {\n  from {\n    transform: translate3d(0, 0, 0);\n  }\n  to {\n    transform: translate3d(0, -16px, 0);\n  }\n}\n@media (prefers-reduced-motion: reduce) {\n  .aqm-pile.is-front [data-aqm-float] {\n    animation: none;\n  }\n}\n.aqm-wheel-arrow {\n  position: absolute;\n  top: 45%;\n  z-index: 3;\n  width: 44px;\n  height: 44px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 50%;\n  background: rgba(15, 23, 42, 0.85);\n  color: #fff;\n  font: inherit;\n  font-size: 26px;\n  line-height: 1;\n  cursor: pointer;\n}\n.aqm-wheel-arrow:hover {\n  border-color: #3b82f6;\n  background: rgba(37, 99, 235, 0.35);\n}\n.aqm-wheel-arrow.is-prev {\n  left: 8px;\n}\n.aqm-wheel-arrow.is-next {\n  right: 8px;\n}\n.aqm-wheel-dots {\n  display: flex;\n  justify-content: center;\n  gap: 8px;\n  margin-top: 10px;\n}\n.aqm-wheel-dot {\n  width: 8px;\n  height: 8px;\n  padding: 0;\n  border: 0;\n  border-radius: 50%;\n  background: rgba(255, 255, 255, 0.25);\n  cursor: pointer;\n}\n.aqm-wheel-dot.is-on {\n  width: 22px;\n  border-radius: 999px;\n  background: #3b82f6;\n}\n.aqm-piles.is-still .aqm-pile {\n  transition: none;\n}\n@media (max-width: 640px) {\n  .aqm-wheel-controls > * {\n    flex-direction: column;\n  }\n  .aqm-wheel-arrow {\n    width: 36px;\n    height: 36px;\n    font-size: 22px;\n  }\n}\n.aqm-queue-btn.is-main {\n  border-color: #2563eb;\n  background: #2563eb;\n}\n.aqm-queue-btn:disabled {\n  opacity: 0.5;\n  cursor: default;\n}\n.aqm-scan-list {\n  display: grid;\n  gap: 4px;\n  margin: 10px 0 0;\n  padding: 0;\n  list-style: none;\n  font-size: 13px;\n}\n\n/* src/content/styles/25-collection.css */\n[data-aqm-owned-card],\n[data-aqm-locked-card] {\n  display: none !important;\n}\n[data-aqm-sale=on] {\n  display: inline-block !important;\n  margin-right: 8px !important;\n  vertical-align: middle;\n}\n.aqm-sale {\n  display: inline-block;\n  flex: none;\n  padding: 1px 7px;\n  border: 1px solid rgba(59, 130, 246, 0.6);\n  border-radius: 999px;\n  background: rgba(37, 99, 235, 0.22);\n  color: #93c5fd;\n  font-size: 9px;\n  font-weight: 800;\n  letter-spacing: 0.06em;\n  line-height: 1.6;\n  white-space: nowrap;\n  text-transform: uppercase;\n  vertical-align: middle;\n  pointer-events: none;\n}\n[data-aqm-pill-off] {\n  opacity: 0 !important;\n}\n[data-aqm-unpicked] {\n  background: transparent !important;\n  box-shadow: none !important;\n  color: var(--aqm-plain-color) !important;\n}\n.aqm-recycle-bar {\n  display: flex;\n  justify-content: flex-end;\n  margin: 0 0 8px;\n}\n.aqm-recycle-bar[hidden] {\n  display: none;\n}\n.aqm-recycle-spares.is-confirm {\n  background: #f59e0b !important;\n  color: #111 !important;\n}\n.aqm-recycle-note {\n  align-self: center;\n  color: #86efac;\n  font-size: 13px;\n  font-weight: 700;\n  white-space: nowrap;\n}\n.aqm-recycle-spares:disabled {\n  opacity: 0.75;\n  cursor: default;\n}\n\n/* src/content/styles/26-players.css */\n.aqm-users-code {\n  display: flex;\n  gap: 8px;\n}\n.aqm-users-stats {\n  margin-top: 4px;\n}\n.aqm-users {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  margin: 12px 0 0;\n  padding: 0;\n  list-style: none;\n}\n.aqm-user {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 8px 14px 8px 8px;\n  border-radius: 14px;\n  background: var(--aqm-card);\n  font-size: 13px;\n}\n.aqm-user .aqm-user-revoke {\n  flex: none;\n  padding: 6px 12px;\n  font-size: 12px;\n}\n.aqm-tag.aqm-revoked {\n  background: rgba(239, 68, 68, 0.18);\n  color: #fca5a5;\n}\n.aqm-user .aqm-avatar {\n  width: 32px;\n  height: 32px;\n}\n.aqm-user .aqm-name {\n  flex: 1;\n  font-size: 13px;\n}\n.aqm-kind-userscript {\n  background: rgba(34, 197, 94, 0.16);\n  color: #86efac;\n}\n.aqm-user-kinds {\n  display: flex;\n  flex-wrap: wrap;\n  justify-content: flex-end;\n  gap: 6px;\n}\n.aqm-online {\n  background: rgba(37, 99, 235, 0.2);\n  color: #93c5fd;\n}\n.aqm-user-seen {\n  min-width: 90px;\n  text-align: right;\n  color: var(--aqm-muted);\n}\n.aqm-device-wait {\n  margin-top: 10px;\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: rgba(37, 99, 235, 0.12);\n  border: 1px solid rgba(96, 165, 250, 0.3);\n}\n.aqm-device-wait p {\n  margin: 0;\n}\n.aqm-device-wait p + p {\n  margin-top: 6px;\n}\n.aqm-device-wait strong,\n.aqm-device-code {\n  font:\n    800 15px ui-monospace,\n    "Cascadia Mono",\n    Consolas,\n    monospace;\n  letter-spacing: 0.08em;\n  color: #fff;\n}\n.aqm-update {\n  top: 16px;\n  bottom: auto;\n}\n@media (max-width: 640px) {\n  .aqm-update {\n    top: 8px;\n    bottom: auto;\n  }\n}\n\n/* src/content/styles/27-market.css */\n.aqm-unlist {\n  margin-left: 8px;\n}\n.aqm-panel.is-ask {\n  max-width: 520px;\n}\n.aqm-ask-text {\n  margin: 0 0 12px;\n  color: var(--aqm-text);\n  font-size: 14px;\n  line-height: 1.5;\n}\n.aqm-ask-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 18px;\n}\n.aqm-ask-actions .aqm-queue-btn {\n  height: 36px;\n  padding: 0 18px;\n  font-weight: 700;\n}\n[data-aqm-bought] {\n  display: none !important;\n}\n.aqm-market-fav.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-market-sort {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px;\n  margin-top: 8px;\n  color: #a1a1aa;\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.aqm-market-sort-button {\n  padding: 8px 16px;\n  border: 0;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.04);\n  color: #a1a1aa;\n  font: inherit;\n  white-space: nowrap;\n  cursor: pointer;\n}\n.aqm-market-sort-button:hover {\n  background: rgba(255, 255, 255, 0.07);\n  color: #fff;\n}\n.aqm-market-sort-button.is-on {\n  background: rgba(59, 130, 246, 0.25);\n  color: #fff;\n}\n.aqm-market-sale {\n  margin-left: 6px;\n  color: #86efac;\n  font-weight: 600;\n  white-space: nowrap;\n}\n[data-aqm-sentinel-box] {\n  position: relative;\n}\n[data-aqm-sentinel-up] {\n  position: absolute !important;\n  top: 0;\n  left: 0;\n  width: 1px;\n  height: 1px;\n  pointer-events: none;\n}\n[data-aqm-unfav] {\n  display: none !important;\n}\n.aqm-trade-filter.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-trade-filter.is-on.is-off {\n  opacity: 0.55;\n}\n[data-aqm-tradehide] {\n  display: none !important;\n}\n.aqm-auctions-head {\n  margin-top: 18px;\n}\n.aqm-auction-cell {\n  display: inline-flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n}\n.aqm-owner a.aqm-buy {\n  display: inline-flex;\n  align-items: center;\n  overflow: visible;\n  color: #fff;\n  font-weight: 800;\n  text-decoration: none;\n}\n.aqm-sales-kind {\n  margin-top: 0;\n}\n.aqm-kind-hidden {\n  display: none !important;\n}\n.aqm-my-bids.is-on {\n  background: #1e3a5f !important;\n  color: #fff !important;\n}\n.aqm-bid-hidden {\n  display: none !important;\n}\n.aqm-open-bids {\n  margin: 0 0 16px;\n}\n.aqm-bid-ended {\n  display: none !important;\n}\n.aqm-recap-card {\n  padding: 14px 16px 10px;\n  border: 1px solid var(--aqm-line);\n  border-radius: 14px;\n  background: var(--aqm-card);\n}\n.aqm-recap-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: 4px 12px;\n}\n.aqm-recap-title {\n  margin: 0;\n  color: #60a5fa;\n  font-size: 12px;\n  font-weight: 800;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n}\n.aqm-recap-total {\n  color: var(--aqm-muted);\n  font-size: 12px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-recap-kinds {\n  display: inline-flex;\n  gap: 2px;\n  margin: 10px 0 6px;\n  padding: 3px;\n  border-radius: 999px;\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-recap-kind {\n  padding: 5px 12px;\n  border: 0;\n  border-radius: 999px;\n  background: none;\n  color: #a1a1aa;\n  font: inherit;\n  font-size: 12px;\n  font-weight: 700;\n  cursor: pointer;\n}\n.aqm-recap-kind:hover {\n  color: #fff;\n}\n.aqm-recap-kind.is-on {\n  background: #1e3a5f;\n  color: #fff;\n}\n.aqm-recap-chart {\n  display: grid;\n  grid-template-columns: repeat(30, 1fr);\n  gap: 2px;\n  height: 150px;\n  padding-top: 22px;\n}\n.aqm-recap-day {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  min-width: 0;\n  border-radius: 4px;\n  outline: none;\n}\n.aqm-recap-day:not(.is-future):hover,\n.aqm-recap-day:focus-visible {\n  background: rgba(255, 255, 255, 0.05);\n}\n.aqm-recap-col {\n  position: relative;\n  display: flex;\n  align-items: flex-end;\n  justify-content: center;\n  flex: 1;\n  width: 100%;\n  border-bottom: 1px solid rgba(255, 255, 255, 0.12);\n}\n.aqm-recap-bar {\n  display: block;\n  width: min(22px, 76%);\n  border-radius: 4px 4px 0 0;\n  background: #3b82f6;\n}\n.aqm-recap-val {\n  position: absolute;\n  left: 50%;\n  margin-bottom: 3px;\n  transform: translateX(-50%);\n  color: #fff;\n  font-size: 11px;\n  font-weight: 800;\n  font-variant-numeric: tabular-nums;\n  white-space: nowrap;\n}\n.aqm-recap-name {\n  margin-top: 6px;\n  color: var(--aqm-dim);\n  font-size: 10px;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-recap-day.is-today .aqm-recap-name {\n  color: #fff;\n  font-weight: 800;\n}\n.aqm-recap-details {\n  margin-top: 10px;\n  font-size: 13px;\n}\n.aqm-recap-details summary {\n  cursor: pointer;\n  color: var(--aqm-text);\n}\n.aqm-recap-table {\n  width: 100%;\n  margin-top: 8px;\n  border-collapse: collapse;\n  font-variant-numeric: tabular-nums;\n}\n.aqm-recap-table td {\n  padding: 5px 4px;\n  border-top: 1px solid var(--aqm-line);\n}\n.aqm-recap-table td.n,\n.aqm-recap-table td.p {\n  text-align: right;\n  color: var(--aqm-muted);\n}\n.aqm-recap-table tr.is-today td {\n  color: #fff;\n  font-weight: 700;\n}\n.aqm-recap-table tr.is-empty td {\n  color: var(--aqm-dim);\n}\n@media (max-width: 640px) {\n  .aqm-recap-day.is-odd:not(.is-today) .aqm-recap-name {\n    visibility: hidden;\n  }\n}\n\n/* contenu.css */\n';
     document.head.appendChild(style);
     (() => {
       const TOUR = [
@@ -2663,12 +2059,6 @@ window.__aquamanUserscript = true;
           find: "plus"
         },
         {
-          id: "classement",
-          title: "Classement des amis",
-          text: "Sur la page Classement, « Amis » à côté de « Tous » : toi et tes amis, avec les points du jeu. Touche un nom pour ouvrir son profil.",
-          find: "board"
-        },
-        {
           id: "boosters",
           title: "Quel booster ouvrir ?",
           text: "Choisis ce que tu cherches (des cartes nouvelles, une rareté, un personnage, une série ou la valeur) : les boosters sont classés par taux de drop ou par prix, avec « ≈ 11 boosters à ouvrir en moyenne », le prix moyen en Perles et le meilleur et le pire taux en haut.",
@@ -2681,38 +2071,11 @@ window.__aquamanUserscript = true;
           find: "menu-1"
         },
         {
-          id: "favoris",
-          title: "Séries favorites",
-          text: "Ajoute des séries à tes favoris (ici, ou avec l’étoile ☆ sur les séries de la page Collection) : elles sont les mêmes sur tous tes appareils. Tu vois leurs personnages, ceux qui te manquent, et un bouton met d’un coup toutes les cartes manquantes dans ta liste de recherches du jeu.",
-          find: "menu-2"
-        },
-        {
-          id: "etoiles",
-          title: "L’étoile des séries",
-          text: "Sur la page Collection, l’étoile ☆ ajoute une série à tes favoris ; le bouton « ★ Favoris » au-dessus ouvre la liste de leurs personnages. Quand une série est ouverte, son cadre « Album de la série » a aussi « Ajouter aux favoris » et « Rechercher les manquantes ».",
-          page: "/jeu/collection",
-          target: ".aqm-fav-bar, .aqm-star"
-        },
-        {
-          id: "progression",
-          title: "Ta progression",
-          text: "À côté de « Ta collection », « Ma progression » montre le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes gagnées chaque jour.",
-          page: "/jeu/collection",
-          target: ".aqm-stats-open"
-        },
-        {
           id: "tirages",
           title: "Les beaux tirages",
           text: "Sur l’accueil, les cartes des beaux tirages des joueurs sont affichées en plus grand.",
           page: "/jeu",
           target: ".aqm-pulls"
-        },
-        {
-          id: "pity",
-          title: "La garantie anti-malchance",
-          text: "Sous le minuteur du booster offert : combien de boosters il te reste avant la SSR et l’UR garanties. Aquaman compte chaque booster que tu ouvres, et partage ce compte entre tes appareils (PC, téléphone, extension ou script) : partout le même chiffre. Tant qu’il n’a pas vu sortir de SSR ou d’UR, il affiche « au plus ».",
-          page: "/jeu",
-          target: ".aqm-pity"
         },
         {
           id: "echanges",
@@ -2749,6 +2112,13 @@ window.__aquamanUserscript = true;
       ];
       const CHANGES = [
         {
+          version: "1.7.2",
+          items: [
+            ["Déduplication de fonctionnalités : certains fonctions d’Aquaman sont maintenant incluses sur le site."],
+            ["Plusieurs bugs ont été corrigés."]
+          ]
+        },
+        {
           version: "1.7.1",
           items: [
             ["Marché : dans « Mes ventes », les filtres « Achat fixe » et « Enchères » au-dessus de tes ventes n’affichent que tes ventes à prix fixe, ou que tes enchères (en cours et terminées). Un second clic remet tout. Se règle dans Plus › Réglages (« Tes ventes »)."],
@@ -2764,9 +2134,6 @@ window.__aquamanUserscript = true;
             ["Marché : dans « Tes cartes à vendre », les cartes que tu vends déjà (au marché ou en enchère) sont marquées « Déjà en vente », et « Trier par » les range selon un ou plusieurs critères : les plus recherchées, les plus ou moins possédées, la valeur estimée ou le nom. Se règle dans Plus › Réglages. Proposé par volcanofr."],
             ["Recycler des cartes : en mode « Mes doublons », plus aucune carte n’est cochée sans que tu la voies. Le jeu cochait d’office les doublons pas encore affichés (la liste se charge 48 par 48) : Aquaman charge toute la liste à l’ouverture et la décoche, puis « Tout sélectionner » agit sur toute la liste."],
             ["Garantie anti-malchance : comme dans le jeu, seuls les boosters classiques (gratuits ou de la boutique) et les packs à thème à 250 Perles comptent pour la SSR et l’UR garanties. Les packs spéciaux (Légendaire, Halloween…) ne les font plus avancer. Aquaman retient maintenant le pack de chaque booster ouvert : le compte devient exact au fil des ouvertures."],
-            ["Collection : avec le filtre « Manquantes », le compte des cartes qui te manquent par rareté s’affiche sous les onglets (« 70 N · 293 R · … · 948 au total »), sans avoir à faire défiler tout l’album.", "series"],
-            ["Collection : dans « Album complet » filtré par rareté, le jeu ne renvoie pas toutes les cartes et en oublie des manquantes. Avec « Manquantes », Aquaman ajoute à la suite celles que le jeu n’affiche pas, avec le même aspect (lien vers la carte compris).", "series"],
-            ["Ma progression : la colonne « ex. » compte un exemplaire par carte, les doublons ne comptent plus. Les cartes gagnées en achetant ou en échangeant juste après une ouverture de boosters sont comptées dans la journée, au lieu d’attendre le relevé suivant.", "progression"],
             ["Classement : « Ranger par » sous « Tous / Amis ». Entre amis : par points, par cartes ou par séries complètes (les albums dont le badge est récupéré). Pour « Tous » : par points (le classement du jeu) ou par cartes (le top 100 du jeu rangé par nombre de cartes). « Ma place » suit le tri choisi.", "classement"],
             ["Classement des amis : le cadre « Ma place » en haut de la page montre ta place parmi tes amis et l’ami à dépasser (« Plus que 10 points pour dépasser… »), et « Voir ma ligne » mène à ta ligne.", "classement"]
           ]
@@ -2776,7 +2143,6 @@ window.__aquamanUserscript = true;
           items: [
             ["Aquaman se charge plus vite sur les pages du jeu : son code et ses styles arrivent en 2 fichiers au lieu de 72."],
             ["Mises à jour plus légères : l’extension compte 17 fichiers au lieu d’une centaine, le bouton « Mettre à jour » a moins à télécharger et à remplacer."],
-            ["Collection : le filtre « Manquantes » reste actif quand tu reviens sur la collection (après un achat depuis la page d’une carte, par exemple).", "series"],
             ["Collection : « Masquer cartes verrouillées », à côté des filtres des séries, cache les cartes dont tous tes exemplaires sont verrouillés.", "series"],
             ["Classement : le jeu a maintenant son propre classement. Sur sa page, « Amis » à côté de « Tous » montre toi et tes amis avec les points du jeu (calculés depuis leur collection pour ceux hors du top 100), avec le style du classement du jeu : un podium pour les 3 premiers et leur plus belle carte, puis les lignes de chacun. Le classement d’Aquaman quitte le menu Plus.", "classement"],
             ["L’onglet Plus passe tout à droite de la barre du jeu, après Classement.", "plus"],
@@ -2787,17 +2153,14 @@ window.__aquamanUserscript = true;
           version: "1.5.0",
           items: [
             ["Collection : dans « Album de la série », « 🔒 Verrouiller les uniques » verrouille les cartes de la série dont tu n’as qu’un exemplaire, puis celles qui descendent à un seul exemplaire (vente, échange, recyclage). Un 2e clic arrête la surveillance."],
-            ["Ma progression : les cartes gagnées chaque jour et le compte par rareté sont les mêmes sur tous tes appareils (réglage « Partage entre mes appareils › Ma progression »).", "progression"],
             ["Boosters : après l’ouverture d’un ou plusieurs boosters, un bouton « ♻ Recycler les doublons » dans la fenêtre des cartes recycle en Perles les doublons des cartes tirées. Un 2e clic confirme ; le plus petit numéro de chaque carte est gardé, les cartes en vente ou verrouillées ne sont pas touchées."],
             ["Réglages : « Recyclage automatique » (désactivé au départ) recycle tout seuls, sans clic, les doublons N, R et SR des cartes tirées à la fin de chaque ouverture ; les SSR, UR et SEC restent au bouton."],
-            ["Marché : l’écran noir après l’achat d’une carte depuis sa page (« Son prix au marché ») est corrigé. « Masquer ce que je viens d’acheter » et le filtre « ★ Favoris » ne touchent plus que la liste du marché, jamais le reste d’une page."],
-            ["Téléphone : sur la page Collection, les filtres des séries restent sur une ligne qui défile (ils ne débordent plus sur les séries), et « Ma progression » se range avec les boutons du jeu."]
+            ["Marché : l’écran noir après l’achat d’une carte depuis sa page (« Son prix au marché ») est corrigé. « Masquer ce que je viens d’acheter » et le filtre « ★ Favoris » ne touchent plus que la liste du marché, jamais le reste d’une page."]
           ]
         },
         {
           version: "1.4.9",
           items: [
-            ["Collection : un bouton « Ma progression » à côté de « Ta collection » (aussi dans Plus) : le pourcentage du jeu que tu as, tes cartes par rareté, tes séries complètes, les cartes qui te manquent et les cartes uniques gagnées chaque jour sur les 14 derniers jours.", "progression"],
             ["Collection : le bouton « Masquer séries avec badge » cache les séries dont tu as déjà réclamé l’album.", "series"],
             ["Classement : les joueurs déjà lus gardent leur place et leurs chiffres ; seuls ceux lus il y a plus d’1 h (et toi) sont relus, sans tout retélécharger. « Actualiser » relit tout le monde.", "classement"],
             ["Classement : l’onglet « Perles » est retiré. Aquaman n’envoie plus ton stock de Perles, et celui déjà partagé est effacé du relais."],
@@ -2889,7 +2252,7 @@ window.__aquamanUserscript = true;
           items: [
             ["Vendre mes doublons (fenêtre du jeu) : quand le marché est plein, le doublon refusé et ceux encore cochés après lui attendent dans Aquaman (50 au plus), sans recliquer, et sont mis en vente tout seuls, au prix choisi, dès qu’une de tes ventes se conclut. La file s’affiche dans la fenêtre, avec « Vider la file » et « Réessayer maintenant »."],
             ["Recycler des cartes (fenêtre du jeu) : aucune carte n’est cochée à l’ouverture, et un bouton « Tout sélectionner » coche toute la liste."],
-            ["Accueil : sous les garanties SSR et UR, le nombre de boosters depuis ta dernière SEC, sa fréquence moyenne et ta chance d’en avoir une dans les 100 prochains (la SEC n’a pas de garantie).", "pity"],
+            ["Accueil : sous les garanties SSR et UR, le nombre de boosters depuis ta dernière SEC, sa fréquence moyenne et ta chance d’en avoir une dans les 100 prochains (la SEC n’a pas de garantie)."],
             ["Accueil : quand tes boosters sont de plusieurs catégories, les boosters gratuits s’affichent d’abord, et des flèches passent aux autres catégories (3 visibles à la fois : celle du centre et une de chaque côté), chacune avec son rendu, l’image de son pack et ses boutons « Ouvrir » et « Tout ouvrir », qui n’ouvrent que ceux-là, avec l’animation du jeu. Leur dessin est gardé et partagé entre tes appareils, pour s’afficher tout de suite."],
             ["Accueil : un pack acheté dans la boutique s’affiche dès le retour à l’accueil, sans recharger la page."],
             ["Marché : un bouton « Retirer mes ventes » à côté de « Vendre une carte » retire toutes tes ventes à prix fixe d’un coup. La file d’attente des doublons est mise en pause le temps du retrait, puis réactivée."],
@@ -2927,7 +2290,7 @@ window.__aquamanUserscript = true;
             ["Qui a tiré… ? (menu Plus) : les joueurs qui ont tiré récemment un personnage ou une carte d’une série, parmi les beaux tirages du jeu gardés 30 jours.", "qui"],
             ["Séries favorites : une étoile ☆ sur chaque série de la page Collection, et une page avec leurs personnages (toutes, manquantes, possédées, recherchées, par rareté), les mêmes sur tous tes appareils.", "favoris"],
             ["Séries favorites : « Rechercher les manquantes » met d’un coup toutes les cartes qui te manquent dans ta liste de recherches du jeu ; 🔭 pour une seule carte.", "favoris"],
-            ["Sur téléphone : la garantie anti-malchance s’affiche aussi quand la réserve de boosters est pleine.", "pity"]
+            ["Sur téléphone : la garantie anti-malchance s’affiche aussi quand la réserve de boosters est pleine."]
           ]
         },
         {
@@ -2939,7 +2302,7 @@ window.__aquamanUserscript = true;
             ["Collection : la bande des séries défile avec la molette, ou en l’attrapant avec un clic glissé.", "series"],
             ["Ma vitrine : glisser-déposer des cartes, à la souris ou au doigt.", "vitrine"],
             ["Accueil : les cartes des beaux tirages sont plus grandes.", "tirages"],
-            ["Accueil : la garantie anti-malchance, avec le nombre de boosters avant ta prochaine SSR et ta prochaine UR garanties, le même sur tous tes appareils.", "pity"],
+            ["Accueil : la garantie anti-malchance, avec le nombre de boosters avant ta prochaine SSR et ta prochaine UR garanties, le même sur tous tes appareils."],
             ["Extension : le nombre de boosters à ouvrir sur l’icône, une notification quand il y en a de nouveaux, et le bouton « Mettre à jour » dans sa fenêtre."]
           ]
         }
@@ -3030,6 +2393,50 @@ window.__aquamanUserscript = true;
         send({ type: "wants-changed" });
         return { wanted: !!res?.wanted };
       }
+      async function favoriteSerie(id, on2) {
+        const res = await gameWrite(`/series/${encodeURIComponent(id)}/favorite`, on2 ? "PUT" : "DELETE");
+        return { favorite: !!res?.favorite };
+      }
+      const TRANSFER_RELAY = "https://aquaman-relay.finch-arhold-git.workers.dev";
+      const TRANSFER_PLAYER = /^[A-Za-z0-9_-]{6,64}$/;
+      let transferringFavorites = false;
+      async function transferFavorites() {
+        if (transferringFavorites) return;
+        const TRANSFER_SERIE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+        transferringFavorites = true;
+        try {
+          const me = await send({ type: "me-id" });
+          const player = me?.id;
+          if (!TRANSFER_PLAYER.test(String(player ?? ""))) return;
+          const status = await fetch(`${TRANSFER_RELAY}/favorites/transferred?player=${encodeURIComponent(player)}`);
+          if (!status.ok) throw new Error(`relay_${status.status}`);
+          if ((await status.json())?.transferred) return;
+          const { favSeries } = await chrome.storage.local.get("favSeries");
+          const ids = [...new Set((Array.isArray(favSeries) ? favSeries : []).filter((id) => TRANSFER_SERIE_ID.test(String(id))))];
+          for (const id of ids) {
+            for (let tries = 0; ; tries++) {
+              try {
+                await favoriteSerie(id, true);
+                break;
+              } catch (e) {
+                if (!e.slowDown || tries >= 3) throw e;
+                await new Promise((resolve) => setTimeout(resolve, e.wait || 3e3));
+              }
+            }
+          }
+          const done = await fetch(`${TRANSFER_RELAY}/favorites/transfer`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ player })
+          });
+          if (!done.ok) throw new Error(`relay_${done.status}`);
+        } catch (e) {
+          console.warn("[Aquaman] transfert des favoris impossible", e);
+        } finally {
+          transferringFavorites = false;
+        }
+      }
+      onStart(() => transferFavorites());
       const pause = (ms) => new Promise((r) => setTimeout(r, ms));
       const playersSeen = /* @__PURE__ */ new Map();
       const foldName = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
@@ -3042,6 +2449,7 @@ window.__aquamanUserscript = true;
       }).finally(() => featLoaded = true);
       function h(tag, props = {}, ...kids) {
         const el = document.createElement(tag);
+        el.setAttribute("data-aqm-add", "");
         for (const [k, v] of Object.entries(props)) {
           if (v == null || v === false) continue;
           if (k === "class") el.className = v;
@@ -3070,14 +2478,18 @@ window.__aquamanUserscript = true;
         for (const n of textNodes(from)) if (n.parentElement && re.test(n.nodeValue)) out.push(n.parentElement);
         return out;
       }
-      const setText = (el, text) => el.textContent !== text && (el.textContent = text);
+      const setText = (el, text) => el.textContent !== text && (el.setAttribute("data-aqm-edit", ""), el.textContent = text);
+      const markEdit = (el) => {
+        el?.setAttribute("data-aqm-edit", "");
+        return el;
+      };
       function anchorBadges(el) {
         const position = getComputedStyle(el).position;
         if (el.style.position === "relative" || position && position !== "static") return;
         el.style.position = "relative";
         el.dataset.aqmAnchor = "1";
       }
-      const setClass = (el, cls) => el.className !== cls && (el.className = cls);
+      const setClass = (el, cls) => el.className !== cls && (el.setAttribute("data-aqm-edit", ""), el.className = cls);
       const isVisible = (el) => !!el && el.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
       const firstVisible = (selector) => [...document.querySelectorAll(selector)].find(isVisible) ?? null;
       const canHover = () => matchMedia("(hover: hover) and (pointer: fine)").matches;
@@ -3654,54 +3066,6 @@ window.__aquamanUserscript = true;
           if (hidden) tile.setAttribute("data-aqm-bought", "");
         }
       }
-      const MARKET_FAV_KEY = "aqm-market-fav";
-      let marketFavLoading = false;
-      let marketFavTried = false;
-      const marketFavOn = () => {
-        try {
-          return sessionStorage.getItem(MARKET_FAV_KEY) === "1";
-        } catch {
-          return false;
-        }
-      };
-      function markMarketFavorites() {
-        if (!onMarket()) return void document.querySelectorAll("[data-aqm-unfav]").forEach((el) => el.removeAttribute("data-aqm-unfav"));
-        const mine = [...document.querySelectorAll("button")].find((b) => !b.closest(".aqm-root") && /^mes recherches$/i.test(b.textContent.trim()));
-        if (!mine) return;
-        const on2 = marketFavOn();
-        let chip = mine.parentElement.querySelector(":scope > .aqm-market-fav");
-        if (!chip) {
-          const plain = [...mine.parentElement.querySelectorAll("button")].find((b) => b !== mine && /^(n|r|sr|ssr|ur|sec)\s*(commune|rare|épique|légendaire|mythique|secrète)$/i.test(b.textContent.trim()));
-          chip = h("button", {
-            type: "button",
-            class: `${plain?.className ?? mine.className} aqm-market-fav`,
-            title: "Seulement les cartes de tes séries favorites",
-            onclick: () => {
-              try {
-                marketFavOn() ? sessionStorage.removeItem(MARKET_FAV_KEY) : sessionStorage.setItem(MARKET_FAV_KEY, "1");
-              } catch {
-              }
-              markMarketFavorites();
-            }
-          }, "★ Favoris");
-          mine.after(chip);
-        }
-        chip.classList.toggle("is-on", on2);
-        chip.setAttribute("aria-pressed", String(on2));
-        if (on2 && (!favIds || !seriesTitles)) {
-          if (!marketFavLoading && !marketFavTried) {
-            marketFavLoading = true;
-            marketFavTried = true;
-            loadFavIds().finally(() => {
-              marketFavLoading = false;
-              markMarketFavorites();
-            });
-          }
-          return;
-        }
-        const titles = new Set(on2 ? [...favIds].map((id) => seriesTitles.get(id)).filter(Boolean) : []);
-        for (const { tile, texts } of marketTiles()) tile.toggleAttribute("data-aqm-unfav", on2 && !tile.matches(PAGE_PARTS) && !tile.querySelector(PAGE_PARTS) && ![...texts].some((t) => titles.has(t)));
-      }
       let marketSalesKeys = /* @__PURE__ */ new Set();
       const marketListingKeys = /* @__PURE__ */ new Set();
       const marketAuctionKeys = /* @__PURE__ */ new Set();
@@ -3942,7 +3306,7 @@ window.__aquamanUserscript = true;
           const isOn = kind === k.key;
           chip.classList.toggle("is-on", isOn);
           chip.setAttribute("aria-pressed", String(isOn));
-          for (const s of sections.get(k.key)) s.classList.toggle("aqm-kind-hidden", !!kind && !isOn);
+          for (const s of sections.get(k.key)) markEdit(s).classList.toggle("aqm-kind-hidden", !isOn);
         }
       }
       const MY_BIDS_KEY = "aqm-market-my-bids";
@@ -4304,8 +3668,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           { class: "aqm-root aqm-menu", role: "menu" },
           item("Boosters rentables", "Prix, taux de drop, persos et séries", ICON_PACK, openBoosters),
           item("Qui a cette carte ?", "Ceux qui l’ont, la vendent ou l’ont tirée", ICON_SEARCH, openWhoHas),
-          item("Séries favorites", "Tes séries et leurs persos manquants", ICON_STAR, openFavorites),
-          item("Ma progression", "Ta collection, par rareté et jour par jour", ICON_CHART, openCollectionStats),
           item("Récap des ventes", "Les Perles gagnées chaque jour au marché", ICON_TAG, openSalesRecap),
           item("Visite guidée", "Le tour de ce qu’ajoute Aquaman", ICON_COMPASS, () => startTour(0)),
           item("Nouveautés", "Ce qui a changé dans Aquaman", ICON_SPARK, () => openNews()),
@@ -4438,434 +3800,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           ([value, label]) => h("button", { type: "button", role: "tab", class: `aqm-chip${value === current ? " is-on" : ""}`, "aria-selected": String(value === current), onclick: () => onPick(value) }, label)
         )
       );
-      const BOARD_SCOPE_KEY = "aqm-board-scope";
-      const BOARD_SORT_KEY = "aqm-board-sort";
-      const stored = (key, ok, fallback) => {
-        try {
-          const v = sessionStorage.getItem(key);
-          return ok.includes(v) ? v : fallback;
-        } catch {
-          return fallback;
-        }
-      };
-      let boardScope = stored(BOARD_SCOPE_KEY, ["all", "friends"], "all");
-      let boardSort = stored(BOARD_SORT_KEY, ["points", "cards", "series"], "points");
-      const sortNow = () => boardScope === "all" && boardSort === "series" ? "points" : boardSort;
-      const SORT_UNIT = {
-        points: ["point", "points", "pts"],
-        cards: ["carte", "cartes", "cartes"],
-        series: ["série complète", "séries complètes", "séries"]
-      };
-      const unitOf = (n, sort = sortNow()) => SORT_UNIT[sort][n > 1 ? 1 : 0];
-      const saveChoice = (key, v) => {
-        try {
-          sessionStorage.setItem(key, v);
-        } catch {
-        }
-      };
-      const ROW_MODEL = 'section[aria-labelledby="top-title"] li[data-row]:not([data-me])';
-      const PODIUM_MODEL = 'section[aria-label="Podium"]';
-      const STATUS_MODEL = 'section[aria-labelledby="ma-place"]';
-      const GAME_SECTIONS = 'section[aria-label="Podium"], section[aria-labelledby="top-title"], section[aria-labelledby="ma-place"]';
-      function markGameBoard() {
-        if (location.pathname !== "/jeu/classement") return;
-        const title = [...document.querySelectorAll("main h1")].find((el) => /classement/i.test(el.textContent));
-        const header = title?.closest("header");
-        if (!header || header.closest(".aqm-root")) return;
-        let bar = header.nextElementSibling?.classList.contains("aqm-board-scope") ? header.nextElementSibling : null;
-        if (!bar) {
-          bar = h("div", { class: "aqm-root aqm-board-scope" });
-          header.after(bar);
-        }
-        let box = bar.nextElementSibling?.classList.contains("aqm-friends-board") ? bar.nextElementSibling : null;
-        if (!box) {
-          box = h("section", { class: "aqm-root aqm-friends-board", "aria-label": "Classement des amis" });
-          bar.after(box);
-        }
-        const ours = boardScope === "friends" || sortNow() !== "points";
-        const shown = `${boardScope}|${sortNow()}`;
-        if (bar.dataset.shown !== shown) {
-          bar.dataset.shown = shown;
-          const pick = (key, set) => (v) => {
-            set(v);
-            saveChoice(key, v);
-            markGameBoard();
-            box.repaint?.();
-            if (boardScope === "all" && sortNow() === "points") requestAnimationFrame(() => dispatchEvent(new Event("resize")));
-          };
-          bar.replaceChildren(
-            chips(
-              [
-                ["all", "Tous"],
-                ["friends", "Amis"]
-              ],
-              boardScope,
-              pick(BOARD_SCOPE_KEY, (v) => boardScope = v)
-            ),
-            h(
-              "div",
-              { class: "aqm-board-sort", "aria-label": "Ranger par" },
-              h("span", { class: "aqm-muted" }, "Ranger par"),
-              chips(
-                [["points", "Points"], ["cards", "Cartes"], ...boardScope === "friends" ? [["series", "Séries complètes"]] : []],
-                sortNow(),
-                pick(BOARD_SORT_KEY, (v) => boardSort = v)
-              )
-            )
-          );
-        }
-        box.hidden = !ours;
-        for (const s of document.querySelectorAll(GAME_SECTIONS)) if (s.hasAttribute("data-aqm-board-off") !== ours) s.toggleAttribute("data-aqm-board-off", ours);
-        if (ours && box.dataset.loaded !== boardScope) {
-          box.dataset.loaded = boardScope;
-          box.card?.remove();
-          box.card = null;
-          loadBoard(box, boardScope);
-        }
-        const card = box.card;
-        if (card) {
-          card.hidden = !ours;
-          const status = document.querySelector(STATUS_MODEL);
-          if (status && status.nextElementSibling !== card) status.after(card);
-        }
-        if (ours && box.repaint && !box.querySelector(".aqm-board-game") && document.querySelector(ROW_MODEL)) box.repaint();
-      }
-      const ME_LOOK = ["bg-gradient-to-r", "from-blue-500/[0.18]", "via-blue-500/[0.07]", "to-transparent", "hover:bg-blue-500/[0.06]"];
-      const PLAIN_LOOK = ["bg-white/[0.025]", "hover:bg-white/[0.055]"];
-      const ME_BAR = ["from-sky-400", "to-white"];
-      const PLAIN_BAR = ["from-blue-600", "to-sky-400"];
-      function statusCard(model, d) {
-        const sec = bareCopy(model);
-        sec.setAttribute("aria-labelledby", "aqm-ma-place");
-        sec.classList.add("aqm-friends-status");
-        const grid = [...sec.children].find((el) => el.tagName === "DIV");
-        const [where, , chase] = grid?.children ?? [];
-        const title = where?.querySelector("h2");
-        if (title) {
-          title.id = "aqm-ma-place";
-          const badge = title.querySelector("span");
-          if (badge) badge.textContent = d.place === 1 ? "N°1" : d.place <= 3 ? "Podium" : d.badge;
-        }
-        const [, big, among] = where?.children ?? [];
-        const num = big?.querySelector("span");
-        if (num) num.textContent = fmt(d.place);
-        const sup = big?.querySelector("sup");
-        if (sup) sup.textContent = d.place === 1 ? "er" : "e";
-        if (among) among.textContent = d.among;
-        const text = chase?.querySelector("p");
-        if (text) {
-          const strong = (t) => h("span", { class: "font-bold text-white" }, t);
-          if (!d.target) text.replaceChildren(`${d.first}${d.lead > 0 ? ", avec " : "."}`, ...d.lead > 0 ? [strong(`${fmt(d.lead)} ${unitOf(d.lead)}`), " d’avance sur le 2e."] : []);
-          else text.replaceChildren("Plus que ", strong(`${fmt(d.gap)} ${unitOf(d.gap)}`), " pour dépasser ", strong(d.target.name), ` (${d.target.place}e)`, d.need ? `, soit environ ${d.need}.` : ".");
-        }
-        const jump = chase?.querySelector("button");
-        if (jump) {
-          jump.replaceWith(jump.cloneNode(true));
-          chase.querySelector("button").addEventListener("click", () => document.querySelector(".aqm-friends-board [data-aqm-me], .aqm-friends-podium")?.scrollIntoView({ behavior: "smooth", block: "center" }));
-        }
-        return sec;
-      }
-      function cardsFor(gap, points) {
-        for (const code of ["N", "R", "SR", "SSR", "UR", "SEC"]) {
-          const per = Number(points?.[code]);
-          if (!per) continue;
-          const n = Math.ceil(gap / per);
-          if (n <= 5) return `${n} nouvelle${n > 1 ? "s" : ""} ${code}`;
-        }
-        const ur = Number(points?.UR);
-        return ur ? `${Math.ceil(gap / ur)} nouvelles UR` : null;
-      }
-      function bareCopy(model) {
-        const copy = model.cloneNode(true);
-        for (const el of [copy, ...copy.querySelectorAll("*")]) {
-          el.removeAttribute("style");
-          for (const a of [...el.attributes]) if (a.name.startsWith("data-")) el.removeAttribute(a.name);
-        }
-        return copy;
-      }
-      const TOI_CLASS = "shrink-0 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-blue-200";
-      function gamePodium(model, spots) {
-        const sec = bareCopy(model);
-        sec.setAttribute("aria-label", "Podium des amis");
-        sec.classList.add("aqm-friends-podium");
-        const places = [...sec.querySelector("ol")?.children ?? []];
-        spots.forEach((d, i) => {
-          const li = places[i];
-          if (!li) return;
-          const [spot, head] = li.children;
-          const card = [...spot?.children ?? []].find((el) => !el.classList.contains("absolute"));
-          const look = "display:block;width:100%;aspect-ratio:63/88;border-radius:1rem;object-fit:cover";
-          const art = d.card?.image ? h("img", { src: cardImageUrl(d.card.image), alt: d.card.name ?? "", title: d.card.name ? `Carte de ${d.name} : ${d.card.name}` : null, loading: "lazy", style: look }) : h("div", { class: "aspect-[63/88] rounded-[1rem] bg-white/[0.04]", style: look });
-          card ? card.replaceWith(art) : spot?.append(art);
-          if (head?.tagName === "A") head.setAttribute("href", `/profile/${encodeURIComponent(d.id)}`);
-          if (!head) return;
-          head.title = d.title;
-          const [sr, who, score] = head.children;
-          if (sr?.classList.contains("sr-only")) sr.textContent = `${i + 1}e : `;
-          const img = who?.querySelector("img");
-          if (img) {
-            img.removeAttribute("srcset");
-            img.src = avatarUrl(d.id);
-          }
-          const name = who?.lastElementChild;
-          if (name) name.textContent = d.name;
-          if (score?.firstElementChild) score.firstElementChild.textContent = d.score;
-          setUnit(score, d.unit);
-          [...head.children].slice(3).forEach((el) => el.remove());
-          if (d.me) head.append(h("span", { class: "mt-2" }, h("span", { class: TOI_CLASS }, "Toi")));
-        });
-        return sec;
-      }
-      function gameRow(model, d) {
-        const li = bareCopy(model);
-        li.classList.add("aqm-friend-row");
-        if (d.me) li.setAttribute("data-aqm-me", "");
-        const a = li.querySelector("a") ?? li;
-        if (a.tagName === "A") a.setAttribute("href", `/profile/${encodeURIComponent(d.id)}`);
-        a.classList.remove(...d.me ? PLAIN_LOOK : ME_LOOK);
-        a.classList.add(...d.me ? ME_LOOK : PLAIN_LOOK);
-        a.title = d.title;
-        const [place, avatar, main, stats, score] = a.children;
-        if (place) place.replaceChildren(...[...place.children].filter((el) => el.classList.contains("sr-only")), d.place);
-        const img = avatar?.querySelector("img") ?? (avatar?.tagName === "IMG" ? avatar : null);
-        if (img) {
-          img.removeAttribute("srcset");
-          img.src = avatarUrl(d.id);
-          img.alt = "";
-        } else if (avatar) avatar.replaceChildren(h("img", { src: avatarUrl(d.id), alt: "", style: "width:100%;height:100%;object-fit:cover;border-radius:inherit" }));
-        const nameRow = main?.firstElementChild;
-        const name = nameRow?.firstElementChild;
-        if (name) {
-          name.textContent = d.name;
-          nameRow.replaceChildren(name);
-          if (d.me) nameRow.append(h("span", { class: TOI_CLASS }, "Toi"));
-        }
-        const bar = main?.lastElementChild?.firstElementChild;
-        if (bar) {
-          bar.style.width = `${d.width.toFixed(1)}%`;
-          bar.classList.remove(...d.me ? PLAIN_BAR : ME_BAR);
-          bar.classList.add(...d.me ? ME_BAR : PLAIN_BAR);
-        }
-        if (stats) stats.replaceChildren(...d.lines.flatMap((t, i) => i ? [document.createElement("br"), t] : [t]));
-        const value = score?.firstElementChild;
-        if (value) value.textContent = d.score;
-        setUnit(score, d.unit);
-        return li;
-      }
-      function setUnit(score, unit) {
-        if (!score || !unit) return;
-        const label = [...score.querySelectorAll("*")].find((el) => !el.children.length && /^\s*pts?\s*$/i.test(el.textContent));
-        if (label) label.textContent = unit;
-        else {
-          const node = [...score.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && /pts?/i.test(n.textContent));
-          if (node) node.textContent = node.textContent.replace(/pts?/i, unit);
-        }
-      }
-      let gameBoard = null;
-      function readGameBoard(force) {
-        if (force || !gameBoard || Date.now() - gameBoard.at > 12e4) gameBoard = { at: Date.now(), read: gameWrite("/leaderboard", "GET") };
-        return gameBoard.read;
-      }
-      async function loadBoard(box, scope, force = false) {
-        const id = box.loadId = (box.loadId ?? 0) + 1;
-        const current = () => box.isConnected && box.loadId === id;
-        box.repaint = null;
-        const friends2 = scope === "friends";
-        const status = h("p", { class: "aqm-muted aqm-friends-note" }, friends2 ? "Chargement de tes amis…" : "Chargement du classement…");
-        const podium = h("div", { class: "aqm-friends-podium-box" });
-        const list = h("ol", { class: "aqm-board" });
-        const foot = h("div", { class: "aqm-board-refresh" });
-        box.replaceChildren(status, podium, list, foot);
-        let board;
-        let mates = null;
-        try {
-          [board, mates] = await Promise.all([readGameBoard(force), friends2 ? ask({ type: "friends" }) : null]);
-        } catch (e) {
-          if (current()) status.textContent = `Classement indisponible (${e.message}).`;
-          return;
-        }
-        if (!current()) return;
-        const points = board?.points ?? {};
-        const topList = Array.isArray(board?.top) ? board.top : [];
-        const top = new Map(topList.map((e) => [e?.player?.id, e]));
-        const myId2 = friends2 ? mates.me : board?.me?.player?.id ?? null;
-        const meEntry = board?.me?.player?.id && board.me.player.id === myId2 ? board.me : null;
-        const people = friends2 ? [{ id: mates.me, me: true }, ...mates.friends] : [...topList.map((e) => ({ id: e?.player?.id, name: e?.player?.name })), ...meEntry && !top.has(myId2) ? [{ id: myId2 }] : []].filter((p) => p.id).map((p) => ({ ...p, me: p.id === myId2 }));
-        const rows = people.map((p) => {
-          const official = top.get(p.id) ?? (p.me ? meEntry : null);
-          return { ...p, name: official?.player?.name ?? p.name, image: official?.player?.image ?? null, official, state: official?.score != null ? "ok" : "loading" };
-        });
-        const note = () => {
-          if (!friends2) return `Le top 100 du jeu${meEntry && !top.has(myId2) ? " et toi" : ""}, rangé par nombre de cartes.`;
-          if (mates.friendsError) return `Liste d'amis indisponible (${mates.friendsError}).`;
-          if (!mates.friends.length) return "Tu n'as pas encore d'amis dans le jeu : ajoute-en depuis leur profil pour te comparer à eux.";
-          const what = { points: "les points du classement du jeu", cards: "rangés par nombre de cartes", series: "rangés par séries complètes (badge récupéré)" }[sortNow()];
-          return `${mates.friends.length} ami${mates.friends.length > 1 ? "s" : ""} · ${what}.`;
-        };
-        let rareSet = null;
-        let exact = false;
-        const calibrate = (by) => {
-          if (!meEntry || !by) return;
-          rareSet = [["UR", "SEC"], ["SSR", "UR", "SEC"], ["SR", "SSR", "UR", "SEC"]].find((set) => set.reduce((n, r) => n + (by[r] ?? 0), 0) === meEntry.rare) ?? null;
-          exact = scoreOf(by) === meEntry.score;
-        };
-        const scoreOf = (by) => Object.entries(by ?? {}).reduce((n, [r, c]) => n + (Number(points[r]) || 0) * c, 0);
-        const apply = (row, p) => {
-          row.best = p.best ?? row.best ?? null;
-          if (!p.private && Number.isFinite(p.albums)) row.albums = p.albums;
-          if (row.official) {
-            if (p.private) row.albumsHidden = true;
-            return;
-          }
-          if (p.private) row.state = "private";
-          else if (!p.byRarity) row.state = "error";
-          else Object.assign(row, { state: "ok", score: scoreOf(p.byRarity), cards: Object.values(p.byRarity).reduce((a, b) => a + b, 0), by: p.byRarity });
-        };
-        let frame = 0;
-        const later = () => frame || (frame = requestAnimationFrame(() => (frame = 0, paint())));
-        const paint = () => {
-          if (!current()) return;
-          const sort = sortNow();
-          status.textContent = note();
-          const pointsOf = (r) => r.state !== "ok" ? null : r.official ? r.official.score : r.score;
-          const cardsOf = (r) => r.state !== "ok" ? null : r.official ? r.official.cards : r.cards;
-          const rareOf = (r) => r.official ? r.official.rare : rareSet && r.by ? rareSet.reduce((n, k) => n + (r.by[k] ?? 0), 0) : null;
-          const value = (r) => sort === "cards" ? cardsOf(r) : sort === "series" ? r.state === "ok" && Number.isFinite(r.albums) ? r.albums : null : pointsOf(r);
-          const has = (r) => value(r) != null;
-          const sorted = [...rows].sort((a, b) => has(b) - has(a) || (value(b) ?? 0) - (value(a) ?? 0) || (pointsOf(b) ?? -1) - (pointsOf(a) ?? -1) || String(a.name).localeCompare(String(b.name)));
-          const leader = Math.max(1, ...sorted.map((r) => value(r) ?? 0));
-          const approx = (r) => sort === "points" && !r.official && !exact;
-          const valueText = (r) => `${approx(r) ? "≈ " : ""}${fmt(value(r))}`;
-          const titleOf = (r) => sort === "series" ? "Séries complètes : les albums dont le badge est récupéré" : r.official ? sort === "cards" ? "Cartes du classement du jeu" : "Score du classement du jeu" : sort === "cards" ? "Cartes différentes, lues dans sa collection" : exact ? "Calculé depuis sa collection, avec le barème du jeu" : "Calculé depuis sa collection, avec le barème du jeu (peut différer un peu du jeu)";
-          const linesOf = (r) => {
-            const rare = rareOf(r);
-            return [
-              r.official?.rank ? `${fmt(r.official.rank)}e du jeu` : "hors du top 100",
-              sort !== "points" ? `${pointsOf(r) != null && !r.official && !exact ? "≈ " : ""}${fmt(pointsOf(r))} pts` : null,
-              sort !== "cards" ? `${fmt(cardsOf(r))} cartes` : null,
-              sort !== "series" && friends2 && Number.isFinite(r.albums) ? `${fmt(r.albums)} séries` : null,
-              sort === "points" && rare != null ? `${fmt(rare)} rares` : null
-            ].filter(Boolean);
-          };
-          const waiting = (r) => r.state === "private" ? "Collection privée" : r.state === "error" ? "Collection indisponible" : r.albumsHidden ? "Collection privée" : "Lecture…";
-          const model = document.querySelector(ROW_MODEL);
-          const podiumModel = document.querySelector(PODIUM_MODEL);
-          list.className = model ? `${model.parentElement.className} aqm-board-game` : "aqm-board";
-          const ranked = sorted.filter(has);
-          const onPodium = model && podiumModel && ranked.length >= 3 ? ranked.slice(0, 3) : [];
-          podium.replaceChildren(
-            ...onPodium.length ? [
-              gamePodium(
-                podiumModel,
-                onPodium.map((r) => ({ id: r.id, me: !!r.me, name: r.name || "Joueur", score: valueText(r), unit: SORT_UNIT[sort][2], title: titleOf(r), card: r.official?.best?.card ?? r.best ?? null }))
-              )
-            ] : []
-          );
-          let place = onPodium.length;
-          const statusModel = document.querySelector(STATUS_MODEL);
-          const mine = ranked.findIndex((r) => r.me);
-          if (statusModel && mine >= 0) {
-            const above = ranked[mine - 1];
-            const gap = above ? value(above) - value(ranked[mine]) + 1 : 0;
-            const card = statusCard(statusModel, {
-              place: mine + 1,
-              badge: friends2 ? "Amis" : "Cartes",
-              among: friends2 ? `sur ${fmt(ranked.length)} avec tes amis` : `sur ${fmt(ranked.length)}, en cartes`,
-              first: friends2 ? { points: "Tu as la plus belle collection de tes amis", cards: "Tu as le plus de cartes de tes amis", series: "Tu as le plus de séries complètes de tes amis" }[sort] : "Tu as le plus de cartes du top 100",
-              target: above ? { name: above.name || "Joueur", place: mine } : null,
-              gap,
-              need: above && sort === "points" ? cardsFor(gap, points) : null,
-              lead: ranked[1] && mine === 0 ? value(ranked[0]) - value(ranked[1]) : 0
-            });
-            card.hidden = box.hidden;
-            box.card?.remove();
-            box.card = card;
-            statusModel.after(card);
-          }
-          if (model) {
-            list.replaceChildren(
-              ...sorted.filter((r) => !onPodium.includes(r)).map((r) => {
-                const ok = has(r);
-                if (ok) place++;
-                return gameRow(model, {
-                  id: r.id,
-                  me: !!r.me,
-                  place: ok ? String(place) : "–",
-                  name: r.name || "Joueur",
-                  width: ok ? Math.min(100, Math.max(1.5, 100 * value(r) / leader)) : 0,
-                  lines: ok ? linesOf(r) : [waiting(r)],
-                  score: ok ? valueText(r) : "–",
-                  unit: SORT_UNIT[sort][2],
-                  title: titleOf(r)
-                });
-              })
-            );
-          } else
-            list.replaceChildren(
-              ...sorted.map((r) => {
-                const ok = has(r);
-                if (ok) place++;
-                return h(
-                  "li",
-                  { class: `aqm-row${r.me ? " is-me" : ""}`, ...r.me ? { "data-aqm-me": "" } : {} },
-                  h("span", { class: `aqm-place aqm-place-${place}` }, ok ? String(place) : "–"),
-                  h("img", { class: "aqm-avatar", src: r.image || avatarUrl(r.id), alt: "", loading: "lazy" }),
-                  h(
-                    "div",
-                    { class: "aqm-friend-main" },
-                    h("a", { class: "aqm-name", href: `/profile/${encodeURIComponent(r.id)}` }, r.name || "Joueur", r.me ? h("span", { class: "aqm-tag" }, "Toi") : null),
-                    h("small", { class: "aqm-muted" }, ok ? linesOf(r).join(" · ") : waiting(r)),
-                    ok ? h("span", { class: "aqm-bar" }, h("span", { style: `width:${(100 * value(r) / leader).toFixed(2)}%` })) : null
-                  ),
-                  h("div", { class: "aqm-friend-score", title: titleOf(r) }, ok ? h("strong", {}, valueText(r)) : null, ok ? h("small", {}, SORT_UNIT[sort][2]) : null)
-                );
-              })
-            );
-          const reading = rows.filter((r) => r.state === "loading" || friends2 && sort === "series" && r.state === "ok" && !Number.isFinite(r.albums) && !r.albumsHidden).length;
-          foot.replaceChildren(
-            h(
-              "span",
-              { class: "aqm-muted" },
-              reading ? `Lecture de ${fmt(reading)} collection${reading > 1 ? "s" : ""}…` : friends2 ? "Les amis hors du top 100 : score calculé depuis leur collection." : "Le jeu ne donne que son top 100 : les joueurs plus loin n’y sont pas."
-            ),
-            h("button", { type: "button", class: "aqm-chip", disabled: reading ? true : null, onclick: () => loadBoard(box, scope, true) }, "Actualiser")
-          );
-        };
-        box.repaint = later;
-        paint();
-        let known = { fresh: 36e5, players: {} };
-        try {
-          known = await ask({ type: "board-known" });
-        } catch {
-        }
-        if (!current()) return;
-        const usable = (p) => p && (p.private || p.byRarity && "best" in p && "albums" in p) && Date.now() - p.at < (known.fresh ?? 36e5);
-        const todo = friends2 ? rows : [...rows].sort((a, b) => (b.official?.cards ?? 0) - (a.official?.cards ?? 0)).slice(0, 3).filter((r) => !r.official?.best?.card);
-        for (const r of todo) {
-          const p = known.players?.[r.id];
-          if (!force && usable(p)) {
-            if (r.me) calibrate(p.byRarity);
-            apply(r, p);
-          }
-        }
-        later();
-        await eachLimited(
-          todo.filter((r) => force || !usable(known.players?.[r.id])),
-          4,
-          async (row) => {
-            if (!current()) return;
-            try {
-              const p = await ask({ type: "player", id: row.id, fresh: force });
-              if (row.me) calibrate(p.byRarity);
-              apply(row, p);
-            } catch {
-              if (row.state === "loading") row.state = "error";
-            }
-            later();
-          }
-        );
-        later();
-      }
       function packArt(b) {
         const art = b.types[0] && TYPE_NAMES[b.types[0]] ? `/game/boosters/${b.types[0]}.webp` : b.minRank >= 4 ? "/game/boosters/legendaire.webp" : null;
         return art ? h("img", { class: "aqm-pack", src: art, alt: "" }) : h("span", { class: "aqm-pack aqm-pack-plain" }, h("span", {}, "Booster"));
@@ -5644,214 +4578,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         }
         load();
       }
-      async function openFavorites() {
-        const body = openOverlay("Séries favorites", "Les personnages de tes séries favorites : ceux que tu as, ceux qui te manquent, et ta liste de recherches du jeu.");
-        body.parentElement.classList.add("aqm-panel-wide");
-        const status = h("p", { class: "aqm-note" }, "Chargement de tes séries…");
-        body.append(status);
-        let report;
-        let show = "missing";
-        const opened = /* @__PURE__ */ new Set();
-        let rarity = "";
-        let fresh = true;
-        const load = async () => {
-          report = await ask({ type: "favorites", fresh });
-          fresh = false;
-          favIds = new Set(report.favorites.map((s) => s.id));
-          seriesBySlug = new Map(report.all.map((s) => [s.slug, s.id]));
-        };
-        try {
-          await load();
-        } catch (e) {
-          status.textContent = e.message;
-          return;
-        }
-        status.remove();
-        const suggestions = h("datalist", { id: "aqm-series-suggest" });
-        const add = h("input", { type: "search", class: "aqm-search", placeholder: "Ajouter une série aux favoris…", "aria-label": "Ajouter une série", list: "aqm-series-suggest", autocomplete: "off" });
-        const found = h("ul", { class: "aqm-fav-found" });
-        const filters = h("div", { class: "aqm-sorts" });
-        const content2 = h("div", { class: "aqm-fav-list" });
-        body.append(h("div", { class: "aqm-pick" }, add), found, filters, content2, suggestions);
-        filters.before(
-          searchPanel(async () => {
-            fresh = true;
-            try {
-              await load();
-            } catch {
-            }
-            render();
-          })
-        );
-        const renderFound = () => {
-          const q = add.value.trim().normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
-          const fold2 = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
-          const hits = q ? report.all.filter((s) => fold2(s.title).includes(q)).slice(0, 8) : [];
-          suggestions.replaceChildren(...hits.map((s) => h("option", { value: s.title })));
-          found.replaceChildren(
-            ...hits.map(
-              (s) => h(
-                "li",
-                {},
-                h("img", { src: `/api/covers/${s.slug}.webp`, alt: "", loading: "lazy" }),
-                h("span", {}, h("strong", {}, s.title), h("small", {}, `${fmt(s.owned)}/${fmt(s.total)}`)),
-                h(
-                  "button",
-                  {
-                    type: "button",
-                    class: `aqm-chip${favIds.has(s.id) ? " is-on" : ""}`,
-                    onclick: async () => {
-                      await toggleFavorite(s.id, !favIds.has(s.id));
-                      await load();
-                      renderFound();
-                      render();
-                    }
-                  },
-                  favIds.has(s.id) ? "★ Favorite" : "☆ Ajouter"
-                )
-              )
-            )
-          );
-        };
-        add.addEventListener("input", renderFound);
-        const chip = (value, label, current, pick) => h("button", { type: "button", class: `aqm-chip${value === current ? " is-on" : ""}`, "aria-pressed": String(value === current), onclick: () => pick(value) }, label);
-        function render() {
-          filters.replaceChildren(
-            h("span", { class: "aqm-filter-name" }, "Afficher"),
-            ...[
-              ["all", "Toutes"],
-              ["missing", "Manquantes"],
-              ["owned", "Possédées"],
-              ["wanted", "Recherchées"]
-            ].map(
-              ([v, l]) => chip(v, l, show, (x) => {
-                show = x;
-                render();
-              })
-            ),
-            h("span", { class: "aqm-filter-name aqm-gap" }, "Rareté"),
-            ...[["", "Toutes"], ...RANKED.map((c) => [c, c])].map(
-              ([v, l]) => chip(v, l, rarity, (x) => {
-                rarity = x;
-                render();
-              })
-            )
-          );
-          if (!report.favorites.length) {
-            content2.replaceChildren(h("p", { class: "aqm-empty" }, "Aucune série favorite pour le moment : ajoute-en avec le champ ci-dessus, ou avec l’étoile ☆ sur les séries de la page Collection."));
-            return;
-          }
-          content2.replaceChildren(
-            ...report.favorites.map((s) => {
-              const keep = (c) => (!rarity || c.rarity === rarity) && (show === "all" || show === "missing" && !c.owned || show === "owned" && c.owned > 0 || show === "wanted" && c.wanted);
-              const cards = s.cards.filter(keep).sort((a, b) => RANKED.indexOf(b.rarity) - RANKED.indexOf(a.rarity) || a.name.localeCompare(b.name));
-              const missing = s.cards.filter((c) => !c.owned);
-              const toWantIds = missing.filter((c) => !c.wanted).map((c) => c.id);
-              const toWant = toWantIds.length;
-              const note = h("p", { class: "aqm-muted", role: "status" });
-              const wantAll = h(
-                "button",
-                {
-                  type: "button",
-                  class: "aqm-sort is-on",
-                  disabled: !toWant,
-                  onclick: async () => {
-                    wantAll.disabled = true;
-                    note.textContent = wantsNote(await enqueueWants(toWantIds), "tu peux fermer cette fenêtre, changer de page ou ouvrir des boosters");
-                  }
-                },
-                h("strong", {}, toWant ? `Rechercher les ${toWant} manquante${toWant > 1 ? "s" : ""}` : "Toutes les manquantes sont recherchées"),
-                h("small", {}, "Le jeu te prévient quand elles sont mises en vente")
-              );
-              return h(
-                "section",
-                { class: "aqm-fav-series" },
-                h(
-                  "div",
-                  { class: "aqm-fav-head" },
-                  h("img", { src: `/api/covers/${s.slug}.webp`, alt: "", loading: "lazy" }),
-                  h(
-                    "div",
-                    { class: "aqm-fav-title" },
-                    h("strong", {}, s.title),
-                    h("small", {}, `${fmt(s.owned)}/${fmt(s.total)} cartes · ${fmt(missing.length)} manquante${missing.length > 1 ? "s" : ""}`),
-                    h("span", { class: "aqm-bar" }, h("span", { style: `width:${s.total ? (100 * s.owned / s.total).toFixed(1) : 0}%` }))
-                  ),
-                  wantAll,
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      class: `aqm-chip aqm-fav-details${opened.has(s.id) ? " is-on" : ""}`,
-                      "aria-expanded": String(opened.has(s.id)),
-                      onclick: () => {
-                        opened.has(s.id) ? opened.delete(s.id) : opened.add(s.id);
-                        render();
-                      }
-                    },
-                    opened.has(s.id) ? "Masquer ▴" : `Détails ▾`
-                  ),
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      class: "aqm-chip is-on aqm-fav-unstar",
-                      title: "Retirer des séries favorites",
-                      onclick: async () => {
-                        await toggleFavorite(s.id, false);
-                        await load();
-                        render();
-                      }
-                    },
-                    "★"
-                  )
-                ),
-                note,
-                !opened.has(s.id) ? null : cards.length ? h(
-                  "ul",
-                  { class: "aqm-fav-cards" },
-                  cards.map((c) => {
-                    const want = h(
-                      "button",
-                      {
-                        type: "button",
-                        class: `aqm-want${c.wanted ? " is-on" : ""}${c.waiting ? " is-wait" : ""}`,
-                        title: c.waiting ? "En attente dans Aquaman (ta liste du jeu est pleine) : ne plus la chercher" : c.wanted ? "Ne plus la chercher" : "Je la cherche : être prévenu quand elle est mise en vente",
-                        onclick: async (e) => {
-                          e.preventDefault();
-                          want.disabled = true;
-                          try {
-                            const r = await wantCard(c.id, !c.wanted);
-                            c.wanted = r.wanted;
-                            c.waiting = false;
-                            want.classList.toggle("is-on", c.wanted);
-                            want.classList.remove("is-wait");
-                            want.title = c.wanted ? "Ne plus la chercher" : "Je la cherche : être prévenu quand elle est mise en vente";
-                          } catch (err) {
-                            want.title = err.message;
-                          } finally {
-                            want.disabled = false;
-                          }
-                        }
-                      },
-                      "🔭"
-                    );
-                    return h(
-                      "li",
-                      { class: `aqm-fav-card${c.owned ? " is-owned" : ""}` },
-                      h("a", { href: `/jeu/carte/${encodeURIComponent(c.id)}` }, h("img", { src: cardImageUrl(c.image), alt: "", loading: "lazy" })),
-                      h("p", { class: "aqm-mini-name" }, rarityCode(c.rarity), " ", c.name),
-                      h("p", { class: "aqm-muted" }, c.owned ? c.owned > 1 ? `×${c.owned}` : "Possédée" : "Manquante"),
-                      c.owned ? null : want
-                    );
-                  })
-                ) : h("p", { class: "aqm-muted" }, "Aucune carte pour ce filtre.")
-              );
-            })
-          );
-        }
-        render();
-      }
       const ICON_TAG = '<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M243.31,136,144,36.69A15.86,15.86,0,0,0,132.69,32H40a8,8,0,0,0-8,8v92.69A15.86,15.86,0,0,0,36.69,144L136,243.31a16,16,0,0,0,22.63,0l84.68-84.68a16,16,0,0,0,0-22.63Zm-96,96L48,132.69V48h84.69L232,147.31ZM96,84A12,12,0,1,1,84,72,12,12,0,0,1,96,84Z"/></svg>';
       const RECAP_KIND_KEY = "aqm-sales-recap-kind";
       const RECAP_KINDS = [
@@ -6017,778 +4743,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         else section.append(h("div", { class: "aqm-root aqm-card-who-row" }, btn));
         btn.dataset.card = id;
       }
-      let listingsFor = null;
-      function markCardListings() {
-        const id = location.pathname.match(/^\/jeu\/carte\/([^/?#]+)/)?.[1];
-        const box = document.querySelector(".aqm-listings");
-        if (!id) return void box?.remove();
-        const cote = [...document.querySelectorAll("p, span, h2, h3, div")].find((el) => !el.closest(".aqm-root") && !el.childElementCount && /^cote$/i.test(el.textContent.trim()));
-        let panel = cote;
-        while (panel?.parentElement && !/mes exemplaires/i.test(panel.parentElement.textContent)) panel = panel.parentElement;
-        if (!panel || panel === cote) return;
-        if (box?.dataset.card === id && box.previousElementSibling === panel) return;
-        if (listingsFor === id && box) return;
-        box?.remove();
-        listingsFor = id;
-        const fresh = h("section", { class: "aqm-root aqm-listings", "data-card": id }, h("p", { class: "aqm-label" }, "En vente au marché"), h("p", { class: "aqm-muted" }, "Lecture des offres…"));
-        panel.after(fresh);
-        showListings(fresh, decodeURIComponent(id), false);
-      }
-      function showListings(fresh, cardId, again) {
-        ask({ type: "card-listings", id: cardId, fresh: again }).then((r) => {
-          if (!fresh.isConnected) return;
-          const rows = r.offers.map(
-            (o) => playerRow(
-              o.serial,
-              o.player,
-              h("span", { class: "aqm-buy-cell" }, perles(o.price), o.id && o.player?.id !== meId ? buyButton(o, fresh, cardId) : null),
-              { maxCopies: r.maxCopies }
-            )
-          );
-          fresh.replaceChildren(
-            h(
-              "div",
-              { class: "aqm-listings-head" },
-              h("p", { class: "aqm-label" }, "En vente au marché"),
-              h("small", { class: "aqm-muted" }, r.count ? `${r.count > 5 ? `5 moins chères sur ${fmt(r.count)}` : `${r.count} offre${r.count > 1 ? "s" : ""}`}, de la moins chère à la plus chère` : "")
-            ),
-            rows.length ? h("ul", { class: "aqm-owners" }, rows) : h("p", { class: "aqm-muted" }, "Personne ne la vend pour le moment."),
-            ...auctionsPart(r.auctions, r.maxCopies)
-          );
-        }).catch((e) => fresh.isConnected && fresh.replaceChildren(h("p", { class: "aqm-label" }, "En vente au marché"), h("p", { class: "aqm-muted" }, e.message)));
-      }
-      function timeLeft(at) {
-        const m = Math.max(1, Math.round((at - Date.now()) / 6e4));
-        if (m < 60) return `${m} min`;
-        if (m < 1440) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
-        return `${Math.floor(m / 1440)} j${Math.floor(m % 1440 / 60) ? ` ${Math.floor(m % 1440 / 60)} h` : ""}`;
-      }
-      function auctionsPart(auctions, maxCopies) {
-        if (!auctions) return [];
-        const rows = auctions.slice(0, 3).map(
-          (a) => playerRow(
-            a.serial,
-            a.player,
-            h(
-              "span",
-              { class: "aqm-buy-cell" },
-              h("span", { class: "aqm-auction-cell" }, perles(a.bid), h("small", { class: "aqm-muted" }, [a.bids != null ? `${a.bids} enchère${a.bids > 1 ? "s" : ""}` : null, a.endsAt ? `fin dans ${timeLeft(a.endsAt)}` : null].filter(Boolean).join(" · "))),
-              // La page de l'enchère dans le jeu (/jeu/encheres/:id), où le joueur enchérit.
-              a.id ? h("a", { class: "aqm-queue-btn is-main aqm-buy", href: `/jeu/encheres/${encodeURIComponent(a.id)}` }, a.player?.id === meId ? "Voir" : "Enchérir") : null
-            ),
-            { maxCopies }
-          )
-        );
-        return [
-          h(
-            "div",
-            { class: "aqm-listings-head aqm-auctions-head" },
-            h("p", { class: "aqm-label" }, "Aux enchères"),
-            h("small", { class: "aqm-muted" }, auctions.length ? `${auctions.length > 3 ? `3 mises les plus faibles sur ${fmt(auctions.length)}` : `${auctions.length} en cours`}, de la plus faible à la plus haute` : "")
-          ),
-          rows.length ? h("ul", { class: "aqm-owners" }, rows) : h("p", { class: "aqm-muted" }, "Aucune enchère en cours.")
-        ];
-      }
-      function myCopiesText() {
-        const label = [...document.querySelectorAll("p, span, h2, h3, div")].find((el) => !el.closest(".aqm-root") && !el.childElementCount && /^mes exemplaires$/i.test(el.textContent.trim()));
-        let box = label;
-        while (box?.parentElement && box.textContent.trim().length <= (label?.textContent.trim().length ?? 0) + 5) box = box.parentElement;
-        return box?.textContent.replace(/\s+/g, " ").trim() ?? "";
-      }
-      function buyButton(offer, box, cardId) {
-        const btn = h("button", { type: "button", class: "aqm-queue-btn is-main aqm-buy" }, "Acheter");
-        btn.addEventListener("click", async () => {
-          if (btn.disabled) return;
-          btn.disabled = true;
-          btn.textContent = "Achat…";
-          try {
-            const bought = await gameWrite(`/market/listings/${encodeURIComponent(offer.id)}/buy`, "POST");
-            btn.textContent = "✅ Achetée";
-            if (offer.card?.name) addBought(offer.card.name, offer.card.rarity);
-            owned = null;
-            send({ type: "collection-stale" });
-            const perles2 = bought?.perles ?? bought?.balance ?? bought?.buyer?.perles;
-            const before = myCopiesText();
-            const refresh = () => window.postMessage({ aquamanCmd: "reload-game", cardId, perles: typeof perles2 === "number" ? perles2 : void 0 }, location.origin);
-            refresh();
-            setTimeout(() => myCopiesText() === before && refresh(), 2e3);
-            setTimeout(() => box.isConnected && showListings(box, cardId, true), 1200);
-          } catch (e) {
-            btn.textContent = "Refusé";
-            btn.title = e.message;
-            box.append(h("p", { class: "aqm-muted aqm-buy-refused" }, `Achat refusé par le jeu : ${e.message}`));
-            setTimeout(() => box.isConnected && showListings(box, cardId, true), 2500);
-          }
-        });
-        return btn;
-      }
-      let favIds = null;
-      let seriesBySlug = null;
-      let seriesTitles = null;
-      async function loadFavIds(fresh = false) {
-        const res = await send({ type: "favorites", fresh });
-        if (!res || res.error) return;
-        favIds = new Set(res.favorites.map((s) => s.id));
-        seriesBySlug = new Map(res.all.map((s) => [s.slug, s.id]));
-        seriesTitles = new Map(res.all.map((s) => [s.id, String(s.title ?? "").trim().toLowerCase()]));
-        document.querySelectorAll(".aqm-star").forEach((star) => paintStar(star));
-        const count = document.querySelector(".aqm-fav-open b");
-        if (count) count.textContent = String(favIds.size);
-      }
-      async function toggleFavorite(id, on2) {
-        const res = await send({ type: "favorite", id, on: on2 });
-        if (res?.favorites) favIds = new Set(res.favorites);
-        document.querySelectorAll(".aqm-star").forEach((star) => paintStar(star));
-        const count = document.querySelector(".aqm-fav-open b");
-        if (count) count.textContent = String(favIds?.size ?? 0);
-      }
-      function paintStar(star) {
-        const on2 = !!favIds?.has(star.dataset.id);
-        setText(star, on2 ? "★" : "☆");
-        star.classList.toggle("is-on", on2);
-        star.title = on2 ? "Retirer des séries favorites" : "Ajouter aux séries favorites";
-        star.setAttribute("aria-pressed", String(on2));
-      }
-      let favLoading = false;
-      function markFavoriteSeries() {
-        if (!location.pathname.startsWith("/jeu/collection")) return;
-        const strip = document.querySelector('[role="radiogroup"][aria-label="Série"], [role="radiogroup"][aria-label="Série"]') ?? seriesStrip();
-        if (!strip || strip.closest(".aqm-root")) return;
-        if (!seriesBySlug && !favLoading) {
-          favLoading = true;
-          loadFavIds().finally(() => {
-            favLoading = false;
-            schedule();
-          });
-        }
-        if (!strip.previousElementSibling?.classList.contains("aqm-fav-bar"))
-          strip.before(
-            h(
-              "div",
-              { class: "aqm-root aqm-fav-bar" },
-              h("button", { type: "button", class: "aqm-chip aqm-fav-open", onclick: openFavorites }, "★ Favoris", h("b", {}, favIds ? String(favIds.size) : "…")),
-              h("button", {
-                type: "button",
-                class: "aqm-chip aqm-sort-progress",
-                "aria-pressed": "false",
-                onclick: () => {
-                  setByProgress(!byProgress);
-                  sortByProgress(strip);
-                  strip.scrollTo?.({ left: 0, behavior: "smooth" });
-                },
-                title: "Les séries où il te manque le moins de cartes en premier"
-              }, "Les plus avancées"),
-              h("button", {
-                type: "button",
-                class: "aqm-chip aqm-sort-progress aqm-small-series",
-                "aria-pressed": "false",
-                onclick: () => {
-                  setSmallOnly(!smallOnly);
-                  sortByProgress(strip);
-                  strip.scrollTo?.({ left: 0, behavior: "smooth" });
-                },
-                title: `Masquer les séries de ${SMALL_SERIES} personnages ou moins`
-              }, `Masquer séries <= ${SMALL_SERIES} persos`),
-              h("button", {
-                type: "button",
-                class: "aqm-chip aqm-sort-progress aqm-claimed-series",
-                "aria-pressed": "false",
-                onclick: () => {
-                  setClaimedHidden(!claimedHidden);
-                  if (claimedHidden) loadClaimed(true);
-                  sortByProgress(strip);
-                  strip.scrollTo?.({ left: 0, behavior: "smooth" });
-                },
-                title: "Masquer les séries dont tu as déjà le badge (album réclamé)"
-              }, "Masquer séries avec badge"),
-              h("button", {
-                type: "button",
-                class: "aqm-chip aqm-sort-progress aqm-locked-cards",
-                "aria-pressed": "false",
-                onclick: () => {
-                  setLockedHidden(!lockedHidden);
-                  if (lockedHidden) loadLocked();
-                  filterLocked(true);
-                  sortByProgress(strip);
-                },
-                title: "Masquer les cartes dont tous tes exemplaires sont verrouillés"
-              }, "Masquer cartes verrouillées")
-            )
-          );
-        if (claimedHidden && Date.now() - claimedAt > 2 * 6e4) loadClaimed();
-        if (lockedHidden && Date.now() - lockedAt > 2 * 6e4) loadLocked();
-        filterLocked();
-        sortByProgress(strip);
-        keepStripPlace(strip);
-        if (!seriesBySlug) return;
-        for (const img of strip.querySelectorAll('img[src*="/api/covers/"]')) {
-          const tile = img.closest('button, a, [role="radio"]') ?? img.parentElement;
-          if (!tile || tile.querySelector(":scope > .aqm-star")) continue;
-          anchorBadges(tile);
-          const slug = decodeURIComponent(img.getAttribute("src").match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? "");
-          const id = seriesBySlug.get(slug);
-          if (!id) continue;
-          const star = h("span", {
-            class: "aqm-root aqm-star",
-            role: "button",
-            tabindex: "0",
-            "data-id": id,
-            onclick: (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              toggleFavorite(id, !favIds?.has(id));
-            },
-            onkeydown: (e) => {
-              if (e.key !== "Enter" && e.key !== " ") return;
-              e.preventDefault();
-              e.stopPropagation();
-              toggleFavorite(id, !favIds?.has(id));
-            }
-          });
-          paintStar(star);
-          tile.append(star);
-        }
-      }
-      const BY_PROGRESS_KEY = "aqm-by-progress";
-      const STRIP_LEFT_KEY = "aqm-strip-left";
-      let byProgress = (() => {
-        try {
-          return sessionStorage.getItem(BY_PROGRESS_KEY) === "1";
-        } catch {
-          return false;
-        }
-      })();
-      const SMALL_SERIES = 5;
-      const SMALL_ONLY_KEY = "aqm-small-series";
-      let smallOnly = (() => {
-        try {
-          return sessionStorage.getItem(SMALL_ONLY_KEY) === "1";
-        } catch {
-          return false;
-        }
-      })();
-      function setSmallOnly(on2) {
-        smallOnly = on2;
-        try {
-          on2 ? sessionStorage.setItem(SMALL_ONLY_KEY, "1") : sessionStorage.removeItem(SMALL_ONLY_KEY);
-        } catch {
-        }
-      }
-      const CLAIMED_KEY = "aqm-hide-claimed";
-      let claimedHidden = (() => {
-        try {
-          return sessionStorage.getItem(CLAIMED_KEY) === "1";
-        } catch {
-          return false;
-        }
-      })();
-      function setClaimedHidden(on2) {
-        claimedHidden = on2;
-        try {
-          on2 ? sessionStorage.setItem(CLAIMED_KEY, "1") : sessionStorage.removeItem(CLAIMED_KEY);
-        } catch {
-        }
-      }
-      let claimedSlugs = null;
-      let claimedAt = 0;
-      async function loadClaimed(fresh = false) {
-        claimedAt = Date.now();
-        const res = await send({ type: "claimed-albums", fresh });
-        if (!res || res.error || !Array.isArray(res.slugs)) return;
-        claimedSlugs = new Set(res.slugs);
-        const strip = seriesStrip();
-        if (strip) sortByProgress(strip);
-      }
-      const LOCKED_KEY = "aqm-hide-locked";
-      let lockedHidden = (() => {
-        try {
-          return sessionStorage.getItem(LOCKED_KEY) === "1";
-        } catch {
-          return false;
-        }
-      })();
-      function setLockedHidden(on2) {
-        lockedHidden = on2;
-        try {
-          on2 ? sessionStorage.setItem(LOCKED_KEY, "1") : sessionStorage.removeItem(LOCKED_KEY);
-        } catch {
-        }
-      }
-      let lockedImages = null;
-      let lockedAt = 0;
-      async function loadLocked() {
-        lockedAt = Date.now();
-        let copies;
-        try {
-          ({ copies } = await gameWrite("/copies", "GET") ?? {});
-        } catch {
-          return;
-        }
-        if (!Array.isArray(copies)) return;
-        const byImage = /* @__PURE__ */ new Map();
-        for (const c of copies) {
-          const key = imageKey2(c?.card?.image);
-          if (!key) continue;
-          byImage.set(key, (byImage.get(key) ?? true) && !!c.protected);
-        }
-        lockedImages = new Set([...byImage].filter(([, all]) => all).map(([key]) => key));
-        filterLocked(true);
-      }
-      let lockedSize = -1;
-      const LAYOUT = '.aqm-root, [role="radiogroup"], [role="tablist"], #album-title, h1, h2';
-      function filterLocked(force = false) {
-        const marked = () => document.querySelectorAll("[data-aqm-locked-card]");
-        const chip = document.querySelector(".aqm-locked-cards");
-        chip?.classList.toggle("is-on", lockedHidden);
-        chip?.setAttribute("aria-pressed", String(lockedHidden));
-        if (!lockedHidden || !lockedImages || !location.pathname.startsWith("/jeu/collection")) {
-          if (lockedSize !== -1) marked().forEach((el) => el.removeAttribute("data-aqm-locked-card"));
-          lockedSize = -1;
-          return;
-        }
-        const page = document.querySelector("main") ?? document.body;
-        const size = page.getElementsByTagName("*").length;
-        if (size === lockedSize && !force) return;
-        lockedSize = size;
-        marked().forEach((el) => el.removeAttribute("data-aqm-locked-card"));
-        const imgs = [...page.querySelectorAll("img")].filter((img) => !img.closest(".aqm-root") && isCardImage(img.currentSrc || img.getAttribute("src")));
-        const held = /* @__PURE__ */ new Map();
-        for (const img of imgs) for (let el = img.parentElement; el && el !== page; el = el.parentElement) held.set(el, (held.get(el) ?? 0) + 1);
-        for (const img of imgs) {
-          if (!lockedImages.has(imageKey2(img.currentSrc || img.getAttribute("src")))) continue;
-          let tile = img;
-          for (let up = tile.parentElement; up && up !== page && held.get(up) === 1 && !up.querySelector(LAYOUT); up = tile.parentElement) tile = up;
-          if (tile !== img) tile.setAttribute("data-aqm-locked-card", "");
-        }
-      }
-      const coverSlug = (el) => {
-        const src = el.querySelector('img[src*="/api/covers/"]')?.getAttribute("src");
-        try {
-          return src ? decodeURIComponent(src.match(/\/api\/covers\/([^/?#]+)\.webp/)?.[1] ?? "") : "";
-        } catch {
-          return "";
-        }
-      };
-      function setByProgress(on2) {
-        byProgress = on2;
-        try {
-          on2 ? sessionStorage.setItem(BY_PROGRESS_KEY, "1") : sessionStorage.removeItem(BY_PROGRESS_KEY);
-        } catch {
-        }
-      }
-      const placedStrips = /* @__PURE__ */ new WeakSet();
-      let placedVisit = -1;
-      function keepStripPlace(strip) {
-        if (placedStrips.has(strip)) return;
-        placedStrips.add(strip);
-        const around = [strip, strip.parentElement, strip.parentElement?.parentElement].find((el) => el && /(auto|scroll)/.test(getComputedStyle(el).overflowX));
-        if (around && around !== strip) strip = around;
-        let left = null;
-        try {
-          const kept = sessionStorage.getItem(STRIP_LEFT_KEY);
-          if (kept != null) left = Number(kept) || 0;
-        } catch {
-        }
-        let placing = placedVisit !== pageVisit;
-        placedVisit = pageVisit;
-        const until = Date.now() + 1500;
-        const stop = () => placing = false;
-        for (const type of ["wheel", "pointerdown", "touchstart", "keydown"]) strip.addEventListener(type, stop, { passive: true, once: true });
-        const place = () => {
-          if (!placing || !strip.isConnected || Date.now() > until) return void (placing = false);
-          if (left != null) {
-            if (Math.abs(strip.scrollLeft - left) > 2) strip.scrollLeft = left;
-          } else if (byProgress) {
-            const picked = strip.querySelector('[aria-checked="true"]');
-            if (picked) {
-              const [p, s] = [picked.getBoundingClientRect(), strip.getBoundingClientRect()];
-              const want = Math.max(0, Math.round(strip.scrollLeft + p.left - s.left - (strip.clientWidth - p.width) / 2));
-              if (Math.abs(strip.scrollLeft - want) > 2) strip.scrollLeft = want;
-            }
-          }
-          requestAnimationFrame(place);
-        };
-        if (placing) requestAnimationFrame(place);
-        let timer = 0;
-        strip.addEventListener(
-          "scroll",
-          () => {
-            if (placing) return;
-            clearTimeout(timer);
-            timer = setTimeout(() => {
-              try {
-                sessionStorage.setItem(STRIP_LEFT_KEY, String(Math.round(strip.scrollLeft)));
-              } catch {
-              }
-            }, 150);
-          },
-          { passive: true }
-        );
-      }
-      const missingSeen = new Map(
-        (() => {
-          try {
-            return Object.entries(JSON.parse(sessionStorage.getItem("aqm-missing-seen") || "{}"));
-          } catch {
-            return [];
-          }
-        })()
-      );
-      let missingSaved = "";
-      function sortByProgress(strip) {
-        const items = [...strip.children].filter((el) => !el.classList.contains("aqm-root"));
-        const count = (el) => {
-          const m = el.textContent.match(/(\d[\d  ]*)\s*\/\s*(\d[\d  ]*)/);
-          if (!m) return null;
-          const [owned2, total] = [m[1], m[2]].map((x) => Number(x.replace(/\D/g, "")));
-          return total ? { missing: Math.max(0, total - owned2), rate: owned2 / total, total } : null;
-        };
-        const rows = items.map((el, i) => ({ el, i, c: count(el), all: /toutes les s[ée]ries/i.test(el.textContent) }));
-        let completed = false;
-        for (const { el, c, all } of rows) {
-          if (!c || all) continue;
-          const key = el.textContent.replace(/\d[\d  ]*\s*\/\s*\d[\d  ]*/, "").trim();
-          if (missingSeen.get(key) > 0 && c.missing === 0) completed = true;
-          missingSeen.set(key, c.missing);
-        }
-        if (completed) setByProgress(true);
-        const seen = JSON.stringify(Object.fromEntries(missingSeen));
-        if (seen !== missingSaved) {
-          missingSaved = seen;
-          try {
-            sessionStorage.setItem("aqm-missing-seen", seen);
-          } catch {
-          }
-        }
-        const chip = strip.previousElementSibling?.querySelector(".aqm-sort-progress:not(.aqm-small-series)");
-        chip?.classList.toggle("is-on", byProgress);
-        chip?.setAttribute("aria-pressed", String(byProgress));
-        const small = strip.previousElementSibling?.querySelector(".aqm-small-series");
-        small?.classList.toggle("is-on", smallOnly);
-        small?.setAttribute("aria-pressed", String(smallOnly));
-        const claimedChip = strip.previousElementSibling?.querySelector(".aqm-claimed-series");
-        claimedChip?.classList.toggle("is-on", claimedHidden);
-        claimedChip?.setAttribute("aria-pressed", String(claimedHidden));
-        for (const { el, c, all } of rows) {
-          const picked = el.getAttribute("aria-checked") === "true" || !!el.querySelector('[aria-checked="true"]');
-          const claimed = claimedHidden && !!claimedSlugs && !all && !picked && claimedSlugs.has(coverSlug(el));
-          const hide = claimed || smallOnly && !all && c && c.total <= SMALL_SERIES && !picked;
-          const display = hide ? "none" : "";
-          if (el.style.display !== display) el.style.display = display;
-        }
-        const ranked = rows.sort(
-          (a, b) => b.all - a.all || !a.c - !b.c || (a.c?.missing === 0) - (b.c?.missing === 0) || (a.c?.missing ?? 0) - (b.c?.missing ?? 0) || (b.c?.rate ?? 0) - (a.c?.rate ?? 0) || a.i - b.i
-        );
-        ranked.forEach(({ el }, n) => {
-          const order = byProgress ? String(n) : "";
-          if (el.style.order !== order) el.style.order = order;
-        });
-        if (completed) strip.scrollTo?.({ left: 0, behavior: "smooth" });
-      }
-      const MISSING_FRESH = 2 * 6e4;
-      function forgetMissing() {
-        if (missingCounts) missingCounts.at = 0;
-        if (missingExtra) missingExtra.at = 0;
-      }
-      const VIEW_TABS = /^(mes cartes|mes doublons|album complet)$/i;
-      const VIEW_TAB_TAGS = 'button, a, [role="radio"], [role="tab"]';
-      const tabText = (el) => el.textContent.replace(/\s+/g, " ").trim();
-      const viewTabs = () => [...document.querySelectorAll(VIEW_TAB_TAGS)].filter((b) => !b.closest(".aqm-root") && !b.classList.contains("aqm-missing-tab") && VIEW_TABS.test(tabText(b)) && !b.parentElement?.closest(VIEW_TAB_TAGS));
-      function pickedTab(tabs) {
-        const marked = tabs.find((b) => ["aria-checked", "aria-selected", "aria-pressed"].some((a) => b.getAttribute(a) === "true") || b.hasAttribute("aria-current") || b.getAttribute("data-state") === "active");
-        if (marked) return marked;
-        const looks = tabs.map((b) => b.className);
-        return tabs.length > 2 ? tabs.find((b) => looks.filter((c) => c === b.className).length === 1) : null;
-      }
-      const MISSING_KEY = "aqm-missing-only";
-      let missingOn = (() => {
-        try {
-          return sessionStorage.getItem(MISSING_KEY) === "1";
-        } catch {
-          return false;
-        }
-      })();
-      let missingAt = 0;
-      let missingVisit = -1;
-      const missingOnly = () => missingOn;
-      const setMissingOnly = (on2) => {
-        missingOn = on2;
-        missingAt = on2 ? Date.now() : 0;
-        filteredSize = -1;
-        try {
-          on2 ? sessionStorage.setItem(MISSING_KEY, "1") : sessionStorage.removeItem(MISSING_KEY);
-        } catch {
-        }
-      };
-      let clickingFull = false;
-      onStart(() => {
-        addEventListener(
-          "click",
-          (e) => {
-            const b = e.target.closest?.(VIEW_TAB_TAGS);
-            if (!b || clickingFull || b.closest(".aqm-root") || b.classList.contains("aqm-missing-tab") || !VIEW_TABS.test(tabText(b))) return;
-            setMissingOnly(false);
-            setTimeout(markMissingTab, 50);
-          },
-          true
-        );
-      });
-      function markMissingTab() {
-        if (!location.pathname.startsWith("/jeu/collection")) return;
-        const tabs = viewTabs();
-        const full = tabs.find((b) => /^album complet$/i.test(tabText(b)));
-        if (!full) return;
-        const selected = pickedTab(tabs) ?? full;
-        if (missingOn && missingVisit !== pageVisit) {
-          missingVisit = pageVisit;
-          missingAt = Date.now();
-          if (selected !== full) {
-            clickingFull = true;
-            full.click();
-            clickingFull = false;
-          }
-        }
-        if (missingOn && selected !== full && Date.now() - missingAt > 2e3) setMissingOnly(false);
-        const on2 = missingOnly();
-        const plain = tabs.find((b) => b !== selected) ?? full;
-        const group = full.parentElement;
-        const ours = [...group.children].filter((el) => el.__aqmMissingTab || el.classList.contains("aqm-missing-tab"));
-        let tab = ours[0] ?? null;
-        for (const el of [...ours.slice(1), ...group.querySelectorAll(":scope > button:not([role]):not([class])")]) if (el !== tab && !el.textContent.trim()) el.remove();
-        if (!tab) {
-          tab = h("button", {
-            type: "button",
-            class: `${plain.className} aqm-missing-tab`,
-            onclick: () => {
-              const now = !missingOnly();
-              setMissingOnly(now);
-              if (now && selected !== full) {
-                clickingFull = true;
-                full.click();
-                clickingFull = false;
-              }
-              markMissingTab();
-            }
-          }, "Manquantes");
-          tab.__aqmMissingTab = true;
-          full.after(tab);
-        }
-        fitTabs(full.parentElement, tab, full);
-        const slider = [...full.parentElement.children].find((el) => !tabs.includes(el) && el !== tab && !el.closest(".aqm-root") && getComputedStyle(el).position === "absolute");
-        const pill = [...full.querySelectorAll("*")].find((el) => getComputedStyle(el).position === "absolute") ?? (selected === full ? slider : null);
-        if (slider && slider !== pill) slider.toggleAttribute("data-aqm-pill-off", on2);
-        const source = pill ?? (selected === full && !on2 ? full : null);
-        if (source && !pillLook) {
-          const cs = getComputedStyle(source);
-          if (cs.backgroundColor !== "rgba(0, 0, 0, 0)" || cs.backgroundImage !== "none")
-            pillLook = { background: cs.backgroundImage !== "none" ? cs.backgroundImage : cs.backgroundColor, radius: cs.borderRadius, shadow: cs.boxShadow };
-        }
-        if (!plainColor) plainColor = getComputedStyle(plain).color;
-        if (!pickedColor && selected === full && !on2) pickedColor = getComputedStyle(full).color;
-        pill?.toggleAttribute("data-aqm-pill-off", on2);
-        full.toggleAttribute("data-aqm-unpicked", on2);
-        full.style.setProperty("--aqm-plain-color", plainColor);
-        const look = `${plain.className} aqm-missing-tab${on2 ? " is-on" : ""}`;
-        if (tab.className !== look) tab.className = look;
-        tab.style.setProperty("--aqm-pill-bg", pillLook?.background || "rgba(255, 255, 255, 0.12)");
-        tab.style.setProperty("--aqm-pill-radius", pillLook?.radius || "999px");
-        tab.style.setProperty("--aqm-pill-shadow", pillLook?.shadow && pillLook.shadow !== "none" ? pillLook.shadow : "none");
-        tab.style.setProperty("--aqm-picked-color", pickedColor || "#fff");
-        if (tab.textContent !== "Manquantes") tab.textContent = "Manquantes";
-        tab.setAttribute("aria-pressed", String(on2));
-        filterMissing(on2);
-        showMissingSummary(full.parentElement, on2);
-        showMissingExtras(on2);
-      }
-      let cardsShown = null;
-      let missingExtra = null;
-      let extraAsking = null;
-      let extraAskedAt = 0;
-      onStart(
-        () => addEventListener("message", (e) => {
-          if (e.source !== window || e.origin !== location.origin) return;
-          if (e.data?.aquaman === "cards-shown" && Array.isArray(e.data.ids) && sameQuery(String(e.data.query ?? ""), pageFilter())) {
-            cardsShown = { query: String(e.data.query ?? ""), ids: new Set(e.data.ids), names: new Map((e.data.names ?? []).filter((x) => Array.isArray(x)).map(([id, name, series]) => [id, [String(name ?? ""), String(series ?? "")]])) };
-            markMissingTab();
-          }
-        })
-      );
-      function pageFilter() {
-        const p = new URLSearchParams(location.search);
-        return { album: p.get("vue") === "album", manga: p.get("serie") || "", rarity: p.get("rarete") || "", kind: p.get("type") || "", q: (p.get("q") || "").trim().slice(0, 80) };
-      }
-      const sameQuery = (query, f) => {
-        const p = new URLSearchParams(query);
-        return !p.has("owned") && (p.get("manga") || "") === f.manga && (p.get("rarity") || "") === f.rarity && (p.get("type") || "") === f.kind && (p.get("q") || "") === f.q;
-      };
-      function askMissingExtra(f, key) {
-        if (extraAsking || Date.now() - extraAskedAt < 1e4) return;
-        extraAskedAt = Date.now();
-        extraAsking = (async () => {
-          for (let tries = 0; tries < 10 && !stopped; tries++) {
-            const r = await ask({ type: "missing-cards", rarity: f.rarity, kind: f.kind, q: f.q, manga: f.manga });
-            missingExtra = { key, at: Date.now(), cards: r.cards ?? [], pending: r.pending ?? 0 };
-            markMissingTab();
-            if (!(r.pending > 0) || key !== JSON.stringify(pageFilter())) break;
-          }
-        })().catch(() => {
-        }).finally(() => extraAsking = null);
-      }
-      function showMissingExtras(on2) {
-        const page = document.querySelector("main") ?? document.body;
-        const old = page.querySelector(".aqm-missing-extra");
-        const f = pageFilter();
-        const key = JSON.stringify(f);
-        const clear = () => old?.remove();
-        if (!on2 || !f.album) return clear();
-        if (!missingExtra || missingExtra.key !== key || Date.now() - missingExtra.at > MISSING_FRESH) askMissingExtra(f, key);
-        if (!cardsShown || !sameQuery(cardsShown.query, f) || missingExtra?.key !== key) return clear();
-        const links = [...page.querySelectorAll('a[href^="/jeu/carte/"]')].filter((a) => !a.closest(".aqm-root"));
-        const lists = [...new Set(links.map((a) => a.closest("ul")).filter(Boolean))];
-        if (!lists.length || links.length < cardsShown.ids.size) return clear();
-        const extras = missingExtra.cards.filter((c) => !cardsShown.ids.has(c.id));
-        if (!extras.length) return clear();
-        const sig = `${key}|${extras.map((c) => c.id).join(",")}`;
-        const last = lists[lists.length - 1];
-        if (old?.dataset.sig === sig && old.previousElementSibling === last) return;
-        const tileOf = (a) => a.closest("li");
-        const models = {};
-        for (const a of links) {
-          const label = a.getAttribute("aria-label") ?? "";
-          const code = Object.keys(RARITY_NAMES).find((c) => label.includes(`, ${RARITY_NAMES[c]}`));
-          const id = a.getAttribute("href").split("/").pop();
-          if (code && !models[code] && cardsShown.names.has(id) && tileOf(a)) models[code] = { li: tileOf(a), id };
-        }
-        const box = h(
-          "div",
-          { class: "aqm-root aqm-missing-extra", "data-sig": sig },
-          h("p", { class: "aqm-missing-extra-note" }, `${fmt(extras.length)} carte${extras.length > 1 ? "s" : ""} manquante${extras.length > 1 ? "s" : ""} que le jeu n’affiche pas ici, ajoutée${extras.length > 1 ? "s" : ""} par Aquaman`),
-          h("ul", { class: last.className }, extras.map((c) => missingTile(c, models[c.rarity] ?? Object.values(models)[0], cardsShown.names)))
-        );
-        old?.remove();
-        last.after(box);
-      }
-      function missingTile(c, model, names) {
-        const href = `/jeu/carte/${encodeURIComponent(c.id)}`;
-        const label = `${c.name}, ${RARITY_NAMES[c.rarity] ?? c.rarity}, pas encore obtenue`;
-        if (!model) return h("li", {}, h("a", { href, "aria-label": label, class: "aqm-missing-plain" }, h("img", { src: cardImageUrl(c.image), alt: c.name, loading: "lazy" }), h("span", {}, c.name)), h("p", { class: "aqm-muted" }, "Manquante"));
-        const li = bareCopy(model.li);
-        li.querySelectorAll(".aqm-sale").forEach((el) => el.remove());
-        const a = li.querySelector("a");
-        if (a) {
-          a.setAttribute("href", href);
-          a.setAttribute("aria-label", label);
-        }
-        const img = li.querySelector("img");
-        if (img) {
-          img.removeAttribute("srcset");
-          img.removeAttribute("sizes");
-          img.src = cardImageUrl(c.image);
-          img.alt = c.name;
-          img.loading = "lazy";
-        }
-        const [name, series] = names.get(model.id) ?? [];
-        const walker = document.createTreeWalker(li, NodeFilter.SHOW_TEXT);
-        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-          const t = n.textContent.trim();
-          if (name && t === name) n.textContent = c.name;
-          else if (series && t === series) n.textContent = c.series;
-        }
-        const tag = [...li.querySelectorAll("p")].find((p) => /^(manquante|[×x]\s*\d+)/i.test(p.textContent.trim()));
-        if (tag) tag.replaceChildren(h("span", { class: "text-zinc-600" }, "Manquante"), ...c.maxCopies ? [h("span", { class: "text-zinc-500" }, `${c.minted ?? 0}/${c.maxCopies}`)] : []);
-        return li;
-      }
-      let missingCounts = null;
-      let missingAsking = null;
-      let missingAskedAt = 0;
-      function askMissingCounts() {
-        if (missingAsking || Date.now() - missingAskedAt < 15e3) return;
-        missingAskedAt = Date.now();
-        missingAsking = (async () => {
-          for (let tries = 0; tries < 15 && !stopped; tries++) {
-            const counts = await ask({ type: "rarity-counts" });
-            missingCounts = { at: Date.now(), byRarity: counts.byRarity, pending: counts.pending, counted: counts.counted, series: counts.series };
-            markMissingTab();
-            if (!(counts.pending > 0) || counts.failed) break;
-          }
-        })().catch(() => {
-        }).finally(() => missingAsking = null);
-      }
-      onStart(
-        () => addEventListener("message", (e) => {
-          if (e.source === window && e.data?.aquaman === "collection-stale") forgetMissing();
-        })
-      );
-      function showMissingSummary(row, on2) {
-        const bar = row?.parentElement;
-        let box = bar?.parentElement?.querySelector(":scope > .aqm-missing-summary");
-        if (!on2) {
-          if (box) box.hidden = true;
-          return;
-        }
-        if (!bar?.parentElement) return;
-        if (!box) {
-          box = h("div", { class: "aqm-root aqm-missing-summary", role: "status" });
-          bar.after(box);
-        }
-        box.hidden = false;
-        if (!missingCounts || Date.now() - missingCounts.at > MISSING_FRESH) askMissingCounts();
-        const sig = JSON.stringify(missingCounts);
-        if (box.dataset.sig === sig) return;
-        box.dataset.sig = sig;
-        if (!missingCounts) return void box.replaceChildren("Comptage des cartes manquantes…");
-        const rows = Object.entries(missingCounts.byRarity ?? {}).map(([code, r]) => [code, Math.max(0, (r.total || 0) - (r.owned || 0))]).filter(([, n]) => n > 0);
-        const sum = rows.reduce((n, [, m]) => n + m, 0);
-        box.replaceChildren(
-          ...[
-            h("span", { class: "aqm-label" }, "Manquantes"),
-            ...rows.map(([code, n]) => h("span", { class: "aqm-missing-count" }, h("strong", {}, fmt(n)), rarityCode(code))),
-            h("span", { class: "aqm-missing-count is-total" }, h("strong", {}, fmt(sum)), "au total"),
-            missingCounts.pending > 0 ? h("small", { class: "aqm-muted" }, `(comptage : ${fmt(missingCounts.counted)} séries sur ${fmt(missingCounts.series)}…)`) : null
-          ].filter(Boolean)
-          // (replaceChildren écrirait « null »)
-        );
-      }
-      function fitTabs(group, tab, full) {
-        if (!group) return;
-        const cs = getComputedStyle(group);
-        if (cs.display.includes("grid")) {
-          const count = [...group.children].filter((el) => el === tab || el.getAttribute("role") === "radio" || el.matches("button, a")).length;
-          const cols = `repeat(${count}, minmax(0, auto))`;
-          if (group.style.gridTemplateColumns !== cols) group.style.gridTemplateColumns = cols;
-        } else if (Math.abs(tab.getBoundingClientRect().top - full.getBoundingClientRect().top) > 4) {
-          group.style.flexWrap = "nowrap";
-        }
-      }
-      let pillLook = null;
-      let plainColor = "";
-      let pickedColor = "";
-      let filteredSize = -1;
-      function filterMissing(on2) {
-        if (!on2) {
-          if (filteredSize !== -1 || document.querySelector("[data-aqm-owned-card]")) document.querySelectorAll("[data-aqm-owned-card]").forEach((el) => el.removeAttribute("data-aqm-owned-card"));
-          filteredSize = -1;
-          return;
-        }
-        const size = (document.querySelector("main") ?? document.body).getElementsByTagName("*").length;
-        if (size === filteredSize) return;
-        filteredSize = size;
-        const LABEL = /^(manquante|[×x]\s*\d+)$/i;
-        const says = (el) => LABEL.test(el.textContent.replace(/\s+/g, " ").trim());
-        const page = document.querySelector("main") ?? document.body;
-        const labels = [...page.querySelectorAll("*")].filter((el) => el.childElementCount < 4 && !el.closest(".aqm-root") && says(el) && ![...el.children].some(says));
-        const held = /* @__PURE__ */ new Map();
-        for (const label of labels) for (let el = label; el; el = el.parentElement) held.set(el, (held.get(el) ?? 0) + 1);
-        document.querySelectorAll("[data-aqm-owned-card]").forEach((el) => el.removeAttribute("data-aqm-owned-card"));
-        for (const label of labels) {
-          let tile = label;
-          for (let up = tile.parentElement; up && up !== page && held.get(up) === 1; up = tile.parentElement) {
-            if (labels.length === 1 && tile.querySelector("img") && up.childElementCount > 1) break;
-            tile = up;
-          }
-          tile.toggleAttribute("data-aqm-owned-card", tile !== label && !!tile.querySelector("img") && !/^manquante$/i.test(label.textContent.trim()));
-        }
-      }
       const saleOf = /* @__PURE__ */ new Map();
       let saleWatch = null;
       function markMissingSales() {
@@ -6875,37 +4829,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         }
         if (!box.isConnected) return;
         const note = h("span", { class: "aqm-album-note", role: "status" });
-        const fav = h("button", { type: "button", class: "aqm-album-btn" });
-        const paintFav = () => {
-          fav.classList.toggle("is-on", st.favorite);
-          fav.textContent = st.favorite ? "★ Dans tes favoris" : "☆ Ajouter aux favoris";
-          fav.title = st.favorite ? "Retirer des séries favorites" : "Ajouter aux séries favorites (Plus → Séries favorites)";
-        };
-        fav.addEventListener("click", async () => {
-          fav.disabled = true;
-          await toggleFavorite(id, !st.favorite);
-          st.favorite = !st.favorite;
-          paintFav();
-          fav.disabled = false;
-        });
-        paintFav();
-        const want = h("button", { type: "button", class: "aqm-album-btn is-main" });
-        const paintWant = () => {
-          want.hidden = !st.missing;
-          want.disabled = !st.toWant;
-          want.textContent = st.toWant > 1 ? `🔭 Rechercher les ${st.toWant} manquantes` : st.toWant ? "🔭 Rechercher la manquante" : "🔭 Toutes les manquantes sont recherchées";
-          want.title = "Les mettre dans ta liste de recherches : le jeu te prévient quand elles sont mises en vente";
-        };
-        want.addEventListener("click", async () => {
-          want.disabled = true;
-          const r = await enqueueWants(st.toWantIds);
-          st.toWantIds = [];
-          st.toWant = 0;
-          paintWant();
-          want.textContent = r.sent == null ? "🔭 En attente dans Aquaman" : "🔭 Recherche en cours…";
-          note.textContent = wantsNote(r, "tu peux changer de page ou ouvrir des boosters");
-        });
-        paintWant();
         const guard = h("button", { type: "button", class: "aqm-album-btn aqm-guard" });
         const paintGuard = () => {
           guard.classList.toggle("is-on", !!st.guarded);
@@ -6933,12 +4856,12 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           paintGuard();
         });
         paintGuard();
-        box.replaceChildren(fav, want, guard, note);
+        box.replaceChildren(guard, note);
       }
       const guardNote = (r) => [
         r.locked ? `🔒 ${fmt(r.locked)} carte${r.locked > 1 ? "s" : ""} verrouillée${r.locked > 1 ? "s" : ""}` : "Aucune carte à verrouiller pour le moment",
         r.already ? `${fmt(r.already)} déjà verrouillée${r.already > 1 ? "s" : ""}` : null,
-        r.onSale ? `${fmt(r.onSale)} en vente (verrouillée${r.onSale > 1 ? "s" : ""} si elle${r.onSale > 1 ? "s" : ""} revien${r.onSale > 1 ? "nent" : "t"})` : null,
+        r.onSale ? `${fmt(r.onSale)} en vente (verrouillée${r.onSale > 1 ? "s" : ""} si elle${r.onSale > 1 ? "s" : ""} revient)` : null,
         r.failed ? `${fmt(r.failed)} refusée${r.failed > 1 ? "s" : ""} par le jeu${r.error ? ` (« ${r.error} »)` : ""}` : null
       ].filter(Boolean).join(" · ") + ". Les cartes qui descendront à un seul exemplaire seront verrouillées aussi.";
       let locking = Promise.resolve();
@@ -6956,24 +4879,23 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           }
           for (const list of byCard.values()) {
             if (list.length !== 1) continue;
-            const [c] = list;
-            if (c.protected) {
+            const [copy] = list;
+            if (copy.protected) {
               r.already++;
               continue;
             }
-            if (c.locked) {
+            if (copy.locked) {
               r.onSale++;
               continue;
             }
-            const { copyId } = c;
-            if (typeof copyId !== "string" || !copyId) {
+            if (typeof copy.copyId !== "string" || !copy.copyId) {
               r.failed++;
               r.error ??= "exemplaire sans identifiant";
               continue;
             }
             for (let tries = 0; ; tries++) {
               try {
-                await gameWrite(`/copies/${encodeURIComponent(copyId)}/protect`, "PUT");
+                await gameWrite(`/copies/${encodeURIComponent(copy.copyId)}/protect`, "PUT");
                 r.locked++;
                 break;
               } catch (e) {
@@ -7017,257 +4939,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
       }
       function watchGuards() {
         if (Date.now() - guardAt >= 10 * 6e4) guardSoon(1e3);
-      }
-      const statsTitle = () => [...document.querySelectorAll("main h1, h1")].find((el) => !el.closest(".aqm-root, .aqm-overlay") && /^\s*ta\s+collection/i.test(el.textContent));
-      const vitrineButton = () => [...document.querySelectorAll("main button, main a")].find((b) => !b.closest(".aqm-root, .aqm-overlay, .aqm-stats-open") && /^\s*ma vitrine\s*$/i.test(b.textContent));
-      function markCollectionStats() {
-        if (!location.pathname.startsWith("/jeu/collection")) return;
-        const shown = document.querySelector(".aqm-stats-open");
-        if (shown?.isConnected && !shown.classList.contains("is-early")) return;
-        const title = statsTitle();
-        const vitrine = vitrineButton();
-        if (!title || !vitrine) return;
-        const btn = shown?.isConnected ? shown : statsButton(vitrine);
-        stopEarlyStats();
-        btn.classList.remove("is-early");
-        btn.style.removeProperty("--aqm-x");
-        btn.style.removeProperty("--aqm-y");
-        title.setAttribute("data-aqm-stats-title", "");
-        title.append(btn);
-        placeStatsButton();
-        watchStatsPlace(title);
-      }
-      let statsWatch = null;
-      function watchStatsPlace(title) {
-        statsWatch?.disconnect();
-        statsWatch = new ResizeObserver(() => placeStatsButton());
-        statsWatch.observe(title);
-        const row = vitrineButton()?.parentElement;
-        if (row) statsWatch.observe(row);
-      }
-      function statsButton(vitrine) {
-        const gameIcon = vitrine.querySelector("svg");
-        const icon = h("span", { html: ICON_CHART }).firstElementChild;
-        icon.setAttribute("class", gameIcon?.getAttribute("class") || "aqm-stats-ico");
-        const btn = h(
-          "button",
-          {
-            type: "button",
-            class: `${vitrine.className} aqm-stats-open`,
-            title: "Ta progression : pourcentage de la collection, cartes par rareté, séries complètes et cartes gagnées chaque jour",
-            onclick: openCollectionStats
-          },
-          icon,
-          "Ma progression"
-        );
-        const cs = getComputedStyle(vitrine);
-        for (const p of ["font-family", "font-size", "font-weight", "font-style", "letter-spacing", "line-height", "text-transform", "color"])
-          btn.style.setProperty(p, cs.getPropertyValue(p));
-        btn.style.setProperty("-webkit-text-fill-color", cs.getPropertyValue("color"));
-        return btn;
-      }
-      let earlyTimer = 0;
-      let earlyWatch = null;
-      function stopEarlyStats() {
-        clearInterval(earlyTimer);
-        earlyTimer = 0;
-        earlyWatch?.disconnect();
-        earlyWatch = null;
-      }
-      function earlyStatsButton() {
-        if (!location.pathname.startsWith("/jeu/collection") || !on("collectionStats")) return;
-        const since = Date.now();
-        const look = () => {
-          if (stopped || document.querySelector(".aqm-stats-open")) return;
-          const title = statsTitle();
-          const vitrine = vitrineButton();
-          if (!title || !vitrine || !document.body) return void (Date.now() - since < 15e3 && setTimeout(look, 80));
-          const btn = statsButton(vitrine);
-          btn.classList.add("aqm-root", "is-early");
-          document.body.append(btn);
-          const follow = () => btn.isConnected && btn.classList.contains("is-early") ? placeEarly(btn, title) : stopEarlyStats();
-          follow();
-          earlyWatch = new ResizeObserver(follow);
-          earlyWatch.observe(title);
-          earlyTimer = setInterval(follow, 250);
-        };
-        look();
-      }
-      function placeEarly(btn, title) {
-        if (!title.isConnected) return void btn.remove();
-        const t = title.getBoundingClientRect();
-        const set = (x, y, below) => {
-          btn.style.setProperty("--aqm-x", `${Math.round(x + scrollX)}px`);
-          btn.style.setProperty("--aqm-y", `${Math.round(y + scrollY)}px`);
-          btn.classList.toggle("is-below", below);
-        };
-        set(t.right + 20, t.top + t.height / 2, false);
-        const b = btn.getBoundingClientRect();
-        const row = vitrineButton()?.parentElement?.getBoundingClientRect();
-        const blocked = row && b.right + 8 > row.left && b.left < row.right && b.top < row.bottom && b.bottom > row.top;
-        if (blocked || b.right > document.documentElement.clientWidth - 8) {
-          stopEarlyStats();
-          btn.remove();
-        }
-      }
-      function placeStatsButton() {
-        const btn = document.querySelector(".aqm-stats-open");
-        if (!btn?.isConnected || btn.classList.contains("is-early")) return;
-        const title = document.querySelector("[data-aqm-stats-title]");
-        const row = vitrineButton()?.parentElement;
-        if (!title) return;
-        const t = title.getBoundingClientRect();
-        const w = btn.offsetWidth;
-        const hgt = btn.offsetHeight;
-        const left = t.right + 20;
-        const top = t.top + t.height / 2 - hgt / 2;
-        const r = row?.getBoundingClientRect();
-        const blocked = r && left + w + 8 > r.left && left < r.right && top < r.bottom && top + hgt > r.top;
-        const fits = !blocked && left + w <= document.documentElement.clientWidth - 8;
-        if (fits || !row) {
-          if (btn.parentElement !== title) title.append(btn);
-          btn.classList.remove("is-in-row");
-          btn.classList.toggle("is-below", !fits);
-        } else {
-          if (btn.parentElement !== row) row.append(btn);
-          btn.classList.remove("is-below");
-          btn.classList.add("is-in-row");
-        }
-      }
-      let statsResize = 0;
-      onStart(() => {
-        addEventListener("resize", () => {
-          clearTimeout(statsResize);
-          statsResize = setTimeout(placeStatsButton, 150);
-        });
-      });
-      let snapAt = 0;
-      let snapTimer = 0;
-      function snapCollection(soon = false) {
-        if (soon) {
-          clearTimeout(snapTimer);
-          snapTimer = setTimeout(() => {
-            if (stopped || !on("collectionStats")) return;
-            snapAt = Date.now();
-            send({ type: "collection-snapshot" });
-          }, Math.max(1e4, snapAt + 5 * 6e4 - Date.now()));
-          return;
-        }
-        if (Date.now() - snapAt < 30 * 6e4) return;
-        snapAt = Date.now();
-        send({ type: "collection-snapshot" });
-      }
-      const DAY_MS = 864e5;
-      const dayOf = (t) => new Date(t).toLocaleDateString("sv-SE");
-      const dayLabel = (key, long = false) => (/* @__PURE__ */ new Date(`${key}T12:00:00`)).toLocaleDateString("fr-FR", long ? { weekday: "long", day: "numeric", month: "long" } : { day: "numeric", month: "short" });
-      const signed = (n) => n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : "0";
-      async function openCollectionStats() {
-        const body = openOverlay("Ma progression", "Ta collection sur le total du jeu, carte par rareté, et les cartes que tu gagnes chaque jour.");
-        body.parentElement.classList.add("aqm-panel-wide");
-        const view = h("div", { class: "aqm-progress" }, h("p", { class: "aqm-note" }, "Lecture de ta collection…"));
-        body.append(view);
-        let s;
-        try {
-          s = await ask({ type: "collection-stats", fresh: true });
-        } catch (e) {
-          if (view.isConnected) view.replaceChildren(h("p", { class: "aqm-note" }, e.message));
-          return;
-        }
-        if (!view.isConnected) return;
-        snapAt = Date.now();
-        const share = s.total ? s.owned / s.total : 0;
-        const bar = (part, cls = "") => h("span", { class: `aqm-bar${cls}` }, h("span", { style: `width:${(100 * Math.min(1, Math.max(0, part || 0))).toFixed(2)}%` }));
-        const byDay = new Map(s.history.map((d) => [d.day, d]));
-        const todayGain = byDay.get(s.today)?.gain ?? 0;
-        const tile = (label, value, sub) => h("div", { class: "aqm-progress-tile" }, h("p", { class: "aqm-label" }, label), h("strong", {}, value), sub ? h("small", {}, sub) : null);
-        const hero = h(
-          "div",
-          { class: "aqm-progress-hero" },
-          h("div", {}, h("strong", { class: "aqm-progress-pct" }, pct(share)), h("p", { class: "aqm-muted" }, `${fmt(s.owned)} cartes uniques sur ${fmt(s.total)}`)),
-          bar(share, " aqm-bar-big")
-        );
-        const tiles = h(
-          "div",
-          { class: "aqm-progress-tiles" },
-          tile("Cartes manquantes", fmt(s.missing), s.total ? `${pct(s.missing / s.total)} du jeu` : null),
-          tile("Séries complètes", fmt(s.complete), s.series ? `sur ${fmt(s.series)} séries · ${fmt(s.albums)} album${s.albums > 1 ? "s" : ""} réclamé${s.albums > 1 ? "s" : ""}` : `${fmt(s.albums)} album${s.albums > 1 ? "s" : ""} réclamé${s.albums > 1 ? "s" : ""}`),
-          tile("Aujourd’hui", signed(todayGain), todayGain === 1 || todayGain === -1 ? "carte unique" : "cartes uniques")
-        );
-        const rarityList = h("ul", { class: "aqm-progress-rarities" });
-        const rarityNote = h("p", { class: "aqm-note" });
-        const paintRarities = (counts) => {
-          const rows = counts ? Object.entries(counts.byRarity).filter(([, r]) => r.total || r.owned) : [];
-          const counting = !counts || counts.pending > 0;
-          rarityList.replaceChildren(
-            ...rows.map(
-              ([code, r]) => h(
-                "li",
-                { class: "aqm-progress-rarity" },
-                h("span", { class: "aqm-progress-rname" }, rarityCode(code), h("small", {}, RARITY_NAMES[code] ?? code)),
-                h(
-                  "div",
-                  { class: "aqm-progress-rbar" },
-                  h("p", {}, h("strong", {}, fmt(r.owned)), r.total ? h("small", {}, ` / ${fmt(r.total)} · ${pct(r.owned / r.total)}`) : null),
-                  bar(r.total ? r.owned / r.total : 0, ` aqm-bar-${code}`)
-                ),
-                h("span", { class: "aqm-progress-copies", title: "Exemplaires de cette rareté, un par carte (les doublons ne comptent pas)" }, `${fmt(r.copies)} ex.`)
-              )
-            )
-          );
-          rarityNote.textContent = !counts ? "Comptage des cartes par rareté…" : counting ? `Comptage des cartes par rareté : ${fmt(counts.counted)} séries sur ${fmt(counts.series)}… (la première fois seulement ; ensuite, seules les séries qui ont changé sont relues)` : "";
-          rarityNote.hidden = !rarityNote.textContent;
-        };
-        paintRarities(s.rarities);
-        const countRest = async () => {
-          let counts = s.rarities;
-          for (let tries = 0; view.isConnected && (!counts || counts.pending > 0) && tries < 100; tries++) {
-            const before = counts?.counted ?? -1;
-            try {
-              counts = await ask({ type: "rarity-counts" });
-            } catch {
-              break;
-            }
-            if (!view.isConnected) return;
-            paintRarities(counts);
-            if (counts.counted === before && counts.failed) break;
-          }
-          if (view.isConnected && counts?.pending > 0) rarityNote.textContent = `Comptage arrêté à ${fmt(counts.counted)} séries sur ${fmt(counts.series)} : il reprendra à la prochaine ouverture.`;
-        };
-        const days = [];
-        for (let i = 13; i >= 0; i--) days.push(dayOf(Date.now() - i * DAY_MS));
-        const top = Math.max(1, ...days.map((d) => byDay.get(d)?.gain ?? 0));
-        const chart = h(
-          "div",
-          { class: "aqm-days", role: "img", "aria-label": "Cartes uniques gagnées chaque jour, sur les 14 derniers jours" },
-          days.map((d) => {
-            const r = byDay.get(d);
-            const tip = r ? `${dayLabel(d, true)} : ${signed(r.gain)} carte${Math.abs(r.gain) > 1 ? "s" : ""} unique${Math.abs(r.gain) > 1 ? "s" : ""}${r.since && r.since !== dayOf((/* @__PURE__ */ new Date(`${d}T12:00:00`)).getTime() - DAY_MS) ? ` (depuis le ${dayLabel(r.since)})` : ""} · ${fmt(r.owned)} au total` : `${dayLabel(d, true)} : pas de relevé (Aquaman n’a pas été ouvert ce jour-là)`;
-            const gain = r?.gain ?? 0;
-            return h(
-              "div",
-              { class: `aqm-day${r ? "" : " is-empty"}${d === s.today ? " is-today" : ""}`, title: tip, tabindex: "0", "aria-label": tip },
-              h("span", { class: "aqm-day-val" }, r && gain ? signed(gain) : ""),
-              h("span", { class: "aqm-day-col" }, h("span", { class: "aqm-day-fill", style: `height:${r && gain > 0 ? Math.max(4, 100 * gain / top).toFixed(1) : 0}%` })),
-              h("span", { class: "aqm-day-name" }, d === s.today ? "Auj." : (/* @__PURE__ */ new Date(`${d}T12:00:00`)).toLocaleDateString("fr-FR", { day: "numeric" }))
-            );
-          })
-        );
-        const recorded = s.history.filter((d) => days.includes(d.day));
-        const twoWeeks = recorded.reduce((n, d) => n + d.gain, 0);
-        const first = s.history[0];
-        const fromStart = first ? s.owned - (first.owned - first.gain) : 0;
-        const daysNote = s.history.length <= 1 ? "Aquaman relève ta collection chaque jour où tu joues : la courbe se remplit à partir d’aujourd’hui." : `${signed(twoWeeks)} cartes uniques sur les 14 derniers jours · ${signed(fromStart)} depuis le ${dayLabel(first.day)}, premier relevé.`;
-        view.replaceChildren(
-          hero,
-          tiles,
-          h("h3", { class: "aqm-progress-h" }, "Par rareté"),
-          rarityList,
-          rarityNote,
-          h("h3", { class: "aqm-progress-h" }, "Progression journalière"),
-          chart,
-          h("p", { class: "aqm-note" }, daysNote)
-        );
-        countRest();
       }
       function scrollsSideways(el, style2) {
         if (el.scrollWidth - el.clientWidth < 4) return false;
@@ -7595,18 +5266,18 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           for (const { img, frame, box, n, gives, done, anchor } of todo) {
             let tile = frame;
             while (box && tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll("img").length === 1) tile = tile.parentElement;
-            tile.classList.add("aqm-trade-tile");
+            markEdit(tile).classList.add("aqm-trade-tile");
             if (anchor) {
-              frame.style.position = "relative";
+              markEdit(frame).style.position = "relative";
               frame.dataset.aqmAnchor = "1";
             }
             tradeDone.set(img, done);
             let dot = frame.querySelector(":scope > .aqm-dot");
             if (!dot) dot = frame.appendChild(h("span", { class: "aqm-root aqm-dot" }));
-            setClass(dot, `aqm-root aqm-dot ${n ? "is-yes" : "is-no"}${n > 1 ? " has-count" : ""}`);
-            setText(dot, n > 1 ? `×${n}` : "");
-            const title = !n ? "Tu n’as pas cette carte" : gives === null ? n > 1 ? `Tu l’as (${n} exemplaires)` : "Tu l’as" : gives ? n > 1 ? `Tu en as ${n} : il t’en restera ${n - 1}` : "Ton seul exemplaire" : n > 1 ? `Tu l’as déjà (${n} exemplaires)` : "Tu l’as déjà";
-            if (dot.title !== title) dot.title = title;
+            setClass(dot, `aqm-root aqm-dot ${n ? "is-yes" : "is-no"}`);
+            setText(dot, "");
+            const title = !n ? "Tu n’as pas cette carte" : `Tu l’as (${n} exemplaire${n > 1 ? "s" : ""})`;
+            if (dot.title !== title) markEdit(dot).title = title;
           }
         } catch (e) {
           console.warn("[Aquaman] échanges :", e);
@@ -7629,11 +5300,11 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         const doubles = [...document.querySelectorAll("button")].find((b) => !b.closest(".aqm-root") && /^doublons\b/i.test(b.textContent.trim()));
         const chips2 = doubles?.parentElement;
         if (!chips2 || ![...chips2.querySelectorAll("button")].some((b) => /^toutes$/i.test(b.textContent.trim()))) return null;
-        const tabText2 = (b) => b.textContent.trim().toLowerCase();
+        const tabText = (b) => b.textContent.trim().toLowerCase();
         for (let box = chips2.parentElement, up = 0; box && box !== document.body && up < 10; box = box.parentElement, up++) {
-          const tabs = [...box.querySelectorAll('button, [role="tab"]')].filter((b) => /^(tu donnes|tu demandes|perles et mot)$/.test(tabText2(b)));
-          const gives = tabs.find((b) => tabText2(b) === "tu donnes");
-          const asks = tabs.find((b) => tabText2(b) === "tu demandes");
+          const tabs = [...box.querySelectorAll('button, [role="tab"]')].filter((b) => /^(tu donnes|tu demandes|perles et mot)$/.test(tabText(b)));
+          const gives = tabs.find((b) => tabText(b) === "tu donnes");
+          const asks = tabs.find((b) => tabText(b) === "tu demandes");
           if (!gives || !asks) continue;
           const marked = tabs.find((b) => b.getAttribute("aria-selected") === "true" || b.getAttribute("data-state") === "active" || b.getAttribute("aria-pressed") === "true");
           const odd = tabs.find((b) => tabs.filter((x) => x.className === b.className).length === 1);
@@ -7757,263 +5428,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
             wrap.classList.add("aqm-pull-thumb");
           }
         }
-      }
-      let pityReport2 = null;
-      let pityAt = 0;
-      let pityLoading = false;
-      let pityRulesSent = "";
-      function readPityRules() {
-        for (const el of elementsWithText(document.body, /SSR tous les \d+ boosters/i)) {
-          const m = el.textContent.match(/SSR tous les (\d+) boosters.*?UR tous les (\d+)/i);
-          if (!m || pityRulesSent === m[0]) continue;
-          pityRulesSent = m[0];
-          send({ type: "pity-rules", rules: { SSR: Number(m[1]), UR: Number(m[2]) } }).then(() => pityReport2 = null);
-        }
-      }
-      function pityPlace() {
-        for (const label of elementsWithText(document.body, /booster dans|r[ée]serve pleine/i)) {
-          let pill = label;
-          while (pill.parentElement && pill.parentElement !== document.body && !pill.querySelector('svg, [role="progressbar"]') && pill.textContent.length < 120) pill = pill.parentElement;
-          if (pill.querySelector('svg, [role="progressbar"]')) return pill;
-        }
-        const buy = [...document.querySelectorAll("button, a")].find((b) => !b.closest(".aqm-root") && /acheter un booster|tout ouvrir/i.test(b.textContent));
-        return buy?.parentElement ?? null;
-      }
-      function showPity() {
-        if (!/^\/jeu\/?$/.test(location.pathname)) return;
-        const place = pityPlace();
-        if (!place) return;
-        if (place.nextElementSibling?.classList.contains("aqm-pity")) {
-          if (!pityReport2 || Date.now() - pityAt > 6e4) loadPity();
-          return;
-        }
-        document.querySelectorAll(".aqm-pity").forEach((el) => el.remove());
-        place.after(h("div", { class: "aqm-root aqm-pity", role: "status" }));
-        pityReport2 ? renderPity() : loadPity();
-      }
-      async function loadPity(fresh = false) {
-        if (pityLoading) return;
-        pityLoading = true;
-        pityAt = Date.now();
-        try {
-          const report = await send({ type: "pity", fresh });
-          if (report && !report.error) pityReport2 = report;
-        } finally {
-          pityLoading = false;
-        }
-        renderPity();
-      }
-      function renderPity() {
-        const box = document.querySelector(".aqm-pity");
-        if (!box || !pityReport2) return;
-        const line = (code) => {
-          const p = pityReport2[code];
-          if (p.over)
-            return h(
-              "div",
-              { class: "aqm-pity-line", title: `Le jeu garantit une ${code} tous les ${fmt(p.every)} boosters, mais Aquaman en a compté ${fmt(p.since)} depuis ta dernière ${code} (packs spéciaux exclus) : des boosters ouverts avant Aquaman 1.6.1 dont la sorte est inconnue étaient sans doute des packs spéciaux. Le compte repart à ta prochaine ${code}.` },
-              h("p", {}, rarityCode(code), " garantie ", h("strong", {}, "au prochain booster"), " en principe"),
-              h("span", { class: "aqm-bar" }, h("span", { style: "width:100%" })),
-              h("small", {}, `${fmt(p.since)} boosters comptés depuis ta dernière ${code}, plus que les ${fmt(p.every)} du jeu`)
-            );
-          const left = p.left;
-          const when = left <= 1 ? "au prochain booster" : `dans ${fmt(left)} boosters`;
-          return h(
-            "div",
-            {
-              class: "aqm-pity-line",
-              title: p.missed ? `${fmt(p.since)} booster${p.since > 1 ? "s" : ""} compté${p.since > 1 ? "s" : ""} par Aquaman depuis ta dernière ${code}, vue dans les Beaux tirages du jeu (tirée sans Aquaman).` : p.known ? `${fmt(p.since)} booster${p.since > 1 ? "s" : ""} ouvert${p.since > 1 ? "s" : ""} depuis ta dernière ${code}.` : `Aquaman n’a pas encore vu de ${code} sortir : il compte depuis son installation, donc la garantie peut arriver plus tôt.`
-            },
-            h("p", {}, rarityCode(code), " garantie ", h("strong", {}, when), p.known ? "" : " au plus"),
-            h("span", { class: "aqm-bar" }, h("span", { style: `width:${Math.min(100, 100 * p.since / p.every).toFixed(1)}%` })),
-            h("small", {}, p.known ? `${fmt(p.since)} / ${fmt(p.every)} depuis ta dernière ${code}` : `${fmt(p.since)} / ${fmt(p.every)} sans ${code} depuis qu’Aquaman compte`)
-          );
-        };
-        const secLine = () => {
-          const s = pityReport2.SEC;
-          if (!s) return null;
-          const n = `${fmt(s.since)}${s.known ? "" : "+"} booster${s.since > 1 ? "s" : ""}`;
-          const odds = s.chance > 0 ? `une tous les ~${fmt(1 / s.chance)} boosters en moyenne · ${pct(1 - (1 - s.chance) ** 100)} d’en avoir une dans les 100 prochains` : null;
-          return h(
-            "div",
-            {
-              class: "aqm-pity-line is-sec",
-              title: `Pas de garantie pour la SEC : chaque booster a la même chance, la malchance passée ne la rapproche pas.${s.known ? "" : " Aquaman n’a pas encore vu de SEC sortir : il compte depuis son installation."}`
-            },
-            h("p", {}, rarityCode("SEC"), " ", h("strong", {}, n), " sans SEC"),
-            h("small", {}, odds ? `Pas de garantie : ${odds}.` : "Pas de garantie pour la SEC.")
-          );
-        };
-        box.replaceChildren(
-          h("p", { class: "aqm-label" }, "Garantie anti-malchance"),
-          h("div", { class: "aqm-pity-lines" }, line("SSR"), line("UR"), secLine()),
-          h(
-            "p",
-            { class: "aqm-pity-note" },
-            {
-              ok: "Compté par Aquaman à chaque booster ouvert, et partagé entre tes appareils (PC, téléphone, extension ou script).",
-              waiting: "Compté par Aquaman à chaque booster ouvert, et partagé entre tes appareils dès ta prochaine ouverture.",
-              error: "Compté par Aquaman sur ce navigateur : le partage avec tes autres appareils ne répond pas pour le moment.",
-              off: "Compté par Aquaman à chaque booster ouvert sur ce navigateur (partage entre appareils désactivé)."
-            }[pityReport2.sync] ?? "Compté par Aquaman à chaque booster ouvert."
-          ),
-          // (comme dans le jeu, la garantie SSR et UR ne compte pas les packs spéciaux)
-          pityReport2.skipped > 0 ? h("p", { class: "aqm-pity-note" }, `${fmt(pityReport2.skipped)} pack${pityReport2.skipped > 1 ? "s" : ""} spécia${pityReport2.skipped > 1 ? "ux" : "l"} (Légendaire, Halloween…) hors garantie, comme dans le jeu.`) : null,
-          h("div", { class: "aqm-pity-more" }, h("button", { type: "button", class: "aqm-album-btn", onclick: openPityHistory }, "📜 Historique"))
-        );
-      }
-      async function openPityHistory() {
-        const body = openOverlay("Historique des tirages", "À quelle fréquence tu tires des SSR, UR et SEC, et combien de boosters il t’a fallu pour chacune.");
-        body.parentElement.classList.add("aqm-panel-wide");
-        const view = h("div", { class: "aqm-history" }, h("p", { class: "aqm-note" }, "Lecture de tes ouvertures…"));
-        body.append(view);
-        let r;
-        try {
-          r = await ask({ type: "pity-history" });
-        } catch (e) {
-          view.replaceChildren(h("p", { class: "aqm-note" }, e.message));
-          return;
-        }
-        const CODES = ["SSR", "UR", "SEC"];
-        const day = (at) => new Date(at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
-        const boosters = (n) => `${fmt(n)} booster${n > 1 ? "s" : ""}`;
-        const decimal = (x) => x.toFixed(1).replace(".", ",");
-        const weeks = r.since ? Math.max(1 / 7, (Date.now() - r.since) / (7 * 864e5)) : null;
-        const rate = (code) => {
-          const n = r[code].hits.length;
-          const every = n ? r.opened / n : null;
-          const expected = r.chances?.[code] > 0 ? 1 / r.chances[code] : null;
-          const ratio = every && expected ? expected / every : null;
-          const luck = ratio == null ? null : ratio >= 1.15 ? ["is-good", `${decimal(ratio)}× plus souvent`] : ratio <= 0.87 ? ["is-bad", `${decimal(1 / ratio)}× moins souvent`] : ["", "Dans la moyenne"];
-          const perWeek = weeks && n ? n / weeks : 0;
-          return h(
-            "div",
-            { class: `aqm-rate is-${code}` },
-            h("div", { class: "aqm-rate-top" }, rarityCode(code), luck ? h("span", { class: `aqm-tag aqm-luck ${luck[0]}` }, luck[1]) : null),
-            h("p", { class: "aqm-rate-value" }, every ? ["1 ", h("small", {}, "tous les"), ` ${fmt(every)}`] : "—"),
-            h("p", { class: "aqm-rate-sub" }, every ? "boosters, chez toi" : `aucune en ${boosters(r.opened)}`),
-            h(
-              "p",
-              { class: "aqm-rate-foot", title: "La chance du jeu pour un booster classique, sans la garantie anti-malchance." },
-              expected ? `Jeu : 1 tous les ~${fmt(expected)}` : "Jeu : chance inconnue",
-              perWeek ? ` · ≈ ${perWeek < 10 ? decimal(perWeek) : fmt(perWeek)}/sem.` : ""
-            )
-          );
-        };
-        const strip = r.recent?.length ? h(
-          "div",
-          { class: "aqm-history-box" },
-          h("div", { class: "aqm-history-row" }, h("p", { class: "aqm-label" }, `Tes ${boosters(r.recent.length)} les plus récents`), h("small", { class: "aqm-muted" }, "du plus ancien au plus récent")),
-          h(
-            "div",
-            { class: "aqm-tracker-strip" },
-            r.recent.map((top) => {
-              const code = top >= 6 ? "SEC" : top >= 5 ? "UR" : top >= 4 ? "SSR" : null;
-              return h("span", { class: `aqm-cell${code ? ` is-${code}` : ""}`, title: code ?? "Ni SSR, ni UR, ni SEC" });
-            })
-          ),
-          h("p", { class: "aqm-tracker-legend" }, [null, ...CODES].map((code) => h("span", {}, h("span", { class: `aqm-cell${code ? ` is-${code}` : ""}` }), code ?? "Autre")))
-        ) : null;
-        const UNKNOWN = "?";
-        const packKey = (x) => x.pack?.id ?? UNKNOWN;
-        const packName = (x) => x.pack?.name ?? (x.pack?.id === "classic" ? "Classique" : x.pack ? "Autre pack" : "Pack inconnu");
-        const packs = /* @__PURE__ */ new Map();
-        for (const code of CODES)
-          for (const x of r[code].hits) {
-            const key = packKey(x);
-            if (!packs.has(key)) packs.set(key, { key, name: packName(x), count: 0 });
-            packs.get(key).count++;
-          }
-        const packList = [...packs.values()].sort((a, b) => (a.key === UNKNOWN) - (b.key === UNKNOWN) || b.count - a.count);
-        let pack = "";
-        let rarity = CODES.find((code) => r[code].hits.length) ?? "SSR";
-        const hitsOf = (code) => pack ? r[code].hits.filter((x) => packKey(x) === pack) : r[code].hits;
-        const tiles = (code) => {
-          const { current } = r[code];
-          const hits = hitsOf(code);
-          const full = hits.filter((x) => !x.first && !x.special).map((x) => x.after);
-          const stat = (label, value) => h("div", { class: "aqm-history-stat" }, h("small", {}, label), h("strong", {}, value));
-          const all = r[code].hits.length;
-          return [
-            h(
-              "div",
-              { class: "aqm-history-stats" },
-              stat("Obtenues", fmt(hits.length)),
-              pack ? stat(`Part de tes ${code}`, all ? pct(hits.length / all) : "—") : stat("En moyenne", full.length ? boosters(full.reduce((a, b) => a + b, 0) / full.length) : "—"),
-              stat("Plus rapide", full.length ? boosters(Math.min(...full)) : "—"),
-              stat("Plus long", full.length ? boosters(Math.max(...full)) : "—"),
-              stat("Depuis la dernière", boosters(current))
-            ),
-            hits.length ? h(
-              "div",
-              { class: "aqm-history-grid" },
-              hits.map((x) => {
-                const link = x.card?.id ? { href: `/jeu/carte/${encodeURIComponent(x.card.id)}` } : {};
-                const tip = [x.card?.name ?? `${x.top}, carte inconnue`, x.pack?.guessed ? `${packName(x)} (déduit de la carte)` : packName(x), day(x.at), x.first ? "Aquaman a commencé à compter après la précédente" : null].filter(Boolean).join(" · ");
-                return h(
-                  x.card?.id ? "a" : "div",
-                  { class: "aqm-history-tile", ...link, title: tip },
-                  x.card?.image ? h("img", { src: cardImageUrl(x.card.image), alt: x.card.name ?? "", loading: "lazy", decoding: "async" }) : h("div", { class: "aqm-history-blank" }, rarityCode(x.top)),
-                  // (une carte d'un pack spécial : hors garantie, elle ne fait pas repartir le compte)
-                  h("p", { class: "aqm-history-after" }, x.special ? "Hors garantie" : x.first ? `≥ ${boosters(x.after)}` : boosters(x.after)),
-                  h("p", { class: `aqm-history-pack${x.pack ? "" : " is-unknown"}` }, packName(x))
-                );
-              })
-            ) : h("p", { class: "aqm-history-empty" }, pack ? `Aucune ${code} tirée dans ce pack.` : `Aucune ${code} parmi tes ${boosters(r.opened)} comptés.`)
-          ];
-        };
-        const panel = h("div", { class: "aqm-history-panel" });
-        const tabs = h("div", { class: "aqm-history-tabs", role: "tablist" });
-        const filter = h("div", { class: "aqm-history-packs", role: "group", "aria-label": "Pack" });
-        const show = () => {
-          if (packList.some((p) => p.key !== UNKNOWN))
-            filter.replaceChildren(
-              ...[{ key: "", name: "Tous les packs", count: CODES.reduce((n, c) => n + r[c].hits.length, 0) }, ...packList].map(
-                (p) => h(
-                  "button",
-                  {
-                    type: "button",
-                    class: `aqm-history-packbtn${p.key === pack ? " is-on" : ""}`,
-                    "aria-pressed": String(p.key === pack),
-                    title: p.key === UNKNOWN ? "Cartes tirées avant la version 1.4.7 dont Aquaman ne connaît pas la carte : impossible de savoir leur pack." : null,
-                    onclick: () => {
-                      pack = p.key;
-                      show();
-                    }
-                  },
-                  p.name,
-                  h("span", { class: "aqm-history-tabcount" }, fmt(p.count))
-                )
-              )
-            );
-          tabs.replaceChildren(
-            ...CODES.map(
-              (c) => h(
-                "button",
-                {
-                  type: "button",
-                  role: "tab",
-                  class: `aqm-history-tabbtn${c === rarity ? " is-on" : ""}`,
-                  "aria-selected": String(c === rarity),
-                  onclick: () => {
-                    rarity = c;
-                    show();
-                  }
-                },
-                rarityCode(c),
-                h("span", { class: "aqm-history-tabcount" }, fmt(hitsOf(c).length))
-              )
-            )
-          );
-          panel.replaceChildren(...tiles(rarity));
-        };
-        show();
-        view.replaceChildren(
-          h("p", { class: "aqm-history-count" }, r.since ? `${boosters(r.opened)} comptés depuis le ${new Date(r.since).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}` : "Aucun booster compté pour le moment."),
-          h("div", { class: "aqm-rates" }, CODES.map(rate)),
-          strip,
-          h("div", { class: "aqm-history-box" }, filter.childElementCount ? filter : null, tabs, panel)
-        );
       }
       const KIND_KEY = "aqm-booster-kind";
       let pendingBoosters = null;
@@ -9173,7 +6587,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         "menu-1": () => menuItem(1),
         "menu-2": () => menuItem(2),
         "menu-3": () => menuItem(3),
-        board: () => firstVisible(".aqm-board-scope") ?? navLink("/jeu/classement"),
         series: () => seriesStrip() ?? navLink("/jeu/collection"),
         vitrine: () => [...document.querySelectorAll("button, a")].find((b) => isVisible(b) && !b.closest(".aqm-root") && /ma vitrine/i.test(b.textContent))
       };
@@ -9376,7 +6789,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           owned = null;
           send({ type: "collection-stale" });
           guardSoon();
-          if (on("collectionStats")) snapCollection(true);
           setTimeout(schedule, 1500);
           setTimeout(() => checkRoom(2e4), 3e3);
         } else if (e.data.aquaman === "sell-refused" && e.data.item?.copyId)
@@ -9392,18 +6804,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         else if (e.data.aquaman === "feed" && Array.isArray(e.data.pulls)) send({ type: "feed-seen", pulls: e.data.pulls });
         else if (e.data.aquaman === "player-seen" && typeof e.data.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(e.data.id) && typeof e.data.name === "string" && e.data.name.trim())
           playersSeen.set(foldName(e.data.name), e.data.id);
-        else if (e.data.aquaman === "opened" && Array.isArray(e.data.boosters)) {
-          if (batch) batch.opened = e.data.boosters.length;
-          pulledCards = new Set((Array.isArray(e.data.cards) ? e.data.cards.flat() : []).filter((id) => typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id)));
-          spareOffer = null;
-          send({ type: "opened", boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
-            if (report && !report.error) {
-              pityReport2 = report;
-              pityAt = Date.now();
-            }
-            renderPity();
-          });
-        }
       }
       function onKey(e) {
         if (tour) {
@@ -9419,8 +6819,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
       }
       function onBack() {
         if (document.visibilityState !== "visible") return;
-        if (document.querySelector(".aqm-pity")) loadPity(true);
-        if (document.querySelector(".aqm-star")) loadFavIds(true);
         send({ type: "wants-sync", fresh: true });
       }
       function onOutside(e) {
@@ -9531,21 +6929,13 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
       }
       const STEP_SETTING = /* @__PURE__ */ new Map([
         [enlargePulls, "bigPulls"],
-        [showPity, "pity"],
-        [markSeriesStrip, "seriesTools"],
-        [markFavoriteSeries, "seriesTools"],
+        [markMissingSales, "missingSales"],
         [markAlbum, "albumButtons"],
         [watchGuards, "albumButtons"],
-        [markMissingTab, "missingTab"],
-        [markMissingSales, "missingSales"],
-        [markCollectionStats, "collectionStats"],
-        [snapCollection, "collectionStats"],
         [markCardWho, "cardWho"],
-        [markCardListings, "cardListings"],
         [markSellDialog, "sellTools"],
         [markUnlistButton, "sellTools"],
         [hideBoughtCards, "hideBought"],
-        [markMarketFavorites, "marketFavorites"],
         [markSalesCards, "marketSales"],
         [markSalesKinds, "marketSales"],
         [markMyBids, "myBids"],
@@ -9555,8 +6945,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         [markOpenMore, "openMore"],
         [enhanceShowcaseEditor, "showcaseDrag"],
         [markTrades, "tradeMarks"],
-        [markTradeFilters, "tradeFilters"],
-        [markGameBoard, "friendsBoard"]
+        [markTradeFilters, "tradeFilters"]
       ]);
       function run() {
         if (stopped) return;
@@ -9569,7 +6958,7 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
         }
         const began = performance.now();
         runText = null;
-        for (const step of [addPlusTab, enlargePulls, showPity, readPityRules, markSeriesStrip, markFavoriteSeries, markAlbum, watchGuards, markMissingTab, markMissingSales, markCollectionStats, snapCollection, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markMarketFavorites, markSalesCards, markSalesKinds, markMyBids, markOpenBids, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, markGameBoard, pollFeedNow, syncSalesNow, sayHello2, checkAccess, lookForUpdate, startOnce]) {
+        for (const step of [addPlusTab, enlargePulls, markMissingSales, markAlbum, watchGuards, markCardWho, markSellDialog, markUnlistButton, hideBoughtCards, markSalesCards, markSalesKinds, markMyBids, markOpenBids, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, syncSalesNow, sayHello2, checkAccess, lookForUpdate, startOnce]) {
           if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
           if (!inGame && step !== markTrades && step !== checkAccess) continue;
           try {
@@ -9669,15 +7058,6 @@ La file d’attente d’Aquaman (${nCopies(waiting)}) est mise en pause le temps
           if (e.source === window && e.data?.aquaman === "boosters-refreshed") onBoostersRefreshed(e.data.id, !!e.data.ok);
         });
         Promise.all([loadShotStore(), featReady]).then(() => !stopped && /^\/jeu\/?$/.test(location.pathname) && markBoosterKinds());
-        featReady.then(() => !stopped && earlyStatsButton());
-        featReady.then(() => {
-          if (stopped || favLoading || seriesBySlug || !on("seriesTools") || !location.pathname.startsWith("/jeu")) return;
-          favLoading = true;
-          loadFavIds().finally(() => {
-            favLoading = false;
-            schedule();
-          });
-        });
         if (/^\/jeu\/?$/.test(location.pathname)) {
           let frame = 0;
           const early = new MutationObserver(() => {

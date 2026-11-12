@@ -59,8 +59,6 @@ function openMenu(anchor) {
     { class: 'aqm-root aqm-menu', role: 'menu' },
     item('Boosters rentables', 'Prix, taux de drop, persos et séries', ICON_PACK, openBoosters),
     item('Qui a cette carte ?', 'Ceux qui l’ont, la vendent ou l’ont tirée', ICON_SEARCH, openWhoHas),
-    item('Séries favorites', 'Tes séries et leurs persos manquants', ICON_STAR, openFavorites),
-    item('Ma progression', 'Ta collection, par rareté et jour par jour', ICON_CHART, openCollectionStats),
     item('Récap des ventes', 'Les Perles gagnées chaque jour au marché', ICON_TAG, openSalesRecap),
     item('Visite guidée', 'Le tour de ce qu’ajoute Aquaman', ICON_COMPASS, () => startTour(0)),
     item('Nouveautés', 'Ce qui a changé dans Aquaman', ICON_SPARK, () => openNews()),

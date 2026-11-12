@@ -1,7 +1,6 @@
 // Aquaman : séries favorites et cartes recherchées dans le jeu.
 
 import { RELAY } from './common.js';
-import { getSettings } from './settings.js';
 import { cached, forget, game, myId, validPlayer } from './api.js';
 import { countCopies, imageKey, ownership, showcase } from './collections.js';
 import { friends } from './leaderboard.js';
@@ -106,33 +105,17 @@ export function seriesCards(id) {
   return cached(`series-cards:${id}`, 60e3, async () => (await game(`/cards?manga=${encodeURIComponent(id)}`)).cards ?? []);
 }
 
-const FAV_PULL = 60e3; // les favoris des autres appareils sont lus une fois par minute au plus
-let favSyncedAt = 0;
-
-// Les séries favorites gardées sur cet appareil : { list, at } (at : moment du dernier changement, 0 si jamais changé
-// ici).
-async function localFavorites() {
-  const { favSeries, favAt } = await chrome.storage.local.get(['favSeries', 'favAt']);
-  return { list: Array.isArray(favSeries) ? favSeries : [], at: Number(favAt) || 0 };
-}
-
-// Envoie la liste au relais, qui garde la plus récente de tous les appareils du joueur, et la reprend.
-async function exchangeFavorites(local) {
-  try {
-    const res = await fetch(`${RELAY}/favorites`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ player: await myId(), list: local.list, at: local.at })
-    });
-    if (!res.ok) throw new Error(`relay_${res.status}`);
-    const remote = await res.json();
-    favSyncedAt = Date.now();
-    if (Array.isArray(remote?.list) && Number(remote.at) > local.at) {
-      await chrome.storage.local.set({ favSeries: remote.list, favAt: Number(remote.at) });
-      return remote.list;
-    }
-  } catch {}
-  return local.list;
+export async function seriesStatus(id) {
+  const [cards, wanted, guarded] = await Promise.all([seriesCards(id), searchedIds(), guardedSeries()]);
+  const missing = cards.filter((c) => !(c.owned > 0));
+  const toWantIds = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
+  return {
+    missing: missing.length,
+    toWant: toWantIds.length,
+    toWantIds,
+    cardIds: cards.map((c) => c.id).filter(Boolean),
+    guarded: Object.hasOwn(guarded, id)
+  };
 }
 
 // Les dessins de chaque sorte de booster publiés par l'auteur (le relais les garde une minute dans les navigateurs).
@@ -153,61 +136,4 @@ export async function packKinds() {
     const types = Array.isArray(s.types) ? s.types : [];
     return { kind: s.id, name: s.name ?? null, art: s.art ?? s.kindArt ?? s.image ?? (types[0] ? `/game/boosters/${types[0]}.webp` : null), types };
   });
-}
-
-// Les séries favorites, les mêmes sur chaque appareil quand la synchronisation est active.
-export async function favoriteIds(fresh = false) {
-  const local = await localFavorites();
-  if (!(await getSettings()).syncFavorites || (!fresh && Date.now() - favSyncedAt < FAV_PULL)) return local.list;
-  return exchangeFavorites(local);
-}
-
-// Ajoute (on) ou retire une série des favoris ; renvoie la nouvelle liste. Les changements passent l'un après l'autre,
-// pour que deux étoiles cliquées vite comptent toutes les deux.
-let favChain = Promise.resolve();
-export function setFavorite(id, on) {
-  const run = favChain.then(async () => {
-    const list = (await localFavorites()).list.filter((x) => x !== id);
-    if (on) list.push(id);
-    const local = { list, at: Date.now() };
-    await chrome.storage.local.set({ favSeries: local.list, favAt: local.at });
-    if ((await getSettings()).syncFavorites) await exchangeFavorites(local);
-    return list;
-  });
-  favChain = run.catch(() => {});
-  return run;
-}
-
-// Les séries favorites et leurs cartes : exemplaires possédés et si le joueur les recherche.
-export async function favoritesReport(fresh = false) {
-  const [ids, all, wanted, waiting] = await Promise.all([favoriteIds(fresh), seriesList(), searchedIds(), waitingIds()]);
-  const series = ids.map((id) => all.find((s) => s.id === id)).filter(Boolean);
-  const cards = await Promise.all(series.map((s) => seriesCards(s.id).catch(() => [])));
-  return {
-    all: all.map((s) => ({ id: s.id, slug: s.slug, title: s.title, owned: s.owned ?? 0, total: s.total ?? 0 })),
-    favorites: series.map((s, i) => ({
-      id: s.id,
-      slug: s.slug,
-      title: s.title,
-      owned: s.owned ?? 0,
-      total: s.total ?? 0,
-      cards: cards[i].map((c) => ({ id: c.id, name: c.name, image: c.image, rarity: c.rarity, owned: c.owned ?? 0, wanted: wanted.has(c.id), waiting: waiting.has(c.id) }))
-    }))
-  };
-}
-
-// Une série : les cartes que le joueur n'a pas, celles pas encore recherchées, et si elle est favorite.
-export async function seriesStatus(id) {
-  const [cards, wanted, favorites] = await Promise.all([seriesCards(id), searchedIds(), favoriteIds()]);
-  const missing = cards.filter((c) => !(c.owned > 0));
-  const toWant = missing.filter((c) => !wanted.has(c.id)).map((c) => c.id);
-  const guarded = await guardedSeries();
-  return {
-    missing: missing.length,
-    toWant: toWant.length,
-    toWantIds: toWant,
-    favorite: favorites.includes(id),
-    cardIds: cards.map((c) => c.id).filter(Boolean),
-    guarded: Object.hasOwn(guarded, id)
-  };
 }

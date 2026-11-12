@@ -35,3 +35,9 @@ async function wantCard(id, on) {
   send({ type: 'wants-changed' });
   return { wanted: !!res?.wanted };
 }
+
+// Met une carte en favoris
+async function favoriteSerie(id, on) {
+  const res = await gameWrite(`/series/${encodeURIComponent(id)}/favorite`, on ? 'PUT' : 'DELETE');
+  return { favorite: !!res?.favorite };
+}
