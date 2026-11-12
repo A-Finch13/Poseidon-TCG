@@ -10,7 +10,6 @@ const STEP_SETTING = new Map([
   [markAlbum, 'albumButtons'],
   [watchGuards, 'albumButtons'],
   [markCardWho, 'cardWho'],
-  [markCardListings, 'cardListings'],
   [markSellDialog, 'sellTools'],
   [markUnlistButton, 'sellTools'],
   [hideBoughtCards, 'hideBought'],
@@ -38,7 +37,7 @@ function run() {
   }
   const began = performance.now();
   runText = null;
-  for (const step of [addPlusTab, enlargePulls, markMissingSales, markAlbum, watchGuards, markCardWho, markCardListings, markSellDialog, markUnlistButton, hideBoughtCards, markSalesCards, markSalesKinds, markMyBids, markOpenBids, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, syncSalesNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
+  for (const step of [addPlusTab, enlargePulls, markMissingSales, markAlbum, watchGuards, markCardWho, markSellDialog, markUnlistButton, hideBoughtCards, markSalesCards, markSalesKinds, markMyBids, markOpenBids, watchSaleToast, markRecycleDialog, markBoosterKinds, markOpenMore, markRecycleSpares, resumeScan, enhanceShowcaseEditor, markTrades, markTradeFilters, pollFeedNow, syncSalesNow, sayHello, checkAccess, lookForUpdate, startOnce]) {
     if (STEP_SETTING.has(step) && !on(STEP_SETTING.get(step))) continue;
     if (!inGame && step !== markTrades && step !== checkAccess) continue;
     try {

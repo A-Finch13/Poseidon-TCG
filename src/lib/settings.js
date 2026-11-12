@@ -36,7 +36,6 @@ export const SETTINGS = [
       ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
       ['myBids', 'Filtres de tes enchères', '« Mes mises » dans Enchères (seulement les enchères en cours où tu as fait une offre) et « En cours » dans Mes offres'],
       ['marketSales', 'Tes ventes', 'Filtres « Achat fixe » et « Enchères » dans « Mes ventes », « Déjà en vente » sur les cartes que tu vends déjà (au marché ou en enchère), et « Trier par » (recherchées, possédées, valeur, nom)'],
-      ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter », et les enchères en cours'],
       ['sellTools', 'Vente des doublons', 'File d’attente de « Vendre mes doublons » et bouton « Retirer mes ventes »']
     ]
   },

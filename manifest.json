@@ -58,7 +58,6 @@
         "src/content/menu/players.js",
         "src/content/menu/sales-recap.js",
         "src/content/card/card-who.js",
-        "src/content/card/listings.js",
         "src/content/collection/missing-sales.js",
         "src/content/collection/album.js",
         "src/content/collection/strip-wheel.js",
@@ -100,7 +99,6 @@
         "src/content/styles/21-search-queue.css",
         "src/content/styles/22-sell.css",
         "src/content/styles/23-booster-wheel.css",
-        "src/content/styles/24-card-listings.css",
         "src/content/styles/25-collection.css",
         "src/content/styles/26-players.css",
         "src/content/styles/27-market.css"
