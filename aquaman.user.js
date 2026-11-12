@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Aquaman
 // @namespace    https://github.com/A-Finch13/Poseidon-TCG
-// @version      1.7.1
+// @version      1.7.2
 // @description  Compagnon non officiel pour le jeu de cartes de poseidon-scans.net : classement entre amis, boosters rentables, cartes possédées dans les échanges, vitrine en glisser-déposer.
 // @author       A-Finch13
 // @license      MIT
@@ -1363,7 +1363,7 @@ window.__aquamanUserscript = true;
       await checkUpdate().catch(() => null);
     }
     const { update } = await chrome.storage.local.get("update");
-    return { update: update && newer(update.version, "1.7.1") ? update : null };
+    return { update: update && newer(update.version, "1.7.2") ? update : null };
   }
   async function handle(msg) {
     switch (msg?.type) {
@@ -1443,7 +1443,7 @@ window.__aquamanUserscript = true;
     return {
       runtime: {
         id: OWNER,
-        getManifest: () => ({ version: "1.7.1" }),
+        getManifest: () => ({ version: "1.7.2" }),
         sendMessage: (msg) => handle(msg).catch((e) => ({ error: e?.message ?? String(e) }))
       },
       storage: {
