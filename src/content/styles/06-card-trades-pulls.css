@@ -37,14 +37,6 @@
 .aqm-dot.is-no {
   background: var(--aqm-no);
 }
-.aqm-dot.has-count {
-  height: 13px;
-  padding: 0 3px;
-  font: 800 8px/9px system-ui, sans-serif;
-  color: #052e16;
-  text-align: center;
-}
-
 /* ---------- Accueil : beaux tirages ---------- */
 
 .aqm-pull-thumb {

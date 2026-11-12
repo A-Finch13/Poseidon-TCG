@@ -28,7 +28,6 @@ const FINDERS = {
   'menu-1': () => menuItem(1),
   'menu-2': () => menuItem(2),
   'menu-3': () => menuItem(3),
-  board: () => firstVisible('.aqm-board-scope') ?? navLink('/jeu/classement'),
   series: () => seriesStrip() ?? navLink('/jeu/collection'),
   vitrine: () => [...document.querySelectorAll('button, a')].find((b) => isVisible(b) && !b.closest('.aqm-root') && /ma vitrine/i.test(b.textContent))
 };

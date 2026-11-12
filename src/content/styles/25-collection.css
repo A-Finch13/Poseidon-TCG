@@ -1,11 +1,3 @@
-/* ---------- Collection : séries les plus avancées ---------- */
-
-.aqm-sort-progress.is-on {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.2);
-  color: #fff;
-}
-
 /* ---------- Collection : onglet Manquantes ---------- */
 
 [data-aqm-owned-card],
@@ -44,75 +36,6 @@
   box-shadow: none !important;
   color: var(--aqm-plain-color) !important;
 }
-/* « Manquantes 70 N · 293 R · … 948 au total », sous les onglets */
-.aqm-missing-summary {
-  display: flex;
-  flex: 1 0 100%; /* (toute une ligne, même dans une rangée du jeu en flex) */
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  width: 100%;
-  margin: 12px 0 4px;
-  color: #a1a1aa;
-  font-size: 12px;
-  font-weight: 600;
-}
-.aqm-missing-summary .aqm-label {
-  margin-right: 4px;
-}
-.aqm-missing-summary[hidden] {
-  display: none;
-}
-/* Les cartes manquantes que le jeu n'affiche pas, ajoutées à la suite de sa liste */
-.aqm-missing-extra-note {
-  margin: 32px 0 0;
-  color: #93c5fd;
-  font-size: 13px;
-  font-weight: 700;
-}
-.aqm-missing-extra > ul {
-  margin-top: 16px;
-  padding: 0;
-  list-style: none;
-}
-.aqm-missing-plain {
-  display: block;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-}
-.aqm-missing-plain img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 63 / 88;
-  border-radius: 1rem;
-  object-fit: cover;
-}
-/* une pastille par rareté, comme les filtres du jeu */
-.aqm-missing-count {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
-  white-space: nowrap;
-}
-.aqm-missing-count strong {
-  color: #fff;
-  font-weight: 800;
-}
-.aqm-missing-count.is-total {
-  background: rgba(59, 130, 246, 0.15);
-  color: #bfdbfe;
-}
-.aqm-missing-tab.is-on {
-  border-radius: var(--aqm-pill-radius);
-  background: var(--aqm-pill-bg) !important;
-  box-shadow: var(--aqm-pill-shadow);
-  color: var(--aqm-picked-color) !important;
-}
-
 /* ---------- Recycler des cartes ---------- */
 
 .aqm-recycle-bar {

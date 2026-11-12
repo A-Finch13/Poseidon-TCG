@@ -60,7 +60,6 @@ function onPageMessage(e) {
     owned = null;
     send({ type: 'collection-stale' });
     guardSoon();
-    if (on('collectionStats')) snapCollection(true);
     setTimeout(schedule, 1500);
     setTimeout(() => checkRoom(20e3), 3000); // une carte recherchée vient peut-être d'être obtenue
   } else if (e.data.aquaman === 'sell-refused' && e.data.item?.copyId)
@@ -78,18 +77,6 @@ function onPageMessage(e) {
   else if (e.data.aquaman === 'feed' && Array.isArray(e.data.pulls)) send({ type: 'feed-seen', pulls: e.data.pulls });
   else if (e.data.aquaman === 'player-seen' && typeof e.data.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(e.data.id) && typeof e.data.name === 'string' && e.data.name.trim())
     playersSeen.set(foldName(e.data.name), e.data.id);
-  else if (e.data.aquaman === 'opened' && Array.isArray(e.data.boosters)) {
-    if (batch) batch.opened = e.data.boosters.length;
-    pulledCards = new Set((Array.isArray(e.data.cards) ? e.data.cards.flat() : []).filter((id) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)));
-    spareOffer = null;
-    send({ type: 'opened', boosters: e.data.boosters, best: Array.isArray(e.data.best) ? e.data.best : [], packs: Array.isArray(e.data.packs) ? e.data.packs : [], ids: Array.isArray(e.data.ids) ? e.data.ids : [] }).then((report) => {
-      if (report && !report.error) {
-        pityReport = report;
-        pityAt = Date.now();
-      }
-      renderPity();
-    });
-  }
 }
 
 // ---------- clavier ----------
@@ -110,8 +97,6 @@ function onKey(e) {
 // De retour sur la page (un autre appareil a pu ouvrir des boosters entre-temps) : les compteurs sont relus.
 function onBack() {
   if (document.visibilityState !== 'visible') return;
-  if (document.querySelector('.aqm-pity')) loadPity(true);
-  if (document.querySelector('.aqm-star')) loadFavIds(true);
   send({ type: 'wants-sync', fresh: true });
 }
 

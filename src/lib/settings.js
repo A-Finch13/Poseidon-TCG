@@ -17,7 +17,6 @@ export const SETTINGS = [
       ['autoRecycle', 'Recyclage automatique', 'Désactivé au départ. Après chaque ouverture, les doublons N, R et SR des cartes tirées sont recyclés tout seuls, sans clic (le plus petit numéro est gardé ; SSR, UR et SEC restent au bouton)'],
       ['openMoreAuto', 'Fermeture automatique', 'Après un « Tout ouvrir », la fenêtre des cartes se ferme 5 s après la dernière (sur les 10 suivantes s’il en reste)'],
       ['packGlow', 'Lueur du pack', 'La lueur derrière le booster prend la couleur de son pack'],
-      ['pity', 'Garantie anti-malchance', 'Les boosters avant ta prochaine SSR et UR, et l’historique de tes tirages'],
       ['bigPulls', 'Beaux tirages agrandis', 'Les dernières cartes rares tirées par les joueurs, en plus grand']
     ]
   },
@@ -25,12 +24,8 @@ export const SETTINGS = [
     title: 'Collection',
     icon: '🗂️',
     items: [
-      ['seriesTools', 'Bande des séries', 'Étoiles des séries favorites, tri « Les plus avancées » et boutons « Masquer séries <= 5 persos », « Masquer séries avec badge » et « Masquer cartes verrouillées »'],
-      ['albumButtons', 'Boutons de l’album', '« Ajouter aux favoris », « Rechercher les manquantes » et « Verrouiller les uniques »'],
-      ['missingTab', 'Onglet « Manquantes »', 'Seulement les cartes qu’il te manque'],
       ['missingSales', 'Pastille « En vente »', 'Sur les cartes manquantes vendues au marché'],
-      ['collectionStats', 'Ma progression', 'Bouton à côté de « Ta collection » : pourcentage, raretés, séries complètes et cartes gagnées chaque jour'],
-      ['friendsBoard', 'Classement des amis', 'Sur la page Classement, « Amis » à côté de « Tous » : toi et tes amis, avec les points du jeu'],
+      ['albumButtons', 'Verrouillage des uniques', 'Dans l’album d’une série, verrouiller les cartes dont tu n’as qu’un exemplaire et surveiller la série'],
       ['cardWho', 'Bouton « Qui a cette carte ? »', 'Sur la page des cartes SSR, UR et SEC : les joueurs qui l’ont']
     ]
   },
@@ -39,7 +34,6 @@ export const SETTINGS = [
     icon: '🛒',
     items: [
       ['hideBought', 'Masquer ce que je viens d’acheter', 'Les autres annonces d’une carte achetée disparaissent'],
-      ['marketFavorites', 'Filtre « ★ Favoris »', 'Les ventes de tes séries favorites seulement'],
       ['myBids', 'Filtres de tes enchères', '« Mes mises » dans Enchères (seulement les enchères en cours où tu as fait une offre) et « En cours » dans Mes offres'],
       ['marketSales', 'Tes ventes', 'Filtres « Achat fixe » et « Enchères » dans « Mes ventes », « Déjà en vente » sur les cartes que tu vends déjà (au marché ou en enchère), et « Trier par » (recherchées, possédées, valeur, nom)'],
       ['cardListings', 'Annonces sur la page d’une carte', 'Les 5 annonces les moins chères, avec « Acheter », et les enchères en cours'],
@@ -68,11 +62,8 @@ export const SETTINGS = [
     title: 'Partage entre mes appareils',
     icon: '☁️',
     items: [
-      ['syncPity', 'Garantie anti-malchance', 'Le compte des boosters ouverts et l’historique'],
-      ['syncFavorites', 'Séries favorites', 'Les mêmes séries sur PC et téléphone'],
       ['syncWants', 'Cartes recherchées', 'La file d’attente des recherches'],
       ['syncMarket', 'Marché', 'Cartes achetées masquées et doublons en attente de vente'],
-      ['syncProgress', 'Ma progression', 'Les cartes gagnées chaque jour et le compte par rareté'],
       ['sharePulls', 'Beaux tirages', 'Envoyer ceux que je vois à la base commune (« Qui a cette carte ? »)']
     ]
   }

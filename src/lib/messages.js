@@ -3,12 +3,9 @@
 import { getSettings, setSettings, SETTINGS } from './settings.js';
 import { cached, forget, game, myId } from './api.js';
 import { imageKey, ownership, playerSummary } from './collections.js';
-import { boardKnown, claimedAlbums, friends } from './leaderboard.js';
-import { collectionSnapshot } from './progress.js';
-import { collectionStats, missingCards, rarityCounts } from './rarities.js';
+import { friends } from './leaderboard.js';
 import { boosterReport, loadCatalog } from './boosters.js';
-import { pity, pityHistory, recordOpening, setPityRules } from './pity.js';
-import { favoritesReport, globalPacks, packKinds, playerOwnership, searchedImages, seriesStatus, setFavorite, wantRoom } from './favorites.js';
+import { globalPacks, packKinds, playerOwnership, searchedImages, seriesStatus, wantRoom } from './favorites.js';
 import { guardedSeries, setGuarded } from './locked.js';
 import { syncWants } from './wants.js';
 import { syncMarket } from './market.js';
@@ -33,19 +30,6 @@ export async function answer(msg) {
         return await salesSync();
       case 'sales-recap':
         return await salesRecap();
-      case 'collection-stats':
-        if (msg.fresh) forget('showcase:', 'series');
-        return await collectionStats();
-      case 'rarity-counts':
-        return await rarityCounts();
-      case 'missing-cards': {
-        const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
-        return await missingCards({ rarity: text(msg.rarity, 4), type: text(msg.kind, 40), q: text(msg.q, 80), manga: text(msg.manga, 64) });
-      }
-      case 'collection-snapshot': {
-        const { point } = await collectionSnapshot();
-        return { ok: true, owned: point.owned };
-      }
       case 'searched-images':
         return { keys: await searchedImages() };
       case 'player-ownership':
@@ -56,10 +40,6 @@ export async function answer(msg) {
         return await friends();
       case 'player':
         return await playerSummary(msg.id, !!msg.fresh);
-      case 'board-known':
-        return await boardKnown();
-      case 'claimed-albums':
-        return await claimedAlbums(!!msg.fresh);
       case 'boosters':
         return await boosterReport(msg.query, msg.rarity, msg.field);
       case 'access':
@@ -68,26 +48,14 @@ export async function answer(msg) {
         return { groups: SETTINGS, values: await getSettings() };
       case 'set-settings':
         return { values: await setSettings(msg.patch ?? {}) };
-      case 'pity-history':
-        return await pityHistory();
-      case 'pity':
-        return await pity(!!msg.fresh);
-      case 'opened':
-        return await recordOpening(msg.boosters ?? [], msg.best ?? [], msg.packs ?? [], msg.ids ?? []);
-      case 'pity-rules':
-        return await setPityRules(msg.rules);
-      case 'favorites':
-        return await favoritesReport(!!msg.fresh);
       case 'packs-global':
         return { packs: await globalPacks() };
       case 'pack-kinds':
         return { kinds: await packKinds() };
-      case 'packs-publish':
-        return await asAuthor('POST', '/admin/packs', { packs: msg.packs ?? {} });
-      case 'favorite':
-        return { favorites: await setFavorite(msg.id, !!msg.on) };
       case 'series-status':
         return await seriesStatus(msg.id);
+      case 'packs-publish':
+        return await asAuthor('POST', '/admin/packs', { packs: msg.packs ?? {} });
       case 'guarded-series':
         return { series: await guardedSeries() };
       case 'set-guarded':

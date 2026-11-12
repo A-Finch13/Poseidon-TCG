@@ -71,30 +71,20 @@ async function markTrades() {
     for (const { img, frame, box, n, gives, done, anchor } of todo) {
       let tile = frame;
       while (box && tile.parentElement && tile.parentElement !== box && tile.parentElement.querySelectorAll('img').length === 1) tile = tile.parentElement;
-      tile.classList.add('aqm-trade-tile');
+      markEdit(tile).classList.add('aqm-trade-tile');
       if (anchor) {
-        frame.style.position = 'relative';
+        markEdit(frame).style.position = 'relative';
         frame.dataset.aqmAnchor = '1';
       }
       tradeDone.set(img, done);
       let dot = frame.querySelector(':scope > .aqm-dot');
       if (!dot) dot = frame.appendChild(h('span', { class: 'aqm-root aqm-dot' }));
-      setClass(dot, `aqm-root aqm-dot ${n ? 'is-yes' : 'is-no'}${n > 1 ? ' has-count' : ''}`);
-      setText(dot, n > 1 ? `×${n}` : '');
+      setClass(dot, `aqm-root aqm-dot ${n ? 'is-yes' : 'is-no'}`);
+      setText(dot, '');
       const title = !n
         ? 'Tu n’as pas cette carte'
-        : gives === null
-          ? n > 1
-            ? `Tu l’as (${n} exemplaires)`
-            : 'Tu l’as'
-        : gives
-          ? n > 1
-            ? `Tu en as ${n} : il t’en restera ${n - 1}`
-            : 'Ton seul exemplaire'
-          : n > 1
-            ? `Tu l’as déjà (${n} exemplaires)`
-            : 'Tu l’as déjà';
-      if (dot.title !== title) dot.title = title;
+        : `Tu l’as (${n} exemplaire${n > 1 ? 's' : ''})`;
+      if (dot.title !== title) markEdit(dot).title = title;
     }
   } catch (e) {
     console.warn('[Aquaman] échanges :', e);

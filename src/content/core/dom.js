@@ -5,6 +5,7 @@
 // Élément avec ses attributs, ses écouteurs et ses enfants (les chaînes deviennent du texte).
 function h(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
+  el.setAttribute('data-aqm-add', '');
   for (const [k, v] of Object.entries(props)) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
@@ -45,7 +46,11 @@ function elementsWithText(from, re) {
   return out;
 }
 
-const setText = (el, text) => el.textContent !== text && (el.textContent = text);
+const setText = (el, text) => el.textContent !== text && (el.setAttribute('data-aqm-edit', ''), (el.textContent = text));
+const markEdit = (el) => {
+  el?.setAttribute('data-aqm-edit', '');
+  return el;
+};
 // Permet de placer un badge dans le coin d'un élément du site. Style en ligne : le site réécrit les classes de ses
 // éléments (une série sélectionnée, par exemple), ce qui enlèverait une classe d'Aquaman.
 function anchorBadges(el) {
@@ -54,7 +59,7 @@ function anchorBadges(el) {
   el.style.position = 'relative';
   el.dataset.aqmAnchor = '1';
 }
-const setClass = (el, cls) => el.className !== cls && (el.className = cls);
+const setClass = (el, cls) => el.className !== cls && (el.setAttribute('data-aqm-edit', ''), (el.className = cls));
 const isVisible = (el) => !!el && el.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
 const firstVisible = (selector) => [...document.querySelectorAll(selector)].find(isVisible) ?? null;
 const canHover = () => matchMedia('(hover: hover) and (pointer: fine)').matches;
